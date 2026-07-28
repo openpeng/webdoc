@@ -20,7 +20,7 @@ const operationLogs = [];
 const READ_ONLY_BLOCKED_COMMANDS = new Set(['click', 'clickAt', 'type']);
 const TAB_SCOPED_COMMANDS = new Set([
   'navigate', 'click', 'clickAt', 'type', 'waitFor', 'verify', 'extract',
-  'getPageInfo', 'inspect', 'probeSelector', 'getPageText', 'screenshot'
+  'getPageInfo', 'inspect', 'probeSelector', 'getPageText', 'screenshot', 'getResources'
 ]);
 
 function normalizeAllowedDomains(value) {
@@ -296,6 +296,9 @@ async function handleDaemonMessage(msg) {
     case 'getPageText':
       await cmdGetPageText(msg.tabId, msg.maxChars, msg.requestId);
       break;
+    case 'getResources':
+      await cmdGetResources(msg.options, msg.tabId, msg.requestId);
+      break;
     case 'screenshot':
       await cmdScreenshot(msg.tabId, msg.requestId);
       break;
@@ -555,6 +558,19 @@ async function cmdGetPageText(tabId, maxChars, requestId) {
     sendToDaemon({ type: 'pageTextResult', requestId, success: true, ...result });
   } catch (e) {
     sendToDaemon({ type: 'pageTextResult', requestId, success: false, error: e.message });
+  }
+}
+
+async function cmdGetResources(options, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  const startedAt = Date.now();
+  try {
+    const result = await callPageTool(target, 'getResourceList', [options || {}]);
+    logOperation({ action: 'getResources', tabId: target, success: true, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'getResourcesResult', requestId, success: true, ...result });
+  } catch (e) {
+    logOperation({ action: 'getResources', tabId: target, success: false, error: e.message, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'getResourcesResult', requestId, success: false, error: e.message });
   }
 }
 

@@ -75,6 +75,7 @@
       id: element.id || undefined,
       type: element.getAttribute('type') || undefined,
       href: element.href?.slice(0, 200),
+      src: element.tagName?.toLowerCase() === 'img' ? (element.currentSrc || element.src || '')?.slice(0, 500) || undefined : undefined,
       testId: element.getAttribute('data-testid') || element.getAttribute('data-test') || undefined,
       classHint: classHint(element) || undefined,
       clickable: isPotentiallyClickable(element),
@@ -276,6 +277,33 @@
     return { url: location.href, title: document.title, extractedAt: new Date().toISOString(), data };
   };
 
+  const getResourceList = (options = {}) => {
+    const entries = performance.getEntriesByType('resource');
+    const resources = entries
+      .filter(entry => {
+        if (options.type === 'image') {
+          const isImage = entry.initiatorType === 'img' ||
+                          /\.(jpg|jpeg|png|gif|webp|svg|avif|bmp|ico)(\?|#|$)/i.test(entry.name);
+          if (!isImage) return false;
+        }
+        if (typeof options.minSize === 'number' && (entry.transferSize || 0) < options.minSize) return false;
+        if (options.urlContains && !entry.name.includes(options.urlContains)) return false;
+        if (typeof options.since === 'number' && entry.startTime < options.since) return false;
+        return true;
+      })
+      .map(entry => ({
+        url: entry.name,
+        initiatorType: entry.initiatorType,
+        transferSize: entry.transferSize || 0,
+        decodedBodySize: entry.decodedBodySize || 0,
+        duration: Math.round(entry.duration),
+        startTime: Math.round(entry.startTime),
+        responseEnd: Math.round(entry.responseEnd)
+      }))
+      .sort((a, b) => b.responseEnd - a.responseEnd);
+    return { resources, count: resources.length, url: location.href, title: document.title };
+  };
+
   globalThis.__webpilot = {
     page,
     inspect,
@@ -283,6 +311,7 @@
     readText,
     verify,
     extract,
+    getResourceList,
     async waitFor(selector, state = 'visible', timeoutMs = 10000, stableMs = 150) {
       const startedAt = performance.now();
       const deadline = startedAt + timeoutMs;

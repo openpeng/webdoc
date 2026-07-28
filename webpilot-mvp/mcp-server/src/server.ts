@@ -254,6 +254,21 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: "get_resources",
+        description: "通过 Performance Resource Timing API 获取页面加载的资源列表（如真实图片 URL），无需执行任意 JavaScript。适用于豆包等 img.src 为 SVG 占位符的场景。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+            type: { type: "string", enum: ["image", "all"], description: "筛选资源类型，image 仅返回图片资源，all 返回全部。默认 image" },
+            minSize: { type: "number", description: "最小传输字节数阈值，过滤小体积占位资源" },
+            urlContains: { type: "string", description: "URL 子串过滤，仅返回包含该子串的资源" },
+            since: { type: "number", description: "只返回 startTime 大于该值的资源（毫秒），用于获取最近加载的资源" },
+          },
+          required: [],
+        },
+      },
+      {
         name: "execute_js",
         description: "Deprecated: arbitrary page JavaScript is disabled. Use inspect or probe_selector instead.",
         inputSchema: {
@@ -531,6 +546,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           };
         }
         return { content: [{ type: "text", text: `截图失败: ${result.error}` }] };
+
+      case "get_resources":
+        result = await sendToExtension("getResources", {
+          tabId: args.tabId,
+          options: {
+            type: args.type === "all" ? "all" : "image",
+            minSize: typeof args.minSize === "number" ? args.minSize : undefined,
+            urlContains: typeof args.urlContains === "string" ? args.urlContains : undefined,
+            since: typeof args.since === "number" ? args.since : undefined,
+          },
+        });
+        const resourceList = result.resources?.map((r: any) =>
+          `${r.url}\n  size: ${r.transferSize}B, type: ${r.initiatorType}, startTime: ${r.startTime}ms`
+        ).join("\n") || "无";
+        return {
+          content: [{ type: "text", text: `页面: ${result.title}\nURL: ${result.url}\n资源数: ${result.count}\n\n${resourceList}` }],
+        };
 
       case "execute_js":
         return {
