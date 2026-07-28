@@ -1,0 +1,24 @@
+{
+  "name": "webpilot-mcp-server",
+  "version": "0.1.0",
+  "description": "WebPilot MCP Server — 浏览器操作工具集",
+  "type": "module",
+  "main": "dist/server.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/server.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.0"
+  },
+  "keywords": ["mcp", "browser", "automation", "ai-agent"],
+  "license": "MIT"
+}

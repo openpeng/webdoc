@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Kimi WebBridge 工作原理与开源替代方案研究报告</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --surface: #161b22;
+    --surface-2: #1c2330;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-dim: #8b949e;
+    --accent: #58a6ff;
+    --accent-2: #3fb950;
+    --warn: #d29922;
+    --danger: #f85149;
+    --purple: #bc8cff;
+    --code-bg: #1e242e;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans CJK SC', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.75;
+    font-size: 16px;
+  }
+  .container { max-width: 980px; margin: 0 auto; padding: 48px 28px 80px; }
+  h1 {
+    font-size: 32px; font-weight: 800; line-height: 1.3;
+    margin-bottom: 12px;
+    background: linear-gradient(135deg, var(--accent), var(--purple));
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  .subtitle { color: var(--text-dim); font-size: 15px; margin-bottom: 40px; }
+  h2 {
+    font-size: 24px; font-weight: 700; margin-top: 56px; margin-bottom: 20px;
+    padding-bottom: 10px; border-bottom: 1px solid var(--border);
+    color: var(--text);
+  }
+  h3 { font-size: 19px; font-weight: 700; margin-top: 36px; margin-bottom: 14px; color: var(--accent); }
+  h4 { font-size: 16px; font-weight: 700; margin-top: 24px; margin-bottom: 10px; color: var(--purple); }
+  p { margin-bottom: 16px; color: var(--text); }
+  ul, ol { margin: 0 0 18px 22px; }
+  li { margin-bottom: 8px; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  strong { color: #fff; font-weight: 700; }
+  code {
+    font-family: 'JetBrains Mono', 'Fira Code', 'Consolas', monospace;
+    background: var(--code-bg); padding: 2px 7px; border-radius: 5px;
+    font-size: 13.5px; color: var(--purple); border: 1px solid var(--border);
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 18px; overflow-x: auto; margin-bottom: 18px;
+  }
+  pre code { background: none; border: none; padding: 0; color: var(--text); font-size: 13px; }
+  blockquote {
+    border-left: 3px solid var(--accent);
+    background: var(--surface-2);
+    padding: 14px 20px; margin: 18px 0; border-radius: 0 8px 8px 0;
+    color: var(--text-dim);
+  }
+  blockquote strong { color: var(--accent); }
+
+  /* Tables */
+  table {
+    width: 100%; border-collapse: collapse; margin: 18px 0;
+    font-size: 14px; background: var(--surface);
+    border-radius: 8px; overflow: hidden; border: 1px solid var(--border);
+  }
+  th {
+    background: var(--surface-2); color: var(--accent);
+    font-weight: 700; text-align: left; padding: 12px 14px;
+    border-bottom: 2px solid var(--border); white-space: nowrap;
+  }
+  td { padding: 11px 14px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: var(--surface-2); }
+
+  /* Cards */
+  .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 16px; margin: 20px 0; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 22px; transition: border-color .2s;
+  }
+  .card:hover { border-color: var(--accent); }
+  .card h4 { margin-top: 0; }
+  .card .tag {
+    display: inline-block; font-size: 12px; padding: 3px 10px;
+    border-radius: 20px; font-weight: 700; margin-bottom: 10px;
+  }
+  .tag-green { background: rgba(63,185,80,.15); color: var(--accent-2); }
+  .tag-blue { background: rgba(88,166,255,.15); color: var(--accent); }
+  .tag-purple { background: rgba(188,140,255,.15); color: var(--purple); }
+  .tag-warn { background: rgba(210,153,34,.15); color: var(--warn); }
+
+  /* Architecture diagram */
+  .arch-diagram {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 28px; margin: 20px 0;
+    font-family: 'JetBrains Mono', monospace; font-size: 13px;
+    line-height: 1.8; overflow-x: auto; white-space: pre;
+    color: var(--text-dim);
+  }
+  .arch-diagram .hl { color: var(--accent); font-weight: bold; }
+  .arch-diagram .hl2 { color: var(--accent-2); font-weight: bold; }
+  .arch-diagram .hl3 { color: var(--purple); font-weight: bold; }
+  .arch-diagram .hl4 { color: var(--warn); font-weight: bold; }
+
+  /* Callout */
+  .callout {
+    border-radius: 10px; padding: 18px 22px; margin: 20px 0;
+    border-left: 4px solid;
+  }
+  .callout-info { background: rgba(88,166,255,.08); border-color: var(--accent); }
+  .callout-warn { background: rgba(210,153,34,.08); border-color: var(--warn); }
+  .callout-success { background: rgba(63,185,80,.08); border-color: var(--accent-2); }
+  .callout-title { font-weight: 700; margin-bottom: 8px; font-size: 15px; }
+
+  /* Badge */
+  .badge {
+    display: inline-block; font-size: 12px; padding: 2px 8px;
+    border-radius: 4px; font-weight: 600; margin-left: 6px;
+  }
+  .badge-closed { background: rgba(248,81,73,.15); color: var(--danger); }
+  .badge-open { background: rgba(63,185,80,.15); color: var(--accent-2); }
+
+  /* TOC */
+  .toc {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 24px 28px; margin-bottom: 40px;
+  }
+  .toc h3 { margin-top: 0; color: var(--text); font-size: 16px; }
+  .toc ol { margin-left: 20px; }
+  .toc li { margin-bottom: 6px; font-size: 14px; }
+  .toc a { color: var(--text-dim); }
+  .toc a:hover { color: var(--accent); }
+
+  .source-list { font-size: 13px; color: var(--text-dim); }
+  .source-list li { margin-bottom: 6px; word-break: break-all; }
+  .source-list a { color: var(--accent); }
+  .ref { color: var(--accent); font-weight: 600; font-size: 13px; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 40px 0; }
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>Kimi WebBridge 工作原理与开源替代方案研究报告</h1>
+<p class="subtitle">发布日期：2026-07-28 · 研究范围：浏览器自动化 AI Agent 工具生态</p>
+
+<div class="toc">
+  <h3>目录</h3>
+  <ol>
+    <li><a href="#summary">执行摘要</a></li>
+    <li><a href="#principle">Kimi WebBridge 工作原理深度解析</a></li>
+    <li><a href="#landscape">技术架构全景：三大流派</a></li>
+    <li><a href="#opensource">开源替代工具横向对比</a></li>
+    <li><a href="#build">自研浏览器操作助手：架构建议</a></li>
+    <li><a href="#roadmap">实施路线图</a></li>
+    <li><a href="#sources">参考来源</a></li>
+  </ol>
+</div>
+
+<!-- ==================== 执行摘要 ==================== -->
+<h2 id="summary">执行摘要</h2>
+
+<p>Kimi WebBridge 是月之暗面（Moonshot AI）于 2026 年 5 月推出的浏览器扩展插件，核心定位是让 AI Agent 像真人一样操作用户正在使用的 Chrome/Edge 浏览器。<span class="ref">[$TRAE_REF](https://www.kimi.com/features/webbridge)</span> 其技术底座是 Chrome DevTools Protocol（CDP），采用"浏览器扩展 + 本地桥接服务"的双组件架构，最大差异化优势在于<strong>登录态继承</strong>——Agent 直接复用用户已登录的 Cookie/Session，无需重新认证，所有操作在本地执行，数据不离开设备。<span class="ref">[$TRAE_REF](https://www.kimi.com/zh-cn/help/kimi-webbridge/kimi-webbridge-introduction)</span></p>
+
+<p>在开源生态中，Browser Use（GitHub 81K+ Star）、Stagehand（10K+ Star）、Nanobrowser、Browser Harness、Skyvern 等工具从不同角度提供了类似能力。它们在架构路线上分为三大流派：<strong>DOM 驱动</strong>（可靠、低成本）、<strong>视觉驱动</strong>（通用、抗反爬）、<strong>混合模式</strong>（两者兼用）。<span class="ref">[$TRAE_REF](https://techiehub.blog/best-ai-agent-for-browser-automation-top-tools/)</span> 对于计划自研浏览器操作助手的团队，建议采用"CDP 直连 + 本地浏览器登录态继承 + DOM 优先/视觉兜底的混合感知 + 多 Agent 协作 + 站点适配器降 Token"的架构组合，在可靠性、成本和安全性之间取得最优平衡。</p>
+
+<!-- ==================== 工作原理 ==================== -->
+<h2 id="principle">Kimi WebBridge 工作原理深度解析</h2>
+
+<h3>核心架构：双组件协同</h3>
+
+<p>Kimi WebBridge 由两个核心组件构成，通过 WebSocket 建立双向通信通道：<span class="ref">[$TRAE_REF](https://cloud.tencent.com/developer/news/3946010)</span></p>
+
+<div class="arch-diagram"><span class="hl">┌─────────────────┐     自然语言/结构化指令     ┌──────────────────────┐
+│   AI Agent       │ ──────────────────────────► │  本地桥接服务          │
+│  (Claude Code /  │                              │  (Local Bridge        │
+│   Cursor / Codex │  ◄────────────────────────── │   Service / Daemon)   │
+│   / Kimi Code)   │       操作结果返回           │                       │
+└─────────────────┘                              └──────────┬───────────┘
+                                                            │ WebSocket + CDP
+                                                            ▼
+                                                 ┌──────────────────────┐
+                                                 │  浏览器扩展            │
+                                                 │  (Chrome/Edge Ext)    │
+                                                 │  · 导航 · 点击 · 输入  │
+                                                 │  · 截图 · 读取 DOM     │
+                                                 └──────────┬───────────┘
+                                                            │ CDP
+                                                            ▼
+                                                 ┌──────────────────────┐
+                                                 │  用户真实浏览器实例     │
+                                                 │  (已登录的 Chrome/Edge)│
+                                                 │  ★ 继承登录态          │
+                                                 └──────────────────────┘</span></div>
+
+<ol>
+  <li><strong>本地桥接服务（Local Bridge Service）</strong>：在用户电脑上运行的守护进程，负责接收来自 AI Agent 的操作指令，充当指令中转站，将 Agent 发出的"打开某网页""点击某按钮""填写某表单"等指令翻译为浏览器可执行的底层操作。<span class="ref">[$TRAE_REF](https://cloud.tencent.com/developer/news/3946010)</span></li>
+  <li><strong>浏览器扩展（Browser Extension）</strong>：基于 Chrome DevTools Protocol（CDP）在浏览器中执行具体操作。CDP 是 Chrome 浏览器提供的标准调试协议，支持页面导航、DOM 操作、网络请求拦截、JavaScript 执行等精细化控制。<span class="ref">[$TRAE_REF](https://cloud.tencent.com/developer/news/3946010)</span></li>
+</ol>
+
+<h3>关键技术选择：CDP 而非 Playwright/Puppeteer</h3>
+
+<p>WebBridge 选择直接对接 CDP 而非使用 Playwright 或 Puppeteer 等上层封装库，这一决策带来了显著的性能优势：<span class="ref">[$TRAE_REF](https://wenku.csdn.net/column/8hpu7pi29kb)</span></p>
+
+<table>
+  <tr><th>维度</th><th>Playwright / Puppeteer</th><th>CDP 直连（WebBridge 方案）</th></tr>
+  <tr><td>连接方式</td><td>通过库启动或连接浏览器实例</td><td>直接连接 CDP WebSocket 端点</td></tr>
+  <tr><td>指令延迟</td><td>80–120ms（经 Node.js 进程 + WebSocket 封包 + 内核解析三道关卡）</td><td><strong>15ms 以内</strong>（渲染进程内直接调用）</td></tr>
+  <tr><td>DOM 访问权限</td><td>沙箱环境，受 CSP 策略限制，无法读取部分 iframe</td><td>全权限 DOM 访问，可获取完整 DOM 树、CSSOM、Canvas 像素数据</td></tr>
+  <tr><td>抽象层损耗</td><td>高阶 API 带来语义翻译开销</td><td>无中间商，原生调用 <code>Page.navigate</code>、<code>DOM.querySelector</code> 等 Domain 方法</td></tr>
+  <tr><td>跨浏览器</td><td>支持 Chromium / Firefox / WebKit</td><td>仅限 Chromium 内核（Chrome / Edge / Brave 等）</td></tr>
+</table>
+
+<h3>核心差异化能力</h3>
+
+<div class="card-grid">
+  <div class="card">
+    <span class="tag tag-green">杀手锏</span>
+    <h4>登录态继承</h4>
+    <p>用户在 Chrome 中已登录的微博、淘宝、企业 OA、行业数据库等，WebBridge 直接继承这些 Cookie/Session。网站看到的是"你本人在操作"，无需重新登录、无需配置 API Key、无需过双因素认证。这绕过了大量没有开放 API 或 API 权限申请繁琐的系统限制。<span class="ref">[$TRAE_REF](https://sgknight.blog.csdn.net/article/details/162840496)</span></p>
+  </div>
+  <div class="card">
+    <span class="tag tag-blue">体验</span>
+    <h4>非独占式操作</h4>
+    <p>WebBridge 在后台标签页操作，不占用用户的鼠标和键盘。被控制的标签页会显示 <code>agent:kimi</code> 标识，用户可随时看到 AI 在做什么并直接接管。人机并行，互不干扰。<span class="ref">[$TRAE_REF](https://sgknight.blog.csdn.net/article/details/162840496)</span></p>
+  </div>
+  <div class="card">
+    <span class="tag tag-purple">安全</span>
+    <h4>全本地运行</h4>
+    <p>所有操作在本地完成，登录态和页面内容不离开设备，不上传至云端。与云端浏览器自动化方案形成鲜明对比，从根本上避免了敏感凭据上传云端的风险。<span class="ref">[$TRAE_REF](https://www.kimi.com/zh-cn/help/kimi-webbridge/kimi-webbridge-introduction)</span></p>
+  </div>
+  <div class="card">
+    <span class="tag tag-warn">技术路线</span>
+    <h4>DOM 语义解析而非截图识别</h4>
+    <p>WebBridge 通过 CDP 直接读取浏览器 DOM 结构，操作真实的页面元素，点击按钮是调用浏览器 API 触发点击事件，而非模拟鼠标坐标。与 Anthropic Computer Use 等"给 AI 看截图、识别坐标、模拟点击"的方案相比，一步到位，避免了截图延迟和坐标偏移问题。<span class="ref">[$TRAE_REF](https://sgknight.blog.csdn.net/article/details/162840496)</span></p>
+  </div>
+</div>
+
+<h3>支持的 Agent 生态</h3>
+
+<p>WebBridge 目前支持六种本地 AI Agent：Kimi Code、Claude Code、Cursor、Codex、Hermes、OpenClaw。安装仅需两步：先安装浏览器扩展，再在 Agent 中执行一行连接命令（macOS 用 <code>curl</code>，Windows 用 <code>irm</code>）。<span class="ref">[$TRAE_REF](https://www.kimi.com/features/webbridge)</span></p>
+
+<h3>安全机制与风险</h3>
+
+<div class="callout callout-warn">
+  <div class="callout-title">⚠ 风险提示</div>
+  <p>登录态继承是最大优势，也是最大风险。AI 用用户的身份操作浏览器，意味着它拥有用户与各网站之间的全部权限。若任务描述不清晰，AI 可能做出未预期的操作。WebBridge 的缓解措施包括：<strong>操作前确认模式</strong>（执行提交、删除等关键操作前暂停等待确认）、<strong>限定操作范围</strong>（任务描述中明确"只读取不修改"）、<strong>全程可视化</strong>（标签页标识 + 随时接管）。<span class="ref">[$TRAE_REF](https://sgknight.blog.csdn.net/article/details/162840496)</span></p>
+</div>
+
+<h3>局限性</h3>
+
+<ul>
+  <li><strong>闭源商业产品</strong>：无法二次开发或自定义扩展，依赖月之暗面的持续维护。</li>
+  <li><strong>复杂动态页面稳定性有限</strong>：部分用户反馈，在处理复杂动态网页或高频精准交互场景时，稳定性和执行效率仍不及成熟的代码级自动化方案。<span class="ref">[$TRAE_REF](https://post.m.smzdm.com/p/ae608k64/)</span></li>
+  <li><strong>仅支持 Chromium 内核</strong>：不支持 Firefox 和 Safari。</li>
+  <li><strong>绑定特定 Agent 生态</strong>：虽然支持六种 Agent，但连接方式与 Kimi 生态深度耦合。</li>
+</ul>
+
+<hr>
+
+<!-- ==================== 技术架构全景 ==================== -->
+<h2 id="landscape">技术架构全景：三大流派</h2>
+
+<p>理解 Kimi WebBridge 的定位，需要先看清整个 AI 浏览器自动化领域的技术架构分野。当前主流方案在<strong>感知方式</strong>上分为三大流派，这决定了工具的可靠性、成本和适用场景：<span class="ref">[$TRAE_REF](https://techiehub.blog/best-ai-agent-for-browser-automation-top-tools/)</span><span class="ref">[$TRAE_REF](https://aiwiki.ai/wiki/ai_browser_agent)</span></p>
+
+<h3>流派一：DOM 驱动（结构化感知）</h3>
+
+<p>Agent 读取页面的 DOM 结构或可访问性树（Accessibility Tree），以结构化文本形式理解页面，通过浏览器 API 直接操作元素。代表工具：Kimi WebBridge、Playwright MCP、Browser Use。</p>
+
+<ul>
+  <li><strong>优势</strong>：可靠性高（比视觉驱动高 12–17 个百分点）、Token 成本低（处理文本而非图像）、执行速度快（20–100ms 每操作）。</li>
+  <li><strong>劣势</strong>：无法处理 Canvas 渲染内容、复杂反爬机制、无 DOM 表示的图形元素。</li>
+</ul>
+
+<h3>流派二：视觉驱动（像素级感知）</h3>
+
+<p>Agent 截取浏览器截图，送入多模态 AI 模型分析视觉布局，识别可交互元素并返回点击坐标。代表工具：Anthropic Computer Use、OpenAI Operator、Skyvern。</p>
+
+<ul>
+  <li><strong>优势</strong>：通用性极强，可处理任何图形界面（包括 Canvas、桌面应用、嵌入式 PDF），无需 DOM 结构。</li>
+  <li><strong>劣势</strong>：速度慢（2–7 秒每操作）、成本高（图像 Token 是文本的 10–20 倍）、坐标定位可能偏移。</li>
+</ul>
+
+<h3>流派三：混合模式（Hybrid）</h3>
+
+<p>DOM 解析为主路径，截图视觉为兜底路径。大部分步骤用 DOM（快且便宜），当 DOM 不可靠（Canvas 元素、反机器人屏幕）时切换到视觉。代表工具：Browser Use 2.0、Google Project Mariner。<span class="ref">[$TRAE_REF](https://techiehub.blog/best-ai-agent-for-browser-automation-top-tools/)</span></p>
+
+<div class="callout callout-info">
+  <div class="callout-title">💡 生产环境最佳实践</div>
+  <p>2026 年的生产模式是<strong>混合驱动</strong>：DOM 驱动作为主路径覆盖约 80% 的任务，视觉驱动作为备选路径在 Canvas 元素或反机器人屏幕上持续失败时启用。这一组合在可靠性和成本之间取得了最佳平衡。<span class="ref">[$TRAE_REF](https://techiehub.blog/best-ai-agent-for-browser-automation-top-tools/)</span></p>
+</div>
+
+<h3>另一个关键分野：本地浏览器 vs 云端无头浏览器</h3>
+
+<table>
+  <tr><th>维度</th><th>本地浏览器方案（WebBridge / Nanobrowser）</th><th>云端无头浏览器方案（Skyvern / Browserbase）</th></tr>
+  <tr><td>登录态</td><td>直接继承用户登录态，开箱即用</td><td>需手动登录或搬运 Cookie，可能触发安全验证</td></tr>
+  <tr><td>反爬对抗</td><td>无模拟特征，访问主体即真实用户</td><td>特征明显，极易被检测</td></tr>
+  <tr><td>数据隐私</td><td>数据不离开设备</td><td>数据经云端处理</td></tr>
+  <tr><td>可扩展性</td><td>受限于单机</td><td>可弹性扩缩容</td></tr>
+  <tr><td>部署成本</td><td>零基础设施</td><td>需维护浏览器云集群</td></tr>
+</table>
+
+<hr>
+
+<!-- ==================== 开源工具对比 ==================== -->
+<h2 id="opensource">开源替代工具横向对比</h2>
+
+<p>以下是对当前主流开源/半开源 AI 浏览器自动化工具的系统梳理，覆盖架构特点、GitHub 热度、许可证、核心优势和局限性。</p>
+
+<h3>工具总览</h3>
+
+<table>
+  <tr>
+    <th>工具</th><th>语言</th><th>许可证</th><th>GitHub Star</th><th>感知方式</th><th>底层引擎</th><th>本地/云端</th>
+  </tr>
+  <tr>
+    <td><strong>Browser Use</strong></td><td>Python</td><td>MIT</td><td>~81K–106K</td><td>视觉 + DOM（混合）</td><td>Playwright / CDP</td><td>本地（可复用 Chrome Profile）</td>
+  </tr>
+  <tr>
+    <td><strong>Stagehand</strong></td><td>TypeScript</td><td>MIT</td><td>~10K</td><td>DOM 为主</td><td>Playwright（v3 改用 CDP）</td><td>本地 + Browserbase 云</td>
+  </tr>
+  <tr>
+    <td><strong>Skyvern</strong></td><td>Python</td><td>AGPL-3.0 / 商用</td><td>~9K–21.5K</td><td>视觉优先</td><td>Playwright</td><td>云端 API 为主</td>
+  </tr>
+  <tr>
+    <td><strong>Nanobrowser</strong></td><td>TypeScript</td><td>Apache 2.0</td><td>—</td><td>DOM + 视觉</td><td>Chrome 扩展原生</td><td>纯本地（BYO API Key）</td>
+  </tr>
+  <tr>
+    <td><strong>Browser Harness</strong></td><td>Python</td><td>MIT</td><td>~7.2K</td><td>DOM + CDP 原生</td><td>CDP 直连</td><td>纯本地</td>
+  </tr>
+  <tr>
+    <td><strong>bb-browser</strong></td><td>Node.js</td><td>—</td><td>—</td><td>站点适配器（非 LLM 解析）</td><td>CDP 直连</td><td>纯本地</td>
+  </tr>
+  <tr>
+    <td><strong>Playwright MCP</strong></td><td>TypeScript</td><td>Apache 2.0</td><td>—</td><td>DOM（确定性）</td><td>Playwright</td><td>本地</td>
+  </tr>
+  <tr>
+    <td><strong>OpenBrowser</strong></td><td>TypeScript</td><td>MIT</td><td>—</td><td>DOM + 视觉</td><td>Playwright + CDP</td><td>本地</td>
+  </tr>
+  <tr>
+    <td><strong>Kimi WebBridge</strong> <span class="badge badge-closed">闭源</span></td><td>—</td><td>闭源</td><td>—</td><td>DOM（CDP）</td><td>CDP 直连</td><td>纯本地</td>
+  </tr>
+</table>
+
+<h3>重点工具深度评析</h3>
+
+<h4>1. Browser Use — 开源生态的标杆</h4>
+
+<p>Browser Use 是当前增长最快的开源 AI 浏览器自动化框架，2024 年 10 月上线，截至 2026 年 7 月 GitHub Star 突破 106K。<span class="ref">[$TRAE_REF](https://segmentfault.com/a/1190000048064933)</span> 在 Odysseys Benchmark 200 个真实长流程 Web 任务中以 87.4% 平均成功率位居全球第一，超越 OpenAI、Anthropic、Google 和 Microsoft 的 computer-use 方案。<span class="ref">[$TRAE_REF](https://segmentfault.com/a/1190000048064933)</span></p>
+
+<ul>
+  <li><strong>架构</strong>：Python 库，内部使用 Playwright 驱动浏览器，LLM 作为"大脑"通过 Agent Loop 自主决策。支持视觉模型（看截图）和 DOM 提取（读页面结构），或两者同时使用。</li>
+  <li><strong>多 LLM 支持</strong>：OpenAI、Anthropic、Google、Ollama 本地模型等，模型不可知（model-agnostic）。</li>
+  <li><strong>登录态复用</strong>：内置真实 Chrome Profile 复用功能，Agent 可继承已有登录会话。<span class="ref">[$TRAE_REF](https://www.awesomeagents.ai/tools/best-ai-browser-automation-tools-2026/)</span></li>
+  <li><strong>成本</strong>：自托管完全免费，仅支付 LLM API 成本。专有 Browser Use 2.0 模型每步约 $0.006，一个 10 步任务约 $0.07。<span class="ref">[$TRAE_REF](https://www.awesomeagents.ai/tools/best-ai-browser-automation-tools-2026/)</span></li>
+  <li><strong>核心组件</strong>：Agent 智能体（任务编排与执行循环，含消息压缩机制——每 25 步自动摘要历史对话）、Browser 浏览器控制层、DOM 服务、视觉服务。<span class="ref">[$TRAE_REF](http://m.toutiao.com/group/7644764487433683471/?upstream_biz=VolcEngine)</span></li>
+</ul>
+
+<h4>2. Stagehand — TypeScript 生态的精巧方案</h4>
+
+<p>由 Browserbase（云浏览器基础设施公司）开发，构建在 Playwright 之上，核心理念是"带 AI 大脑的 Playwright"。它不替代 Playwright，而是增强它——开发者可在同一脚本中混合使用确定性 Playwright 命令和 AI 驱动的 Stagehand 方法。<span class="ref">[$TRAE_REF](https://www.nxcode.io/zh/resources/news/stagehand-vs-browser-use-vs-playwright-ai-browser-automation-2026)</span></p>
+
+<ul>
+  <li><strong>三大 AI 原语</strong>：<code>act()</code>（操作）、<code>extract()</code>（数据提取，配合 Zod Schema 返回结构化 JSON）、<code>observe()</code>（元素识别）。</li>
+  <li><strong>v3 重大升级</strong>：2026 年初在 CDP 上重写了引擎，直接通过 Chrome DevTools Protocol 与浏览器通信，速度提升 44%，驱动不可知（driver-agnostic）。<span class="ref">[$TRAE_REF](http://m.toutiao.com/group/7650124256868581939/?upstream_biz=VolcEngine)</span></li>
+  <li><strong>动作缓存</strong>：缓存已执行的 AI 操作，当 DOM 变化时自动重新调用 LLM，有效降低 Token 成本。</li>
+  <li><strong>最适合</strong>：混合工作流（确定性 + AI 灵活性结合）、结构化数据提取。</li>
+</ul>
+
+<h4>3. Nanobrowser — 纯扩展架构的多智能体方案</h4>
+
+<p>Nanobrowser 是一款开源 Chrome 扩展，定位为 OpenAI Operator 的免费替代品。核心创新是<strong>多智能体协作架构</strong>，采用规划者（Planner）、导航员（Navigator）和验证器（Validator/Executor）三元协同模式。<span class="ref">[$TRAE_REF](https://blog.gitcode.com/354143f5761d434e6cc13a9c652da23e.html)</span></p>
+
+<ul>
+  <li><strong>纯扩展架构</strong>：通过 <code>chrome-extension/src/background/browser</code> 模块直接访问浏览器内核能力，DOM 操作延迟降至 10ms 级，无需额外配置即可运行于任何 Chromium 浏览器。</li>
+  <li><strong>模型灵活配置</strong>：支持 OpenAI、Anthropic、Gemini、Ollama、Groq、Cerebras 及自定义 OpenAI 兼容接口，可为不同 Agent 分配不同模型（如规划用 Claude Sonnet、执行用 Claude Haiku 以控制成本）。<span class="ref">[$TRAE_REF](https://addons.mozilla.org/zh-CN/firefox/addon/nanobrowser-ai-web-agent/)</span></li>
+  <li><strong>本地优先</strong>：所有操作在浏览器本地执行，API 密钥和网页数据不上传第三方服务器。</li>
+  <li><strong>与 WebBridge 的相似度最高</strong>：同为浏览器扩展形态、同样本地运行、同样支持多 LLM。差异在于 Nanobrowser 完全开源、采用多智能体架构，而 WebBridge 闭源、采用单 Agent 桥接。</li>
+</ul>
+
+<h4>4. Browser Harness — 自愈式 CDP 直连方案</h4>
+
+<p>由 browser-use 团队推出的开源项目（7.2K Star），核心理念是"去框架化，给 LLM 最大自由"。<span class="ref">[$TRAE_REF](http://news.qq.com/rain/a/20260427A06P2C00)</span></p>
+
+<ul>
+  <li><strong>CDP 直连</strong>：通过 WebSocket 直连 Chrome 的 CDP 协议，几乎没有中间抽象层。Daemon 进程管理会话和通信，<code>run.py</code> 加载预置 helpers 工具。</li>
+  <li><strong>自愈机制（核心创新）</strong>：当 Agent 发现缺少某个功能时，它不会报错退出，而是实时编辑 <code>helpers.py</code> 文件，补全代码并继续执行。例如 Agent 需要上传文件但发现没有 <code>upload_file()</code> 函数，它会读取现有代码、理解模式、添加新函数并继续执行。</li>
+  <li><strong>领域技能自动生成</strong>：Agent 在处理 GitHub、LinkedIn、Amazon 等特定网站时，会沉淀出针对性的交互模式，保存在 <code>domain-skills/</code> 目录中，鼓励由 Agent 在真实任务中总结生成而非人工手写。</li>
+</ul>
+
+<h4>5. bb-browser — 站点适配器模式，Token 直降 99%</h4>
+
+<p>核心理念是"Your browser is the API"（你的浏览器就是最好的 API），通过 CDP 直接接管用户正在使用的、已登录的真实 Chrome 浏览器。<span class="ref">[$TRAE_REF](https://cloud.tencent.com/developer/article/2670252)</span></p>
+
+<ul>
+  <li><strong>站点适配器模式</strong>：将各大网站的核心功能封装成一行可用的 CLI 命令，适配器直接在浏览器上下文里调用页面原生接口，返回干净的结构化 JSON 数据，无需大模型解析页面，单次交互 Token 消耗从几万降到几百。</li>
+  <li><strong>庞大生态</strong>：社区已适配 11 大类、36 个主流平台的 103 个命令，覆盖社交、资讯、开发、财经、求职等场景。</li>
+  <li><strong>与 WebBridge 的关键差异</strong>：WebBridge 让 LLM 实时理解 DOM 并决策，Token 开销较大；bb-browser 用预置适配器绕过 LLM 解析，成本极低但灵活性受限。</li>
+</ul>
+
+<h4>6. Skyvern — 视觉优先的企业级方案</h4>
+
+<p>Y Combinator 孵化，视觉优先（vision-first）的企业级浏览器自动化 API。已执行超过 1000 万个工作流，在 WebVoyager 2.0 上得分 85.85%。<span class="ref">[$TRAE_REF](https://techiehub.blog/best-ai-agent-for-browser-automation-top-tools/)</span></p>
+
+<ul>
+  <li><strong>三阶段流水线</strong>：规划器（将目标分解为步骤）→ 执行器（把截图发给视觉模型并点击返回坐标）→ 验证器（确认页面发生变化）。</li>
+  <li><strong>核心优势</strong>：可导航从未见过的网站、部分 CAPTCHA 自动解决、YAML 工作流定义可复用、UI 变更时自动重试（self-healing）。</li>
+  <li><strong>许可证注意</strong>：AGPL-3.0 对商业使用有传染性限制，企业通常需购买商用许可。</li>
+</ul>
+
+<h3>工具选型决策矩阵</h3>
+
+<table>
+  <tr><th>需求场景</th><th>推荐工具</th><th>理由</th></tr>
+  <tr><td>Python 开发者，需自主智能体</td><td>Browser Use</td><td>完整 Agent Loop、多 LLM、最高成功率</td></tr>
+  <tr><td>TypeScript 开发者，混合工作流</td><td>Stagehand</td><td>Playwright 增强、AI 原语、动作缓存</td></tr>
+  <tr><td>纯扩展形态、多智能体、零成本</td><td>Nanobrowser</td><td>Chrome 扩展原生、多 Agent 协作、BYO Key</td></tr>
+  <tr><td>企业级表单填写、视觉驱动</td><td>Skyvern</td><td>视觉优先、CAPTCHA 处理、YAML 工作流</td></tr>
+  <tr><td>CDP 直连、自愈能力</td><td>Browser Harness</td><td>去框架化、mid-task 代码补全</td></tr>
+  <tr><td>超低 Token 成本、固定站点</td><td>bb-browser</td><td>站点适配器模式，Token 降 99%</td></tr>
+  <tr><td>确定性、免费、已集成 Copilot</td><td>Playwright MCP</td><td>亚秒级执行、零 LLM 成本</td></tr>
+  <tr><td>登录态继承、本地隐私、多 Agent 支持</td><td>Kimi WebBridge <span class="badge badge-closed">闭源</span></td><td>开箱即用但闭源，不可二次开发</td></tr>
+</table>
+
+<hr>
+
+<!-- ==================== 自研建议 ==================== -->
+<h2 id="build">自研浏览器操作助手：架构建议</h2>
+
+<p>基于对 Kimi WebBridge 工作原理和开源生态的系统分析，若要打造一个"更好用"的浏览器操作助手，建议在以下架构维度做出差异化设计。</p>
+
+<h3>推荐整体架构</h3>
+
+<div class="arch-diagram"><span class="hl3">┌─────────────────────────────────────────────────────────────────┐
+│                      自研浏览器操作助手架构                        │
+└─────────────────────────────────────────────────────────────────┘
+
+<span class="hl">① Agent 接入层（多协议兼容）</span>
+   ├─ MCP Server 接口    → 兼容 Claude Code / Cursor / Codex 等
+   ├─ CLI 命令接口        → 兼容 OpenClaw / 通用 Shell Agent
+   ├─ REST API 接口       → 兼容自定义应用集成
+   └─ 自然语言对话接口     → 内置 Planner Agent 直接交互
+
+<span class="hl2">② 智能调度层（多 Agent 协作）</span>
+   ├─ Planner（规划者）   → 任务分解、策略制定、步骤规划
+   ├─ Navigator（导航员） → 页面操作执行、元素识别与交互
+   ├─ Validator（验证者） → 操作结果验证、错误检测与重试决策
+   └─ Guard（守卫）       → 安全策略执行、敏感操作拦截
+
+<span class="hl4">③ 混合感知层（核心差异化）</span>
+   ├─ DOM 解析引擎（主路径）→ 可访问性树提取、结构化元素列表
+   ├─ 视觉识别引擎（兜底）  → 截图 + 多模态 LLM、坐标定位
+   └─ 智能切换策略          → DOM 失败时自动降级到视觉
+
+<span class="hl3">④ 浏览器控制层（CDP 直连）</span>
+   ├─ 本地桥接服务（Daemon）→ WebSocket 接收指令、CDP 翻译执行
+   ├─ 浏览器扩展             → 登录态继承、标签页管理、agent 标识
+   └─ CDP Session 管理       → 多标签页并行、事件订阅、网络拦截
+
+<span class="hl">⑤ 站点适配层（Token 优化）</span>
+   ├─ 站点适配器仓库         → 高频站点的预置操作命令
+   ├─ 自适应学习             → Agent 执行中沉淀可复用交互模式
+   └─ 适配器自动生成         → 从执行历史中提取并固化模式
+
+<span class="hl2">⑥ 安全与可观测层</span>
+   ├─ 操作前确认机制         → 敏感操作暂停等待人工确认
+   ├─ 操作范围白名单         → 限定可操作域名与动作类型
+   ├─ 全程可视化             → 标签页标识、操作日志、随时接管
+   └─ 审计日志               → 完整操作链路记录与回放</span></div>
+
+<h3>六大差异化设计要点</h3>
+
+<div class="card-grid">
+  <div class="card">
+    <span class="tag tag-green">要点 1</span>
+    <h4>混合感知：DOM 优先 + 视觉兜底</h4>
+    <p>不要走单一感知路线。以 DOM 解析为主路径（覆盖约 80% 任务，快且便宜），当 DOM 不可靠时（Canvas 元素、反机器人验证、复杂动态渲染）自动降级到视觉识别。这一"生产环境最佳实践"已被 Browser Use 2.0 和 Google Project Mariner 验证。<span class="ref">[$TRAE_REF](https://techiehub.blog/best-ai-agent-for-browser-automation-top-tools/)</span></p>
+  </div>
+  <div class="card">
+    <span class="tag tag-blue">要点 2</span>
+    <h4>多 Agent 协作架构</h4>
+    <p>借鉴 Nanobrowser 的 Planner / Navigator / Validator 三元协同模式，避免单 Agent 既规划又执行的认知过载。规划者负责任务分解（用强推理模型），导航员负责执行操作（用经济型模型），验证者负责结果校验。可为不同 Agent 分配不同模型以平衡质量与成本。<span class="ref">[$TRAE_REF](https://blog.gitcode.com/354143f5761d434e6cc13a9c652da23e.html)</span></p>
+  </div>
+  <div class="card">
+    <span class="tag tag-purple">要点 3</span>
+    <h4>站点适配器模式降 Token</h4>
+    <p>借鉴 bb-browser 的核心创新：对高频站点预置适配器，直接在浏览器上下文调用页面原生接口返回结构化 JSON，绕过 LLM 解析整个 DOM。将单次交互 Token 从几万降到几百。同时引入 Browser Harness 的自愈机制——Agent 在执行中自动生成新适配器并沉淀为领域技能。<span class="ref">[$TRAE_REF](https://cloud.tencent.com/developer/article/2670252)</span><span class="ref">[$TRAE_REF](http://news.qq.com/rain/a/20260427A06P2C00)</span></p>
+  </div>
+  <div class="card">
+    <span class="tag tag-warn">要点 4</span>
+    <h4>多协议接入层</h4>
+    <p>不要只绑定单一 Agent。同时提供 MCP Server 接口（兼容 Claude Code / Cursor / Codex 等支持 MCP 的 Agent）、CLI 命令接口（兼容 OpenClaw 等通用 Shell Agent）、REST API 接口（兼容自定义应用）。Kimi WebBridge 仅支持六种特定 Agent，自研工具应更开放。</p>
+  </div>
+  <div class="card">
+    <span class="tag tag-green">要点 5</span>
+    <h4>强化安全与可观测</h4>
+    <p>在 WebBridge 已有的确认模式、操作范围限定、全程可视化基础上，增加：<strong>操作审计日志</strong>（完整记录操作链路，支持回放与回滚）、<strong>域名白名单</strong>（限定可操作的网站范围）、<strong>敏感操作策略引擎</strong>（根据操作类型自动分级：只读/写入/删除，不同级别不同确认策略）、<strong>操作沙箱</strong>（对写入类操作提供 dry-run 预览）。</p>
+  </div>
+  <div class="card">
+    <span class="tag tag-blue">要点 6</span>
+    <h4>循环检测与停滞恢复</h4>
+    <p>借鉴 OpenBrowser 的多维指纹循环检测机制：当 Agent 陷入重复操作循环时（如反复点击同一按钮），自动检测并升级提醒或触发重新规划。同时引入消息压缩机制（每 N 步自动摘要历史对话），避免长任务上下文窗口爆炸。<span class="ref">[$TRAE_REF](https://blog.csdn.net/yanceyxin/article/details/163221415)</span><span class="ref">[$TRAE_REF](http://m.toutiao.com/group/7644764487433683471/?upstream_biz=VolcEngine)</span></p>
+  </div>
+</div>
+
+<h3>技术栈建议</h3>
+
+<table>
+  <tr><th>层级</th><th>推荐技术选型</th><th>理由</th></tr>
+  <tr><td>浏览器控制层</td><td>CDP 直连（WebSocket + chrome-remote-interface / pychrome）</td><td>15ms 级延迟、全权限 DOM 访问、零中间层损耗</td></tr>
+  <tr><td>浏览器扩展</td><td>Manifest V3 + chrome.debugger API</td><td>官方标准、登录态继承、标签页管理</td></tr>
+  <tr><td>桥接服务</td><td>Node.js（TypeScript）或 Python</td><td>Node.js 生态与 CDP 契合度最高；Python 生态利于 LLM 集成</td></tr>
+  <tr><td>Agent 框架</td><td>自研轻量 Agent Loop + LangChain/Vercel AI SDK</td><td>自主可控核心循环，复用成熟 LLM 编排能力</td></tr>
+  <tr><td>多 Agent 通信</td><td>事件总线（EventEmitter / 消息队列）</td><td>松耦合、可独立迭代</td></tr>
+  <tr><td>LLM 接入</td><td>OpenAI 兼容接口 + 多 Provider 适配</td><td>模型不可知，支持 OpenAI / Anthropic / Google / 本地 Ollama</td></tr>
+  <tr><td>Agent 接入协议</td><td>MCP（Model Context Protocol）</td><td>2026 年事实标准，兼容主流编程 Agent</td></tr>
+  <tr><td>站点适配器</td><td>JSON Schema 定义 + 浏览器内 JS 执行</td><td>声明式定义、低门槛社区贡献</td></tr>
+</table>
+
+<hr>
+
+<!-- ==================== 实施路线图 ==================== -->
+<h2 id="roadmap">实施路线图</h2>
+
+<h3>阶段一：MVP（4–6 周）</h3>
+<ul>
+  <li>实现 CDP 直连 + 浏览器扩展基础架构，完成登录态继承</li>
+  <li>实现核心浏览器操作原语：导航、点击、输入、截图、DOM 读取、元素提取</li>
+  <li>搭建单 Agent Loop（感知 → 决策 → 执行 → 验证）</li>
+  <li>提供 CLI 接口，兼容至少一种现有 Agent</li>
+  <li>基础安全机制：操作日志、标签页标识</li>
+</ul>
+
+<h3>阶段二：差异化能力（4–6 周）</h3>
+<ul>
+  <li>引入多 Agent 协作架构（Planner / Navigator / Validator）</li>
+  <li>实现混合感知（DOM 优先 + 视觉兜底的自动切换策略）</li>
+  <li>搭建站点适配器框架，预置 5–10 个高频站点适配器</li>
+  <li>增加 MCP Server 接口，兼容 Claude Code / Cursor 等</li>
+  <li>强化安全：操作前确认、域名白名单、敏感操作分级</li>
+</ul>
+
+<h3>阶段三：智能化与生态（6–8 周）</h3>
+<ul>
+  <li>实现自愈机制：Agent 执行中自动生成新适配器并沉淀为领域技能</li>
+  <li>引入循环检测与停滞恢复</li>
+  <li>消息压缩机制（长任务上下文管理）</li>
+  <li>开放适配器社区贡献机制</li>
+  <li>提供 REST API 接口，支持自定义应用集成</li>
+  <li>操作审计日志与回放/回滚能力</li>
+</ul>
+
+<div class="callout callout-success">
+  <div class="callout-title">✓ 核心结论</div>
+  <p>Kimi WebBridge 的技术路线（CDP 直连 + 本地浏览器 + 登录态继承 + DOM 语义解析）是经过验证的优秀方案，但其闭源属性和单一 Agent 绑定限制了可扩展性。自研工具应在此基础上，融合开源生态的最佳实践——<strong>Browser Use 的混合感知与 Agent Loop、Nanobrowser 的多 Agent 协作、bb-browser 的站点适配器降 Token、Browser Harness 的自愈机制、Stagehand 的动作缓存</strong>——打造一个开放、可扩展、低成本、高可靠的浏览器操作助手。</p>
+</div>
+
+<hr>
+
+<!-- ==================== 参考来源 ==================== -->
+<h2 id="sources">参考来源</h2>
+
+<ol class="source-list">
+  <li>Kimi WebBridge 官方介绍页 — <a href="https://www.kimi.com/features/webbridge" target="_blank">https://www.kimi.com/features/webbridge</a></li>
+  <li>Kimi WebBridge 产品介绍（帮助中心） — <a href="https://www.kimi.com/zh-cn/help/kimi-webbridge/kimi-webbridge-introduction" target="_blank">https://www.kimi.com/zh-cn/help/kimi-webbridge/kimi-webbridge-introduction</a></li>
+  <li>Kimi 推出超实用插件！让 AI 真正像你一样操作浏览器（腾讯云） — <a href="https://cloud.tencent.com/developer/news/3946010" target="_blank">https://cloud.tencent.com/developer/news/3946010</a></li>
+  <li>让 Kimi Work 操作你的浏览器：WebBridge 实战指南（CSDN） — <a href="https://sgknight.blog.csdn.net/article/details/162840496" target="_blank">https://sgknight.blog.csdn.net/article/details/162840496</a></li>
+  <li>Kimi WebBridge：基于 CDP 的浏览器原生 AI 操作引擎（CSDN 文库） — <a href="https://wenku.csdn.net/column/8hpu7pi29kb" target="_blank">https://wenku.csdn.net/column/8hpu7pi29kb</a></li>
+  <li>Kimi WebBridge 初体验（什么值得买） — <a href="https://post.m.smzdm.com/p/ae608k64/" target="_blank">https://post.m.smzdm.com/p/ae608k64/</a></li>
+  <li>Kimi WebBridge：让 AI 编程助手直接操控你的浏览器（腾讯云） — <a href="https://cloud.tencent.com/developer/article/2671357" target="_blank">https://cloud.tencent.com/developer/article/2671357</a></li>
+  <li>Browser Use 完全指南（SegmentFault） — <a href="https://segmentfault.com/a/1190000048064933" target="_blank">https://segmentfault.com/a/1190000048064933</a></li>
+  <li>Best AI Agent for Browser Automation: Top Tools（TechieHub） — <a href="https://techiehub.blog/best-ai-agent-for-browser-automation-top-tools/" target="_blank">https://techiehub.blog/best-ai-agent-for-browser-automation-top-tools/</a></li>
+  <li>AI Browser Automation in 2026: Top 6 Tools Compared（AwesomeAgents） — <a href="https://www.awesomeagents.ai/tools/best-ai-browser-automation-tools-2026/" target="_blank">https://www.awesomeagents.ai/tools/best-ai-browser-automation-tools-2026/</a></li>
+  <li>Stagehand vs Browser Use vs Playwright 对比（NxCode） — <a href="https://www.nxcode.io/zh/resources/news/stagehand-vs-browser-use-vs-playwright-ai-browser-automation-2026" target="_blank">https://www.nxcode.io/zh/resources/news/stagehand-vs-browser-use-vs-playwright-ai-browser-automation-2026</a></li>
+  <li>Browser Use vs Skyvern vs Stagehand 比较（Qiita） — <a href="https://qiita.com/agdexai/items/e581fedd38a770f7d2ff" target="_blank">https://qiita.com/agdexai/items/e581fedd38a770f7d2ff</a></li>
+  <li>揭秘 Nanobrowser：多智能体架构如何重构网页自动化（GitCode） — <a href="https://blog.gitcode.com/354143f5761d434e6cc13a9c652da23e.html" target="_blank">https://blog.gitcode.com/354143f5761d434e6cc13a9c652da23e.html</a></li>
+  <li>Nanobrowser Firefox 扩展页面 — <a href="https://addons.mozilla.org/zh-CN/firefox/addon/nanobrowser-ai-web-agent/" target="_blank">https://addons.mozilla.org/zh-CN/firefox/addon/nanobrowser-ai-web-agent/</a></li>
+  <li>Browser Harness 开源报道（腾讯新闻） — <a href="http://news.qq.com/rain/a/20260427A06P2C00" target="_blank">http://news.qq.com/rain/a/20260427A06P2C00</a></li>
+  <li>bb-browser 让 AI 接管浏览器（腾讯云） — <a href="https://cloud.tencent.com/developer/article/2670252" target="_blank">https://cloud.tencent.com/developer/article/2670252</a></li>
+  <li>OpenBrowser 深度解析（CSDN） — <a href="https://blog.csdn.net/yanceyxin/article/details/163221415" target="_blank">https://blog.csdn.net/yanceyxin/article/details/163221415</a></li>
+  <li>基于 CDP 协议的浏览器自动化实践（腾讯云） — <a href="https://cloud.tencent.com/developer/article/2682774" target="_blank">https://cloud.tencent.com/developer/article/2682774</a></li>
+  <li>Browser-Use 源码深度解析（头条） — <a href="http://m.toutiao.com/group/7644764487433683471/" target="_blank">http://m.toutiao.com/group/7644764487433683471/</a></li>
+  <li>2026 年开源 Agent 工具包选型指南（头条） — <a href="http://m.toutiao.com/group/7650124256868581939/" target="_blank">http://m.toutiao.com/group/7650124256868581939/</a></li>
+  <li>AI browser agent 百科（AIWiki） — <a href="https://aiwiki.ai/wiki/ai_browser_agent" target="_blank">https://aiwiki.ai/wiki/ai_browser_agent</a></li>
+  <li>Browser Agents Battle May 2026（Web3AI Blog） — <a href="https://www.web3aiblog.com/blog/browser-agents-battle-operator-vs-claude-computer-use-vs-browser-use-may-2026" target="_blank">https://www.web3aiblog.com/blog/browser-agents-battle-operator-vs-claude-computer-use-vs-browser-use-may-2026</a></li>
+</ol>
+
+</div>
+</body>
+</html>

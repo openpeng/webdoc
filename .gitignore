@@ -1,0 +1,12 @@
+# System files
+.trae-html-share-packages/
+*.zip
+
+# Node.js
+node_modules/
+dist/
+*.log
+
+# IDE
+.vscode/
+.idea/

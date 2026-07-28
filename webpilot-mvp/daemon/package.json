@@ -1,0 +1,22 @@
+{
+  "name": "webpilot-daemon",
+  "version": "0.1.0",
+  "description": "WebPilot 本地桥接 Daemon — WebSocket 转发 MCP Server 指令到 Chrome 扩展",
+  "type": "module",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.0"
+  },
+  "keywords": ["websocket", "daemon", "browser", "bridge"],
+  "license": "MIT"
+}

@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 260px; padding: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif;
+      background: #0b0f19; color: #e2e8f0; font-size: 13px;
+    }
+    .header {
+      display: flex; align-items: center; gap: 8px; margin-bottom: 14px;
+    }
+    .logo { width: 24px; height: 24px; border-radius: 6px; background: #3b82f6; }
+    .title { font-size: 15px; font-weight: 700; }
+    .status-card {
+      background: #131a2b; border: 1px solid #253354; border-radius: 10px;
+      padding: 14px; margin-bottom: 12px; text-align: center;
+    }
+    .status-dot {
+      width: 10px; height: 10px; border-radius: 50%;
+      display: inline-block; margin-right: 6px;
+    }
+    .status-connected .status-dot { background: #22c55e; box-shadow: 0 0 8px rgba(34,197,94,0.4); }
+    .status-disconnected .status-dot { background: #ef4444; }
+    .status-pending .status-dot { background: #f59e0b; animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
+    .status-text { font-size: 14px; font-weight: 600; margin-bottom: 4px; }
+    .status-detail { font-size: 11px; color: #7a8ba7; }
+    .actions { display: flex; gap: 6px; margin-bottom: 12px; }
+    .btn {
+      flex: 1; padding: 8px; border: none; border-radius: 6px;
+      font-size: 12px; font-weight: 600; cursor: pointer; font-family: inherit;
+    }
+    .btn-primary { background: #3b82f6; color: #fff; }
+    .btn-primary:hover { background: #2563eb; }
+    .btn-primary:disabled { background: #1e3a5f; color: #7a8ba7; cursor: not-allowed; }
+    .btn-secondary { background: #131a2b; color: #e2e8f0; border: 1px solid #253354; }
+    .btn-secondary:hover { background: #1a2340; }
+    .info-row {
+      display: flex; justify-content: space-between; padding: 6px 0;
+      border-bottom: 1px solid #1a2340; font-size: 11px;
+    }
+    .info-row:last-child { border-bottom: none; }
+    .info-label { color: #7a8ba7; }
+    .info-value { color: #e2e8f0; font-weight: 500; }
+    .footer { margin-top: 10px; font-size: 10px; color: #7a8ba7; text-align: center; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="logo"></div>
+    <div class="title">WebPilot</div>
+  </div>
+
+  <div id="statusCard" class="status-card status-disconnected">
+    <div class="status-text">
+      <span class="status-dot"></span>
+      <span id="statusText">未连接</span>
+    </div>
+    <div class="status-detail" id="statusDetail">请启动本地 MCP 服务</div>
+  </div>
+
+  <div class="actions">
+    <button id="connectBtn" class="btn btn-primary">连接</button>
+    <button id="disconnectBtn" class="btn btn-secondary" disabled>断开</button>
+  </div>
+
+  <div class="info">
+    <div class="info-row">
+      <span class="info-label">WS 地址</span>
+      <span class="info-value" id="wsUrl">ws://localhost:8765</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">已管理标签</span>
+      <span class="info-value" id="tabCount">0</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">CDP 端口</span>
+      <span class="info-value" id="cdpPort">9222</span>
+    </div>
+    <div class="info-row">
+      <span class="info-label">版本</span>
+      <span class="info-value">v0.1.0</span>
+    </div>
+  </div>
+
+  <div class="footer">WebPilot · MCP 浏览器操作助手</div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
