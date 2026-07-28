@@ -1,138 +1,183 @@
-# WebPilot MVP — AI 浏览器操作助手
+# WebPilot MVP
 
-浏览器插件 + MCP Server + 本地桥接 Daemon 的极简组合，让 AI Agent 可以操控浏览器。
+WebPilot lets an MCP-compatible AI client control Chrome through a locally installed extension.
 
-## 架构
+## Architecture
 
 ```
-┌─────────────────┐      WebSocket       ┌──────────────┐      Stdio       ┌─────────────────┐
-│  Chrome 扩展     │ ◄──────────────────► │   Daemon     │ ◄──────────────► │   MCP Server    │
-│  (操作浏览器)     │   ws://localhost:8765 │  (消息中转)   │                  │ (供 AI Agent 调用)│
-└─────────────────┘                      └──────────────┘                  └─────────────────┘
+AI client -- stdio --> MCP Server (also WebSocket bridge) <-- ws://localhost:8765 --> Chrome extension
 ```
 
-- **浏览器扩展** (`browser-extension/`): 通过 Chrome Extension API 执行导航、点击、输入、截图等操作
-- **Daemon** (`daemon/`): WebSocket 服务端，负责扩展与 MCP Server 之间的消息转发
-- **MCP Server** (`mcp-server/`): 基于 Model Context Protocol，向 Claude Code / Cursor / Codex 等 AI 工具暴露浏览器操作能力
+The MCP Server now includes the WebSocket bridge. Do not start the legacy `daemon/` package: one MCP process is the only required local service.
 
-## 快速开始
+## Setup
 
-### 1. 启动 Daemon
+1. Install the extension from `browser-extension/` through `chrome://extensions/` in developer mode.
+2. Install and build the MCP Server:
 
-```bash
-cd daemon
-npm install
-npm run build
-npm start
-```
+   ```bash
+   cd mcp-server
+   npm install
+   npm run build
+   ```
 
-Daemon 默认监听 `ws://localhost:8765`。
+3. Add the compiled MCP Server to your AI client:
 
-### 2. 安装浏览器扩展
+   ```json
+   {
+     "mcpServers": {
+       "webpilot": {
+         "command": "node",
+         "args": ["/absolute/path/to/webpilot-mvp/mcp-server/dist/server.js"]
+       }
+     }
+   }
+   ```
 
-1. 打开 Chrome，进入 `chrome://extensions/`
-2. 开启右上角「开发者模式」
-3. 点击「加载已解压的扩展程序」
-4. 选择 `browser-extension` 文件夹
-5. 扩展图标将出现在工具栏，点击可查看连接状态
+4. Start or reconnect the MCP client. The extension connects to the bridge built into the MCP process at `ws://localhost:8765` automatically.
 
-### 3. 启动 MCP Server
+The extension attempts a connection after installation, Chrome startup, and an
+unexpected disconnect. It keeps an established connection alive with a 20-second
+heartbeat. If the MCP process starts later, it retries every minute.
+Clicking **Disconnect** intentionally disables automatic reconnection; use
+**Connect** once to enable it again.
 
-```bash
-cd mcp-server
-npm install
-npm run build
-npm start
-```
+## Environment variables
 
-MCP Server 通过 stdio 与 AI Agent 通信，同时通过 WebSocket 连接到 Daemon。
+| Variable | Default | Description |
+| --- | --- | --- |
+| `WEBPILOT_PORT` | `8765` | Port used by the MCP Server's built-in WebSocket bridge. |
 
-## MCP 接入配置
+## Tools
 
-### Claude Code
+| Tool | Description |
+| --- | --- |
+| `navigate` | Open a URL in a browser tab. |
+| `get_page_info` | Read the page title, URL, and interactive elements. |
+| `inspect` | Explore page or focused-editor controls, including unnamed clickable containers; returns reusable `@wpN` references and viewport bounds. |
+| `probe_selector` | Test a locator once without the normal visibility wait. |
+| `get_page_text` | Read the main page text without arbitrary JavaScript or `eval`. |
+| `click` | Click a CSS selector. |
+| `click_at` | Click a visible actionable element at coordinates returned by `inspect` or a fresh screenshot. |
+| `type` | Type text into a CSS selector. |
+| `screenshot` | Capture the visible browser area. |
+| `execute_js` | Deprecated and disabled; use the restricted observation tools instead. |
+| `list_tabs` | List browser tabs. |
+| `wait_for` | Wait until a locator is visible, attached, or hidden. |
+| `get_action_log` | Read recent action durations and errors (without entered text or scripts). |
+| `list_adapters` / `extract_with_adapter` | Discover and use a specific read-only site adapter. |
+| `extract_with_best_adapter` | Select the most specific adapter and fall back to a generic summary with evidence. |
+| `get_adapter_health` | Inspect adapter success, latency, and recent DOM-extraction errors. |
+| `start_task` | Start a deterministic task session and capture the initial page state. |
+| `observe_task` | Refresh the task's page observation and fingerprint. |
+| `run_task_step` | Execute one action, then re-observe and run loop detection. |
+| `verify_task_step` | Evaluate a deterministic completion assertion. |
+| `get_task` / `get_task_log` / `cancel_task` | Inspect evidence or stop a task session. |
+| `create_task_checkpoint` / `restore_task_checkpoint` | Save or restore a soft URL/page-fingerprint checkpoint. |
+| `set_task_plan` / `run_planned_step` | Store an Agent plan and execute one verified plan step. |
+| `save_task_as_workflow` / `start_workflow` | Turn a completed plan into a parameterized, reusable workflow. |
+| `recommend_workflows` | Recommend completed workflows matching the current page's domain; it never executes one. |
 
-在 Claude Code 的配置文件中添加：
+## Reliable interaction
+
+`click` and `type` wait for a visible, stable target before acting (10 seconds by
+default). In addition to CSS selectors, the following locator formats are
+supported:
+
+- `@e0`: a reference returned by `get_page_info`; use it before the page changes.
+- `@wp1`: a stable reference returned by `inspect`; valid until navigation or removal of the target node.
+- `text=Continue`: an exact visible interactive-element name.
+- `role=button[name="Continue"]`: an accessible role and name.
+
+Use `wait_for` between actions when the next UI state matters. On a timeout, it
+returns the latest page metadata and a small interactive-element snapshot to aid
+diagnosis. `get_action_log` provides a bounded, redacted operation timeline.
+
+For a control that is not exposed through accessibility metadata, call
+`inspect` with `scope: "focused"` or `scope: "composer"` before guessing CSS.
+It includes visible unnamed controls that appear actionable because of their
+native semantics, pointer cursor, or common test/action attributes. Use
+`probe_selector` for an immediate locator check; it never performs the normal
+10-second visibility retry. As a last resort, use `click_at` only with bounds
+from the latest `inspect` result or screenshot.
+
+## Agent task loop
+
+Use the task tools for multi-step work instead of issuing a long chain of raw
+actions. A task starts with `start_task`, then repeats `observe_task` → one
+`run_task_step` → `verify_task_step`. The server records URL/DOM fingerprints,
+automatically pauses after three identical action/page pairs or five unchanged
+steps, and writes redacted JSONL evidence to `.webpilot-task-logs/` (override
+with `WEBPILOT_TASK_LOG_DIR`).
+
+On an action error or failed deterministic verification, the task runtime saves
+a failure screenshot in the same evidence directory when browser capture is
+available. Checkpoints are deliberately **soft**: they restore the URL and
+compare the page fingerprint, but never claim to restore form input, server
+state, or prior side effects.
+
+`verify_task_step` supports `url_includes`, `url_equals`, `title_includes`,
+`text_present`, `text_absent`, `locator_visible`, `locator_hidden`, and
+`interactive_count_at_least` assertions. Set `completeOnPass: true` only for
+the final completion check.
+
+## Reusable plans
+
+An Agent can call `set_task_plan` with steps of the following shape:
 
 ```json
 {
-  "mcpServers": {
-    "webpilot": {
-      "command": "node",
-      "args": ["/absolute/path/to/webpilot-mvp/mcp-server/dist/server.js"],
-      "env": {
-        "WEBPILOT_DAEMON_URL": "ws://localhost:8765"
-      }
-    }
-  }
+  "objective": "Search for the requested term",
+  "action": { "action": "type", "selector": "role=textbox[name=\"Search\"]", "text": "{{query}}" },
+  "verification": { "kind": "locator_visible", "selector": "role=button[name=\"Search\"]" }
 }
 ```
 
-### Cursor
+`run_planned_step` performs the action, re-observes, and verifies it; only a
+passing verification advances the plan. When every planned step passes, call
+`save_task_as_workflow`. Workflow storage rejects literal `type` text: use
+`{{parameter}}` placeholders and provide their values through `start_workflow`.
+This keeps reusable experience separate from task-specific or sensitive input.
+Saved workflows also retain the domains observed during their completed run.
+Use `recommend_workflows` on a page to retrieve only matching experience before
+choosing whether to instantiate a workflow.
 
-在 Cursor Settings → MCP 中添加：
+## Site adapters
 
-- **Type**: Command
-- **Command**: `node /absolute/path/to/webpilot-mvp/mcp-server/dist/server.js`
+Adapters return compact, structured, read-only data for frequently visited pages;
+they do not expose arbitrary JavaScript. Start with `list_adapters`, or use
+`extract_with_best_adapter` to prefer the most specific matching adapter. If a
+site-specific extractor breaks after a DOM change, the tool falls back to the
+generic summary and returns the failed adapter list. `get_adapter_health` makes
+those failures and latency visible so an adapter can be repaired deliberately.
+See `docs/adapter-authoring.md` for the restricted declarative adapter contract.
 
-### 环境变量
+## Security boundary
 
-| 变量名 | 默认值 | 说明 |
-|--------|--------|------|
-| `WEBPILOT_DAEMON_URL` | `ws://localhost:8765` | MCP Server 连接 Daemon 的地址 |
-| `WEBPILOT_PORT` | `8765` | Daemon 监听的端口 |
+The extension popup enforces these controls locally, so an MCP client cannot
+bypass them:
 
-## 可用工具
+- **Domain allowlist:** enter one domain per line (or separate by commas). It
+  applies to Agent-controlled tabs and blocks cross-domain redirects by taking
+  the tab to a blank page. An empty list means unrestricted domains.
+- **Read-only mode:** permits observation, screenshots, waits, and navigation;
+  blocks clicking and typing, including coordinate clicks.
+- **Emergency stop:** disconnects the bridge, disables automatic reconnection,
+  and rejects new remote commands. Select **Connect** to resume deliberately.
 
-MCP Server 暴露以下工具供 AI 调用：
+## Browser tab group
 
-| 工具名 | 功能 |
-|--------|------|
-| `navigate` | 打开指定 URL |
-| `get_page_info` | 获取页面标题、URL、可交互元素列表 |
-| `click` | 点击指定 CSS 选择器的元素 |
-| `type` | 在输入框中输入文本 |
-| `screenshot` | 截取当前页面可见区域 |
-| `execute_js` | 执行 JavaScript 代码 |
-| `list_tabs` | 列出所有标签页 |
+WebPilot puts every tab it operates into one Chrome tab group named
+**webpilot**. The extension reuses this group after restart; if a target tab is
+in another window, it moves that tab into the group's window so the browser
+still contains only one WebPilot group.
 
-## 使用流程
+## Notes
 
-1. 确保 Daemon 已启动（`npm start`）
-2. 在 Chrome 中打开 WebPilot 扩展，点击「连接」按钮
-3. 启动 MCP Server（由 AI Agent 自动管理）
-4. 在 AI Agent 中直接调用浏览器操作工具
-
-## 开发
-
-```bash
-# Daemon 热重载
-cd daemon && npm run dev
-
-# MCP Server 热重载
-cd mcp-server && npm run dev
-```
-
-## 文件结构
-
-```
-webpilot-mvp/
-├── browser-extension/
-│   ├── manifest.json      # 扩展配置
-│   ├── popup.html         # 弹出面板 UI
-│   ├── popup.js           # 面板交互逻辑
-│   ├── background.js      # Service Worker（WebSocket + CDP 操作）
-│   └── icons/             # 扩展图标
-├── daemon/
-│   ├── src/index.ts       # WebSocket 中转服务
-│   ├── package.json
-│   └── tsconfig.json
-├── mcp-server/
-│   ├── src/server.ts      # MCP Server 实现
-│   ├── package.json
-│   └── tsconfig.json
-└── README.md
-```
-
-## 许可证
-
-MIT
+- The extension source changed to include a request ID in every response. If it was already loaded in Chrome, click Reload on its card in `chrome://extensions/` before connecting.
+- Reload the extension after updating `page-tools.js`; it supplies the page-side
+  locator, wait, and diagnostics helpers.
+- `execute_js` is deliberately disabled. The extension uses a fixed set of
+  isolated-world page tools so page CSP and arbitrary-code execution do not
+  affect control exploration.
+- The `daemon/` directory is retained only as legacy source and should not be started with this version.

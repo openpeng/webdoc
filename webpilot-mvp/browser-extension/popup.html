@@ -45,6 +45,15 @@
     .info-row:last-child { border-bottom: none; }
     .info-label { color: #7a8ba7; }
     .info-value { color: #e2e8f0; font-weight: 500; }
+    .security { margin-top: 12px; border-top: 1px solid #1a2340; padding-top: 12px; }
+    .security-title { font-size: 12px; font-weight: 700; margin-bottom: 8px; }
+    label { display: block; color: #aab7cf; font-size: 11px; margin: 8px 0 4px; }
+    textarea { width: 100%; min-height: 52px; resize: vertical; padding: 7px; border-radius: 6px; border: 1px solid #253354; background: #0b0f19; color: #e2e8f0; font: inherit; font-size: 11px; }
+    .toggle { display: flex; align-items: center; gap: 6px; margin: 9px 0; font-size: 11px; color: #e2e8f0; cursor: pointer; }
+    .toggle input { accent-color: #3b82f6; }
+    .security-actions { display: flex; gap: 6px; }
+    .btn-danger { background: #7f1d1d; color: #fff; }
+    .btn-danger:hover { background: #991b1b; }
     .footer { margin-top: 10px; font-size: 10px; color: #7a8ba7; text-align: center; }
   </style>
 </head>
@@ -83,6 +92,17 @@
     <div class="info-row">
       <span class="info-label">版本</span>
       <span class="info-value">v0.1.0</span>
+    </div>
+  </div>
+
+  <div class="security">
+    <div class="security-title">安全边界</div>
+    <label for="allowlistInput">域名白名单（每行或逗号分隔；留空表示不限）</label>
+    <textarea id="allowlistInput" placeholder="example.com&#10;docs.example.com"></textarea>
+    <label class="toggle"><input id="readOnlyInput" type="checkbox"> 只读模式（禁止点击、输入和执行脚本）</label>
+    <div class="security-actions">
+      <button id="saveSecurityBtn" class="btn btn-secondary">保存策略</button>
+      <button id="stopBtn" class="btn btn-danger">一键停止</button>
     </div>
   </div>
 

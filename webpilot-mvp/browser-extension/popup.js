@@ -6,6 +6,10 @@ const statusDetail = document.getElementById('statusDetail');
 const connectBtn = document.getElementById('connectBtn');
 const disconnectBtn = document.getElementById('disconnectBtn');
 const tabCountEl = document.getElementById('tabCount');
+const allowlistInput = document.getElementById('allowlistInput');
+const readOnlyInput = document.getElementById('readOnlyInput');
+const saveSecurityBtn = document.getElementById('saveSecurityBtn');
+const stopBtn = document.getElementById('stopBtn');
 
 const WS_URL = 'ws://localhost:8765';
 
@@ -23,10 +27,16 @@ function setStatus(state, detail) {
     statusDetail.textContent = detail || '正在连接本地服务';
     connectBtn.disabled = true;
     disconnectBtn.disabled = true;
+  } else if (state === 'stopped') {
+    statusCard.classList.add('status-disconnected');
+    statusText.textContent = '已停止';
+    statusDetail.textContent = detail || '已阻止所有远程浏览器操作';
+    connectBtn.disabled = false;
+    disconnectBtn.disabled = true;
   } else {
     statusCard.classList.add('status-disconnected');
     statusText.textContent = '未连接';
-    statusDetail.textContent = detail || '请启动本地 MCP 服务';
+    statusDetail.textContent = detail || '正在等待或重连本地 MCP 服务';
     connectBtn.disabled = false;
     disconnectBtn.disabled = true;
   }
@@ -34,6 +44,11 @@ function setStatus(state, detail) {
 
 // 加载时查询后台的连接状态
 chrome.runtime.sendMessage({ type: 'getStatus' }, (res) => {
+  if (res?.security?.emergencyStopped) {
+    setStatus('stopped');
+    tabCountEl.textContent = 0;
+    return;
+  }
   if (res && res.connected) {
     setStatus('connected', `已连接 ${res.wsUrl || WS_URL}`);
     tabCountEl.textContent = res.tabCount || 0;
@@ -41,6 +56,12 @@ chrome.runtime.sendMessage({ type: 'getStatus' }, (res) => {
     setStatus('disconnected');
     tabCountEl.textContent = 0;
   }
+});
+
+chrome.runtime.sendMessage({ type: 'getSecuritySettings' }, (settings) => {
+  if (!settings) return;
+  allowlistInput.value = (settings.allowedDomains || []).join('\n');
+  readOnlyInput.checked = settings.readOnlyMode === true;
 });
 
 connectBtn.addEventListener('click', () => {
@@ -59,6 +80,26 @@ disconnectBtn.addEventListener('click', () => {
   chrome.runtime.sendMessage({ type: 'disconnect' }, () => {
     setStatus('disconnected');
     tabCountEl.textContent = 0;
+  });
+});
+
+saveSecurityBtn.addEventListener('click', () => {
+  chrome.runtime.sendMessage({
+    type: 'saveSecuritySettings',
+    allowedDomains: allowlistInput.value,
+    readOnlyMode: readOnlyInput.checked
+  }, (res) => {
+    if (res?.success) setStatus(statusCard.classList.contains('status-connected') ? 'connected' : 'disconnected', '安全策略已保存');
+    else setStatus('disconnected', res?.error || '保存安全策略失败');
+  });
+});
+
+stopBtn.addEventListener('click', () => {
+  chrome.runtime.sendMessage({ type: 'emergencyStop' }, (res) => {
+    if (res?.success) {
+      setStatus('stopped');
+      tabCountEl.textContent = 0;
+    }
   });
 });
 
