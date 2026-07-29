@@ -257,6 +257,13 @@
         if (!element) return null;
         if (field.attribute === 'href') return element.href || element.getAttribute('href');
         if (field.attribute === 'content') return element.getAttribute('content');
+        if (field.computed) {
+          try {
+            const fn = new Function('el', `return (${field.computed});`);
+            return String(fn(element) ?? '').slice(0, 500);
+          } catch (e) { return null; }
+        }
+        if (field.attribute) return element.getAttribute(field.attribute);
         return normalise(element.innerText || element.textContent).slice(0, 500);
       };
       if (field.multiple) return matches.slice(0, Math.max(1, Math.min(field.limit || 20, 100))).map(value).filter(Boolean);
@@ -274,7 +281,91 @@
         return item;
       });
     }
+    if (spec?.table) {
+      const tableSpec = spec.table;
+      try {
+        const tableEl = tableSpec.selector ? document.querySelector(tableSpec.selector) : document.querySelector('table');
+        if (!tableEl) {
+          data.table = { headers: [], rows: [], error: `No table found for selector: ${tableSpec.selector || 'table'}` };
+        } else {
+          const headerSelector = tableSpec.header || 'thead th, tr:first-child th';
+          const rowSelector = tableSpec.rows || 'tbody tr';
+          const cellSelector = tableSpec.cells || 'td';
+          const limit = Math.max(1, Math.min(tableSpec.limit || 100, 500));
+          const headers = Array.from(tableEl.querySelectorAll(headerSelector)).map(th => normalise(th.innerText || th.textContent));
+          const rows = Array.from(tableEl.querySelectorAll(rowSelector)).slice(0, limit).map(tr =>
+            Array.from(tr.querySelectorAll(cellSelector)).map(td => normalise(td.innerText || td.textContent))
+          );
+          data.table = { headers, rows, rowCount: rows.length, columnCount: headers.length || (rows[0]?.length || 0) };
+        }
+      } catch (error) { throw new Error(`Invalid table selector: ${error.message}`); }
+    }
     return { url: location.href, title: document.title, extractedAt: new Date().toISOString(), data };
+  };
+
+  // ---- 方案 2: 受控 evaluate ----
+  const FORBIDDEN_PATTERNS = [
+    /\beval\s*\(/,
+    /\bFunction\s*\(/,
+    /\bfetch\s*\(/,
+    /\bXMLHttpRequest\b/,
+    /\bnavigator\s*\.\s*sendBeacon\b/,
+    /\bdocument\s*\.\s*cookie\b/,
+    /\bwindow\s*\.\s*open\b/,
+    /\blocation\s*\.\s*(assign|replace)\b/,
+    /\bimport\s*\(/,
+  ];
+
+  const safeEvaluate = (expression, options = {}) => {
+    if (typeof expression !== 'string' || !expression.trim()) {
+      return { error: 'A non-empty expression is required' };
+    }
+    if (expression.length > 2000) {
+      return { error: `Expression too long (${expression.length} chars, max 2000)` };
+    }
+    for (const pattern of FORBIDDEN_PATTERNS) {
+      if (pattern.test(expression)) {
+        return { error: `Expression contains forbidden pattern: ${pattern.source}` };
+      }
+    }
+    const allowedGlobals = options.globals || [];
+    const sandbox = {};
+    for (const g of allowedGlobals) {
+      if (g in globalThis) {
+        try { sandbox[g] = globalThis[g]; } catch { /* some globals throw on access */ }
+      }
+    }
+    sandbox.document = document;
+    sandbox.location = { href: location.href, hostname: location.hostname, pathname: location.pathname, title: document.title };
+    sandbox.window = sandbox;
+    sandbox.globalThis = sandbox;
+    const argNames = Object.keys(sandbox);
+    const argValues = Object.values(sandbox);
+    try {
+      const fn = new Function(...argNames, `"use strict"; return (${expression});`);
+      const timeoutMs = Math.max(100, Math.min(Number(options.timeoutMs) || 3000, 10000));
+      const result = fn.apply(null, argValues);
+      const safe = value => {
+        if (value === null || value === undefined) return value;
+        const t = typeof value;
+        if (t === 'string' || t === 'number' || t === 'boolean') return value;
+        if (t === 'function') return `[Function: ${value.name || 'anonymous'}]`;
+        if (Array.isArray(value)) return value.slice(0, 100).map(safe);
+        if (t === 'object') {
+          if (value instanceof Element) {
+            const rect = value.getBoundingClientRect();
+            return { tagName: value.tagName.toLowerCase(), text: normalise(value.innerText || '').slice(0, 200), id: value.id || undefined, className: value.className || undefined, box: { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) } };
+          }
+          try { return JSON.parse(JSON.stringify(value, (k, v) => typeof v === 'function' ? `[Function]` : v)); }
+          catch { return String(value).slice(0, 500); }
+        }
+        return String(value).slice(0, 500);
+      };
+      const safeResult = safe(result);
+      return { result: safeResult, type: t === 'object' ? (Array.isArray(result) ? 'array' : 'object') : t, url: location.href, title: document.title };
+    } catch (e) {
+      return { error: `Evaluation failed: ${e.message}`, expression: expression.slice(0, 200) };
+    }
   };
 
   const getResourceList = (options = {}) => {
@@ -312,6 +403,7 @@
     verify,
     extract,
     getResourceList,
+    safeEvaluate,
     async waitFor(selector, state = 'visible', timeoutMs = 10000, stableMs = 150) {
       const startedAt = performance.now();
       const deadline = startedAt + timeoutMs;

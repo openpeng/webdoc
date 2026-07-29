@@ -18,9 +18,12 @@ let cdpTabId = null;
 const MAX_OPERATION_LOGS = 100;
 const operationLogs = [];
 const READ_ONLY_BLOCKED_COMMANDS = new Set(['click', 'clickAt', 'type']);
+// CDP Network capture state: per-tab buffers of captured resources
+const networkCaptures = new Map(); // tabId -> { resources: [], active: boolean, filter: object }
 const TAB_SCOPED_COMMANDS = new Set([
   'navigate', 'click', 'clickAt', 'type', 'waitFor', 'verify', 'extract',
-  'getPageInfo', 'inspect', 'probeSelector', 'getPageText', 'screenshot', 'getResources'
+  'getPageInfo', 'inspect', 'probeSelector', 'getPageText', 'screenshot', 'getResources',
+  'evaluate', 'extractTable', 'startNetworkCapture', 'stopNetworkCapture', 'getNetworkResources'
 ]);
 
 function normalizeAllowedDomains(value) {
@@ -197,6 +200,12 @@ function disconnectWebSocket() {
   webpilotTabGroupId = null;
   cdpSocket = null;
   cdpTabId = null;
+  // Stop all network captures
+  for (const [tabId, capture] of networkCaptures) {
+    capture.active = false;
+    try { chrome.debugger.detach({ tabId }); } catch { /* not attached */ }
+  }
+  networkCaptures.clear();
   broadcastStatus(false);
 }
 
@@ -298,6 +307,21 @@ async function handleDaemonMessage(msg) {
       break;
     case 'getResources':
       await cmdGetResources(msg.options, msg.tabId, msg.requestId);
+      break;
+    case 'evaluate':
+      await cmdEvaluate(msg.expression, msg.options, msg.tabId, msg.requestId);
+      break;
+    case 'extractTable':
+      await cmdExtractTable(msg.spec, msg.tabId, msg.requestId);
+      break;
+    case 'startNetworkCapture':
+      await cmdStartNetworkCapture(msg.filter, msg.tabId, msg.requestId);
+      break;
+    case 'stopNetworkCapture':
+      await cmdStopNetworkCapture(msg.tabId, msg.requestId);
+      break;
+    case 'getNetworkResources':
+      await cmdGetNetworkResources(msg.options, msg.tabId, msg.requestId);
       break;
     case 'screenshot':
       await cmdScreenshot(msg.tabId, msg.requestId);
@@ -571,6 +595,153 @@ async function cmdGetResources(options, tabId, requestId) {
   } catch (e) {
     logOperation({ action: 'getResources', tabId: target, success: false, error: e.message, durationMs: Date.now() - startedAt });
     sendToDaemon({ type: 'getResourcesResult', requestId, success: false, error: e.message });
+  }
+}
+
+// ===== 方案 2: 受控 evaluate =====
+async function cmdEvaluate(expression, options, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  const startedAt = Date.now();
+  try {
+    const result = await callPageTool(target, 'safeEvaluate', [expression, options || {}]);
+    logOperation({ action: 'evaluate', tabId: target, success: !result.error, error: result.error, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'evaluateResult', requestId, success: !result.error, ...result });
+  } catch (e) {
+    logOperation({ action: 'evaluate', tabId: target, success: false, error: e.message, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'evaluateResult', requestId, success: false, error: e.message });
+  }
+}
+
+// ===== 方案 3: 表格提取（extract 的便捷封装） =====
+async function cmdExtractTable(spec, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  const startedAt = Date.now();
+  try {
+    const result = await callPageTool(target, 'extract', [{ table: spec || {} }]);
+    logOperation({ action: 'extractTable', tabId: target, success: !result.data?.table?.error, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'extractTableResult', requestId, success: !result.data?.table?.error, ...result });
+  } catch (e) {
+    logOperation({ action: 'extractTable', tabId: target, success: false, error: e.message, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'extractTableResult', requestId, success: false, error: e.message });
+  }
+}
+
+// ===== 方案 1: CDP Network 域监控 =====
+async function cmdStartNetworkCapture(filter, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  const startedAt = Date.now();
+  try {
+    // Detach any previous debugger on this tab
+    try { await chrome.debugger.detach({ tabId: target }); } catch { /* not attached */ }
+
+    await chrome.debugger.attach({ tabId: target }, '1.3');
+    await chrome.debugger.sendCommand({ tabId: target }, 'Network.enable');
+
+    // Initialize capture buffer
+    networkCaptures.set(target, {
+      resources: [],
+      active: true,
+      filter: filter || {},
+      startedAt: new Date().toISOString()
+    });
+
+    // Listen to network events
+    chrome.debugger.onEvent.addListener(function networkListener(source, method, params) {
+      if (source.tabId !== target || !networkCaptures.get(target)?.active) return;
+
+      if (method === 'Network.responseReceived') {
+        const entry = {
+          url: params.response.url,
+          status: params.response.status,
+          mimeType: params.response.mimeType,
+          protocol: params.response.protocol,
+          remoteIP: params.response.remoteIPAddress,
+          headers: params.response.headers || {},
+          timestamp: params.timestamp,
+          requestId: params.requestId,
+          type: params.type,
+          resourceId: params.resourceId
+        };
+
+        // Apply filters
+        const capture = networkCaptures.get(target);
+        if (capture) {
+          if (capture.filter.type === 'image') {
+            const isImage = entry.type === 'Image' || /\.(jpg|jpeg|png|gif|webp|svg|avif|bmp|ico)(\?|#|$)/i.test(entry.url);
+            if (!isImage) return;
+          }
+          if (capture.filter.urlContains && !entry.url.includes(capture.filter.urlContains)) return;
+          if (capture.filter.mimeType && !entry.mimeType.includes(capture.filter.mimeType)) return;
+
+          capture.resources.push(entry);
+          // Cap at 1000 entries to avoid memory issues
+          if (capture.resources.length > 1000) capture.resources.shift();
+        }
+      }
+    });
+
+    logOperation({ action: 'startNetworkCapture', tabId: target, success: true, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'startNetworkCaptureResult', requestId, success: true, tabId: target, message: 'Network capture started' });
+  } catch (e) {
+    logOperation({ action: 'startNetworkCapture', tabId: target, success: false, error: e.message, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'startNetworkCaptureResult', requestId, success: false, error: e.message });
+  }
+}
+
+async function cmdStopNetworkCapture(tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  const startedAt = Date.now();
+  try {
+    const capture = networkCaptures.get(target);
+    if (capture) capture.active = false;
+
+    try { await chrome.debugger.detach({ tabId: target }); } catch { /* already detached */ }
+
+    logOperation({ action: 'stopNetworkCapture', tabId: target, success: true, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'stopNetworkCaptureResult', requestId, success: true, tabId: target, message: 'Network capture stopped' });
+  } catch (e) {
+    logOperation({ action: 'stopNetworkCapture', tabId: target, success: false, error: e.message, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'stopNetworkCaptureResult', requestId, success: false, error: e.message });
+  }
+}
+
+async function cmdGetNetworkResources(options, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  try {
+    const capture = networkCaptures.get(target);
+    if (!capture) {
+      sendToDaemon({ type: 'getNetworkResourcesResult', requestId, success: false, error: 'No network capture found for this tab. Call startNetworkCapture first.' });
+      return;
+    }
+
+    let resources = capture.resources;
+
+    // Apply additional filters at read time
+    if (options?.urlContains) resources = resources.filter(r => r.url.includes(options.urlContains));
+    if (options?.mimeType) resources = resources.filter(r => r.mimeType.includes(options.mimeType));
+    if (options?.type) resources = resources.filter(r => r.type === options.type);
+    if (typeof options?.minStatus === 'number') resources = resources.filter(r => r.status >= options.minStatus);
+
+    // Sort by timestamp descending (most recent first)
+    resources = resources.slice().sort((a, b) => b.timestamp - a.timestamp);
+
+    // Limit results
+    const limit = Math.max(1, Math.min(options?.limit || 100, 500));
+    resources = resources.slice(0, limit);
+
+    sendToDaemon({
+      type: 'getNetworkResourcesResult',
+      requestId,
+      success: true,
+      resources,
+      count: resources.length,
+      totalCaptured: capture.resources.length,
+      active: capture.active,
+      startedAt: capture.startedAt,
+      tabId: target
+    });
+  } catch (e) {
+    sendToDaemon({ type: 'getNetworkResourcesResult', requestId, success: false, error: e.message });
   }
 }
 

@@ -269,6 +269,77 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: "evaluate",
+        description: "在页面上下文中安全地执行 JS 表达式并返回可序列化结果。有安全护栏：禁用 eval/fetch/XMLHttpRequest/cookie 等，表达式最大 2000 字符。适用于读取页面变量、计算动态属性等场景。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+            expression: { type: "string", description: "要执行的 JS 表达式（非语句），如 'document.querySelectorAll(\"img\").length' 或 'performance.now()'" },
+            globals: { type: "array", items: { type: "string" }, description: "额外的全局变量白名单，如 ['crypto', 'URL']" },
+            timeoutMs: { type: "number", description: "超时毫秒数，默认 3000，最大 10000" },
+          },
+          required: ["expression"],
+        },
+      },
+      {
+        name: "extract_table",
+        description: "从页面中提取 HTML 表格数据，返回结构化的 headers 和 rows。声明式操作，不执行任意 JS。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+            selector: { type: "string", description: "表格的 CSS 选择器，默认 'table'" },
+            header: { type: "string", description: "表头单元格选择器，默认 'thead th, tr:first-child th'" },
+            rows: { type: "string", description: "数据行选择器，默认 'tbody tr'" },
+            cells: { type: "string", description: "单元格选择器，默认 'td'" },
+            limit: { type: "number", description: "最大行数，默认 100，最大 500" },
+          },
+          required: [],
+        },
+      },
+      {
+        name: "start_network_capture",
+        description: "通过 Chrome DevTools Protocol Network 域开始监听标签页的所有网络请求。捕获所有资源加载（图片、API 响应、fetch 等），比 Performance API 更全面。需要 debugger 权限。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+            type: { type: "string", enum: ["image", "all"], description: "筛选类型，image 仅捕获图片，all 捕获全部。默认 all" },
+            urlContains: { type: "string", description: "URL 子串过滤" },
+            mimeType: { type: "string", description: "MIME 类型子串过滤，如 'image/'" },
+          },
+          required: [],
+        },
+      },
+      {
+        name: "stop_network_capture",
+        description: "停止标签页的网络请求监听，分离 CDP debugger。应在 start_network_capture 后、完成数据采集时调用。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+          },
+          required: [],
+        },
+      },
+      {
+        name: "get_network_resources",
+        description: "读取 CDP 网络捕获到的资源列表。需先调用 start_network_capture。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+            urlContains: { type: "string", description: "URL 子串过滤" },
+            mimeType: { type: "string", description: "MIME 类型子串过滤" },
+            type: { type: "string", description: "CDP 资源类型过滤，如 Image、Fetch、XHR、Script 等" },
+            minStatus: { type: "number", description: "最小 HTTP 状态码，如 200" },
+            limit: { type: "number", description: "返回最大条数，默认 100，最大 500" },
+          },
+          required: [],
+        },
+      },
+      {
         name: "execute_js",
         description: "Deprecated: arbitrary page JavaScript is disabled. Use inspect or probe_selector instead.",
         inputSchema: {
@@ -562,6 +633,76 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         ).join("\n") || "无";
         return {
           content: [{ type: "text", text: `页面: ${result.title}\nURL: ${result.url}\n资源数: ${result.count}\n\n${resourceList}` }],
+        };
+
+      case "evaluate":
+        result = await sendToExtension("evaluate", {
+          tabId: args.tabId,
+          expression: args.expression,
+          options: {
+            globals: Array.isArray(args.globals) ? args.globals : [],
+            timeoutMs: typeof args.timeoutMs === "number" ? args.timeoutMs : undefined,
+          },
+        });
+        return {
+          content: [{ type: "text", text: result.error
+            ? `执行失败: ${result.error}`
+            : `结果 (${result.type}): ${JSON.stringify(result.result, null, 2)}` }],
+          isError: Boolean(result.error),
+        };
+
+      case "extract_table":
+        result = await sendToExtension("extractTable", {
+          tabId: args.tabId,
+          spec: {
+            selector: typeof args.selector === "string" ? args.selector : undefined,
+            header: typeof args.header === "string" ? args.header : undefined,
+            rows: typeof args.rows === "string" ? args.rows : undefined,
+            cells: typeof args.cells === "string" ? args.cells : undefined,
+            limit: typeof args.limit === "number" ? args.limit : undefined,
+          },
+        });
+        const table = result.data?.table;
+        if (!table) return { content: [{ type: "text", text: `提取失败: ${result.error || "未知错误"}` }], isError: true };
+        const headerStr = table.headers?.join(" | ") || "(无表头)";
+        const rowStr = table.rows?.map((r: any[]) => r.join(" | ")).join("\n") || "(无数据)";
+        return {
+          content: [{ type: "text", text: `表格提取成功\n行数: ${table.rowCount}, 列数: ${table.columnCount}\n\n表头: ${headerStr}\n\n${rowStr}` }],
+          isError: Boolean(table.error),
+        };
+
+      case "start_network_capture":
+        result = await sendToExtension("startNetworkCapture", {
+          tabId: args.tabId,
+          filter: {
+            type: args.type === "image" ? "image" : "all",
+            urlContains: typeof args.urlContains === "string" ? args.urlContains : undefined,
+            mimeType: typeof args.mimeType === "string" ? args.mimeType : undefined,
+          },
+        });
+        return { content: [{ type: "text", text: result.success ? `网络捕获已启动 (tabId: ${result.tabId})` : `启动失败: ${result.error}` }], isError: !result.success };
+
+      case "stop_network_capture":
+        result = await sendToExtension("stopNetworkCapture", { tabId: args.tabId });
+        return { content: [{ type: "text", text: result.success ? `网络捕获已停止 (tabId: ${result.tabId})` : `停止失败: ${result.error}` }], isError: !result.success };
+
+      case "get_network_resources":
+        result = await sendToExtension("getNetworkResources", {
+          tabId: args.tabId,
+          options: {
+            urlContains: typeof args.urlContains === "string" ? args.urlContains : undefined,
+            mimeType: typeof args.mimeType === "string" ? args.mimeType : undefined,
+            type: typeof args.type === "string" ? args.type : undefined,
+            minStatus: typeof args.minStatus === "number" ? args.minStatus : undefined,
+            limit: typeof args.limit === "number" ? args.limit : undefined,
+          },
+        });
+        const netResources = result.resources?.map((r: any) =>
+          `[${r.status}] ${r.mimeType} ${r.type}\n  ${r.url}`
+        ).join("\n") || "无";
+        return {
+          content: [{ type: "text", text: `网络资源\n已捕获: ${result.totalCaptured}, 返回: ${result.count}, 活跃: ${result.active}\n开始时间: ${result.startedAt}\n\n${netResources}` }],
+          isError: !result.success,
         };
 
       case "execute_js":
