@@ -23,7 +23,12 @@ const networkCaptures = new Map(); // tabId -> { resources: [], active: boolean,
 const TAB_SCOPED_COMMANDS = new Set([
   'navigate', 'click', 'clickAt', 'type', 'waitFor', 'verify', 'extract',
   'getPageInfo', 'inspect', 'probeSelector', 'getPageText', 'screenshot', 'getResources',
-  'evaluate', 'extractTable', 'startNetworkCapture', 'stopNetworkCapture', 'getNetworkResources'
+  'evaluate', 'extractTable', 'startNetworkCapture', 'stopNetworkCapture', 'getNetworkResources',
+  'hover', 'pressKey', 'scroll', 'selectOption', 'dragDrop', 'waitForDynamic', 'iframeAction',
+  'uploadFile', 'handleDialog', 'downloadFile',
+  'reload', 'goBackForward', 'getURL', 'fullPageScreenshot', 'elementScreenshot',
+  'getConsoleLogs', 'shadowDomAction', 'setViewport', 'setUserAgent',
+  'savePDF', 'setGeolocation', 'setNetworkThrottle', 'setTimezone'
 ]);
 
 function normalizeAllowedDomains(value) {
@@ -322,6 +327,75 @@ async function handleDaemonMessage(msg) {
       break;
     case 'getNetworkResources':
       await cmdGetNetworkResources(msg.options, msg.tabId, msg.requestId);
+      break;
+    case 'hover':
+      await cmdHover(msg.selector, msg.tabId, msg.requestId);
+      break;
+    case 'pressKey':
+      await cmdPressKey(msg.selector, msg.key, msg.tabId, msg.requestId);
+      break;
+    case 'scroll':
+      await cmdScroll(msg.options, msg.tabId, msg.requestId);
+      break;
+    case 'selectOption':
+      await cmdSelectOption(msg.selector, msg.value, msg.options, msg.tabId, msg.requestId);
+      break;
+    case 'dragDrop':
+      await cmdDragDrop(msg.fromSelector, msg.toSelector, msg.tabId, msg.requestId);
+      break;
+    case 'waitForDynamic':
+      await cmdWaitForDynamic(msg.options, msg.tabId, msg.requestId);
+      break;
+    case 'iframeAction':
+      await cmdIframeAction(msg.options, msg.tabId, msg.requestId);
+      break;
+    case 'uploadFile':
+      await cmdUploadFile(msg.selector, msg.filePath, msg.tabId, msg.requestId);
+      break;
+    case 'handleDialog':
+      await cmdHandleDialog(msg.action, msg.tabId, msg.requestId);
+      break;
+    case 'downloadFile':
+      await cmdDownloadFile(msg.url, msg.filename, msg.tabId, msg.requestId);
+      break;
+    case 'reload':
+      await cmdReload(msg.bypassCache, msg.tabId, msg.requestId);
+      break;
+    case 'goBackForward':
+      await cmdGoBackForward(msg.direction, msg.tabId, msg.requestId);
+      break;
+    case 'getURL':
+      await cmdGetURL(msg.tabId, msg.requestId);
+      break;
+    case 'fullPageScreenshot':
+      await cmdFullPageScreenshot(msg.tabId, msg.requestId);
+      break;
+    case 'elementScreenshot':
+      await cmdElementScreenshot(msg.selector, msg.tabId, msg.requestId);
+      break;
+    case 'getConsoleLogs':
+      await cmdGetConsoleLogs(msg.options, msg.tabId, msg.requestId);
+      break;
+    case 'shadowDomAction':
+      await cmdShadowDomAction(msg.options, msg.tabId, msg.requestId);
+      break;
+    case 'setViewport':
+      await cmdSetViewport(msg.options, msg.tabId, msg.requestId);
+      break;
+    case 'setUserAgent':
+      await cmdSetUserAgent(msg.userAgent, msg.tabId, msg.requestId);
+      break;
+    case 'savePDF':
+      await cmdSavePDF(msg.options, msg.filename, msg.tabId, msg.requestId);
+      break;
+    case 'setGeolocation':
+      await cmdSetGeolocation(msg.options, msg.tabId, msg.requestId);
+      break;
+    case 'setNetworkThrottle':
+      await cmdSetNetworkThrottle(msg.options, msg.tabId, msg.requestId);
+      break;
+    case 'setTimezone':
+      await cmdSetTimezone(msg.timezone, msg.tabId, msg.requestId);
       break;
     case 'screenshot':
       await cmdScreenshot(msg.tabId, msg.requestId);
@@ -742,6 +816,524 @@ async function cmdGetNetworkResources(options, tabId, requestId) {
     });
   } catch (e) {
     sendToDaemon({ type: 'getNetworkResourcesResult', requestId, success: false, error: e.message });
+  }
+}
+
+// ===== 交互类命令 =====
+async function cmdHover(selector, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  const startedAt = Date.now();
+  try {
+    const result = await callPageTool(target, 'hover', [selector]);
+    logOperation({ action: 'hover', tabId: target, selector, success: result.success !== false, error: result.error, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'hoverResult', requestId, ...result });
+  } catch (e) {
+    logOperation({ action: 'hover', tabId: target, selector, success: false, error: e.message, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'hoverResult', requestId, success: false, error: e.message });
+  }
+}
+
+async function cmdPressKey(selector, key, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  const startedAt = Date.now();
+  try {
+    const result = await callPageTool(target, 'pressKey', [selector, key]);
+    logOperation({ action: 'pressKey', tabId: target, key, success: result.success !== false, error: result.error, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'pressKeyResult', requestId, ...result });
+  } catch (e) {
+    logOperation({ action: 'pressKey', tabId: target, key, success: false, error: e.message, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'pressKeyResult', requestId, success: false, error: e.message });
+  }
+}
+
+async function cmdScroll(options, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  try {
+    const result = await callPageTool(target, 'scroll', [options || {}]);
+    logOperation({ action: 'scroll', tabId: target, success: true });
+    sendToDaemon({ type: 'scrollResult', requestId, success: true, ...result });
+  } catch (e) {
+    logOperation({ action: 'scroll', tabId: target, success: false, error: e.message });
+    sendToDaemon({ type: 'scrollResult', requestId, success: false, error: e.message });
+  }
+}
+
+async function cmdSelectOption(selector, value, options, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  const startedAt = Date.now();
+  try {
+    const result = await callPageTool(target, 'selectOption', [selector, value, options || {}]);
+    logOperation({ action: 'selectOption', tabId: target, selector, success: result.success !== false, error: result.error, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'selectOptionResult', requestId, ...result });
+  } catch (e) {
+    logOperation({ action: 'selectOption', tabId: target, selector, success: false, error: e.message, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'selectOptionResult', requestId, success: false, error: e.message });
+  }
+}
+
+async function cmdDragDrop(fromSelector, toSelector, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  const startedAt = Date.now();
+  try {
+    const result = await callPageTool(target, 'dragDrop', [fromSelector, toSelector]);
+    logOperation({ action: 'dragDrop', tabId: target, success: result.success !== false, error: result.error, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'dragDropResult', requestId, ...result });
+  } catch (e) {
+    logOperation({ action: 'dragDrop', tabId: target, success: false, error: e.message, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'dragDropResult', requestId, success: false, error: e.message });
+  }
+}
+
+async function cmdWaitForDynamic(options, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  const startedAt = Date.now();
+  try {
+    const result = await callPageTool(target, 'waitForDynamic', [options || {}]);
+    logOperation({ action: 'waitForDynamic', tabId: target, success: result.success !== false, error: result.error, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'waitForDynamicResult', requestId, ...result });
+  } catch (e) {
+    logOperation({ action: 'waitForDynamic', tabId: target, success: false, error: e.message, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'waitForDynamicResult', requestId, success: false, error: e.message });
+  }
+}
+
+async function cmdIframeAction(options, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  try {
+    const result = await callPageTool(target, 'iframeAction', [options || {}]);
+    logOperation({ action: 'iframeAction', tabId: target, action: options?.action, success: result.success !== false, error: result.error });
+    sendToDaemon({ type: 'iframeActionResult', requestId, ...result });
+  } catch (e) {
+    logOperation({ action: 'iframeAction', tabId: target, success: false, error: e.message });
+    sendToDaemon({ type: 'iframeActionResult', requestId, success: false, error: e.message });
+  }
+}
+
+// ===== CDP 类命令：文件上传 =====
+async function cmdUploadFile(selector, filePath, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  const startedAt = Date.now();
+  try {
+    // Use CDP to set file input files
+    await chrome.debugger.attach({ tabId: target }, '1.3');
+
+    // Find the file input element via CDP DOM domain
+    const root = await chrome.debugger.sendCommand({ tabId: target }, 'DOM.getDocument', { depth: 0 });
+    const selectorResult = await chrome.debugger.sendCommand({ tabId: target }, 'DOM.querySelector', {
+      nodeId: root.root.nodeId,
+      selector: selector || 'input[type="file"]'
+    });
+
+    if (!selectorResult.nodeId) {
+      await chrome.debugger.detach({ tabId: target });
+      sendToDaemon({ type: 'uploadFileResult', requestId, success: false, error: `File input not found: ${selector || 'input[type="file"]'}` });
+      return;
+    }
+
+    // Set the file on the input element
+    await chrome.debugger.sendCommand({ tabId: target }, 'DOM.setFileInputFiles', {
+      nodeId: selectorResult.nodeId,
+      files: [filePath]
+    });
+
+    await chrome.debugger.detach({ tabId: target });
+    logOperation({ action: 'uploadFile', tabId: target, selector, success: true, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'uploadFileResult', requestId, success: true, selector, filePath, message: 'File uploaded successfully' });
+  } catch (e) {
+    try { await chrome.debugger.detach({ tabId: target }); } catch { /* already detached */ }
+    logOperation({ action: 'uploadFile', tabId: target, selector, success: false, error: e.message, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'uploadFileResult', requestId, success: false, error: e.message });
+  }
+}
+
+// ===== CDP 类命令：弹窗处理 =====
+async function cmdHandleDialog(action, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  const startedAt = Date.now();
+  try {
+    await chrome.debugger.attach({ tabId: target }, '1.3');
+    await chrome.debugger.sendCommand({ tabId: target }, 'Page.handleJavaScriptDialog', {
+      accept: action !== 'dismiss',
+      promptText: action === 'dismiss' ? undefined : action
+    });
+    await chrome.debugger.detach({ tabId: target });
+    logOperation({ action: 'handleDialog', tabId: target, success: true, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'handleDialogResult', requestId, success: true, action, message: `Dialog ${action === 'dismiss' ? 'dismissed' : 'accepted'}` });
+  } catch (e) {
+    try { await chrome.debugger.detach({ tabId: target }); } catch { /* already detached */ }
+    logOperation({ action: 'handleDialog', tabId: target, success: false, error: e.message, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'handleDialogResult', requestId, success: false, error: e.message });
+  }
+}
+
+// ===== 文件下载 =====
+async function cmdDownloadFile(url, filename, tabId, requestId) {
+  const startedAt = Date.now();
+  try {
+    const downloadId = await chrome.downloads.download({
+      url: url,
+      filename: filename || undefined,
+      saveAs: false
+    });
+    logOperation({ action: 'downloadFile', tabId, url: url.slice(0, 100), success: true, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'downloadFileResult', requestId, success: true, downloadId, url, filename, message: 'Download started' });
+  } catch (e) {
+    logOperation({ action: 'downloadFile', tabId, url: url.slice(0, 100), success: false, error: e.message, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'downloadFileResult', requestId, success: false, error: e.message });
+  }
+}
+
+// ===== 页面刷新 =====
+async function cmdReload(bypassCache, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  const startedAt = Date.now();
+  try {
+    await chrome.tabs.reload(target, { bypassCache: bypassCache === true });
+    logOperation({ action: 'reload', tabId: target, success: true, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'reloadResult', requestId, success: true, message: `Page reloaded ${bypassCache ? '(bypass cache)' : ''}` });
+  } catch (e) {
+    logOperation({ action: 'reload', tabId: target, success: false, error: e.message, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'reloadResult', requestId, success: false, error: e.message });
+  }
+}
+
+// ===== 浏览器前进/后退 =====
+async function cmdGoBackForward(direction, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  const startedAt = Date.now();
+  try {
+    await chrome.debugger.attach({ tabId: target }, '1.3');
+    const history = await chrome.debugger.sendCommand({ tabId: target }, 'Page.getNavigationHistory');
+    const currentIndex = history.currentIndex;
+    const entries = history.entries;
+
+    if (direction === 'back' && currentIndex > 0) {
+      await chrome.debugger.sendCommand({ tabId: target }, 'Page.navigateToHistoryEntry', { entryId: entries[currentIndex - 1].id });
+      await chrome.debugger.detach({ tabId: target });
+      logOperation({ action: 'goBackForward', tabId: target, direction: 'back', success: true, durationMs: Date.now() - startedAt });
+      sendToDaemon({ type: 'goBackForwardResult', requestId, success: true, direction: 'back', url: entries[currentIndex - 1].url });
+    } else if (direction === 'forward' && currentIndex < entries.length - 1) {
+      await chrome.debugger.sendCommand({ tabId: target }, 'Page.navigateToHistoryEntry', { entryId: entries[currentIndex + 1].id });
+      await chrome.debugger.detach({ tabId: target });
+      logOperation({ action: 'goBackForward', tabId: target, direction: 'forward', success: true, durationMs: Date.now() - startedAt });
+      sendToDaemon({ type: 'goBackForwardResult', requestId, success: true, direction: 'forward', url: entries[currentIndex + 1].url });
+    } else {
+      await chrome.debugger.detach({ tabId: target });
+      sendToDaemon({ type: 'goBackForwardResult', requestId, success: false, error: `Cannot go ${direction}: already at ${direction === 'back' ? 'beginning' : 'end'} of history` });
+    }
+  } catch (e) {
+    try { await chrome.debugger.detach({ tabId: target }); } catch { /* already detached */ }
+    logOperation({ action: 'goBackForward', tabId: target, direction, success: false, error: e.message, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'goBackForwardResult', requestId, success: false, error: e.message });
+  }
+}
+
+// ===== 获取当前 URL =====
+async function cmdGetURL(tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  try {
+    const tab = await chrome.tabs.get(target);
+    sendToDaemon({ type: 'getURLResult', requestId, success: true, url: tab.url, title: tab.title, favIconUrl: tab.favIconUrl });
+  } catch (e) {
+    sendToDaemon({ type: 'getURLResult', requestId, success: false, error: e.message });
+  }
+}
+
+// ===== 整页截图 =====
+async function cmdFullPageScreenshot(tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  const startedAt = Date.now();
+  try {
+    await chrome.debugger.attach({ tabId: target }, '1.3');
+    // Get full page metrics
+    const metrics = await chrome.debugger.sendCommand({ tabId: target }, 'Page.getLayoutMetrics');
+    const width = Math.ceil(metrics.cssContentSize.width);
+    const height = Math.ceil(metrics.cssContentSize.height);
+
+    const result = await chrome.debugger.sendCommand({ tabId: target }, 'Page.captureScreenshot', {
+      format: 'png',
+      captureBeyondViewport: true,
+      clip: { x: 0, y: 0, width, height, scale: 1 }
+    });
+    await chrome.debugger.detach({ tabId: target });
+    logOperation({ action: 'fullPageScreenshot', tabId: target, success: true, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'fullPageScreenshotResult', requestId, success: true, data: result.data, format: 'png', width, height });
+  } catch (e) {
+    try { await chrome.debugger.detach({ tabId: target }); } catch { /* already detached */ }
+    logOperation({ action: 'fullPageScreenshot', tabId: target, success: false, error: e.message, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'fullPageScreenshotResult', requestId, success: false, error: e.message });
+  }
+}
+
+// ===== 元素截图 =====
+async function cmdElementScreenshot(selector, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  const startedAt = Date.now();
+  try {
+    // First get element bounds via page-tools
+    const probeResult = await callPageTool(target, 'probe', [selector]);
+    if (!probeResult?.matched) {
+      sendToDaemon({ type: 'elementScreenshotResult', requestId, success: false, error: `Element not found: ${selector}` });
+      return;
+    }
+    const box = probeResult.element.box;
+
+    await chrome.debugger.attach({ tabId: target }, '1.3');
+    const result = await chrome.debugger.sendCommand({ tabId: target }, 'Page.captureScreenshot', {
+      format: 'png',
+      clip: { x: box.x, y: box.y, width: box.width, height: box.height, scale: 1 }
+    });
+    await chrome.debugger.detach({ tabId: target });
+    logOperation({ action: 'elementScreenshot', tabId: target, selector, success: true, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'elementScreenshotResult', requestId, success: true, data: result.data, format: 'png', width: box.width, height: box.height, element: probeResult.element });
+  } catch (e) {
+    try { await chrome.debugger.detach({ tabId: target }); } catch { /* already detached */ }
+    logOperation({ action: 'elementScreenshot', tabId: target, selector, success: false, error: e.message, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'elementScreenshotResult', requestId, success: false, error: e.message });
+  }
+}
+
+// ===== 控制台日志捕获 =====
+async function cmdGetConsoleLogs(options, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  const startedAt = Date.now();
+  const duration = Math.min(options?.duration || 3000, 10000);
+  const logs = [];
+
+  const onEvent = (source, method, params) => {
+    if (source.tabId !== target) return;
+    if (method === 'Runtime.consoleAPICalled') {
+      logs.push({
+        type: params.type,
+        args: (params.args || []).map(a => a.value ?? a.description ?? a.type),
+        stackTrace: params.stackTrace?.callFrames?.slice(0, 3).map(f => `${f.functionName || '(anonymous)'}@${f.url}:${f.lineNumber}`),
+        timestamp: Date.now()
+      });
+    } else if (method === 'Log.entryAdded') {
+      const entry = params.entry;
+      logs.push({
+        type: entry.level,
+        source: entry.source,
+        text: entry.text,
+        url: entry.url,
+        lineNumber: entry.lineNumber,
+        timestamp: entry.timestamp
+      });
+    }
+  };
+
+  try {
+    await chrome.debugger.attach({ tabId: target }, '1.3');
+    chrome.debugger.onEvent.addListener(onEvent);
+    await chrome.debugger.sendCommand({ tabId: target }, 'Runtime.enable');
+    await chrome.debugger.sendCommand({ tabId: target }, 'Log.enable');
+
+    await new Promise(resolve => setTimeout(resolve, duration));
+
+    await chrome.debugger.sendCommand({ tabId: target }, 'Log.disable');
+    await chrome.debugger.sendCommand({ tabId: target }, 'Runtime.disable');
+    chrome.debugger.onEvent.removeListener(onEvent);
+    await chrome.debugger.detach({ tabId: target });
+
+    logOperation({ action: 'getConsoleLogs', tabId: target, success: true, logCount: logs.length, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'getConsoleLogsResult', requestId, success: true, logs, count: logs.length, duration: Date.now() - startedAt });
+  } catch (e) {
+    try { chrome.debugger.onEvent.removeListener(onEvent); await chrome.debugger.detach({ tabId: target }); } catch { /* already detached */ }
+    logOperation({ action: 'getConsoleLogs', tabId: target, success: false, error: e.message, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'getConsoleLogsResult', requestId, success: false, error: e.message });
+  }
+}
+
+// ===== Shadow DOM 操作 =====
+async function cmdShadowDomAction(options, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  try {
+    const result = await callPageTool(target, 'shadowDomAction', [options || {}]);
+    logOperation({ action: 'shadowDomAction', tabId: target, subAction: options?.action, success: result.success !== false, error: result.error });
+    sendToDaemon({ type: 'shadowDomActionResult', requestId, ...result });
+  } catch (e) {
+    logOperation({ action: 'shadowDomAction', tabId: target, success: false, error: e.message });
+    sendToDaemon({ type: 'shadowDomActionResult', requestId, success: false, error: e.message });
+  }
+}
+
+// ===== 视口/设备模拟 =====
+async function cmdSetViewport(options, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  const startedAt = Date.now();
+  try {
+    await chrome.debugger.attach({ tabId: target }, '1.3');
+    const metrics = {
+      width: options.width || 1280,
+      height: options.height || 800,
+      deviceScaleFactor: options.deviceScaleFactor || 1,
+      mobile: options.mobile === true,
+    };
+    if (options.userAgent) {
+      await chrome.debugger.sendCommand({ tabId: target }, 'Network.setUserAgentOverride', { userAgent: options.userAgent });
+    }
+    await chrome.debugger.sendCommand({ tabId: target }, 'Emulation.setDeviceMetricsOverride', metrics);
+
+    if (options.touch === true) {
+      await chrome.debugger.sendCommand({ tabId: target }, 'Emulation.setTouchEmulationEnabled', { enabled: true });
+    }
+
+    await chrome.debugger.detach({ tabId: target });
+    logOperation({ action: 'setViewport', tabId: target, success: true, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'setViewportResult', requestId, success: true, message: `Viewport set to ${metrics.width}x${metrics.height}${metrics.mobile ? ' (mobile)' : ''}` });
+  } catch (e) {
+    try { await chrome.debugger.detach({ tabId: target }); } catch { /* already detached */ }
+    logOperation({ action: 'setViewport', tabId: target, success: false, error: e.message, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'setViewportResult', requestId, success: false, error: e.message });
+  }
+}
+
+// ===== User Agent 覆盖 =====
+async function cmdSetUserAgent(userAgent, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  const startedAt = Date.now();
+  try {
+    await chrome.debugger.attach({ tabId: target }, '1.3');
+    await chrome.debugger.sendCommand({ tabId: target }, 'Network.setUserAgentOverride', {
+      userAgent: userAgent,
+      acceptLanguage: 'en-US,en;q=0.9',
+    });
+    await chrome.debugger.detach({ tabId: target });
+    logOperation({ action: 'setUserAgent', tabId: target, success: true, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'setUserAgentResult', requestId, success: true, message: `User-Agent set to: ${userAgent.slice(0, 80)}` });
+  } catch (e) {
+    try { await chrome.debugger.detach({ tabId: target }); } catch { /* already detached */ }
+    logOperation({ action: 'setUserAgent', tabId: target, success: false, error: e.message, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'setUserAgentResult', requestId, success: false, error: e.message });
+  }
+}
+
+// ===== 保存 PDF =====
+async function cmdSavePDF(options, filename, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  const startedAt = Date.now();
+  try {
+    await chrome.debugger.attach({ tabId: target }, '1.3');
+    const pdfParams = {
+      landscape: options?.landscape === true,
+      displayHeaderFooter: options?.displayHeaderFooter === true,
+      printBackground: options?.printBackground !== false,
+      scale: options?.scale || 1,
+      paperWidth: options?.paperWidth || 8.5,
+      paperHeight: options?.paperHeight || 11,
+      marginTop: options?.marginTop ?? 0.4,
+      marginBottom: options?.marginBottom ?? 0.4,
+      marginLeft: options?.marginLeft ?? 0.4,
+      marginRight: options?.marginRight ?? 0.4,
+    };
+    const result = await chrome.debugger.sendCommand({ tabId: target }, 'Page.printToPDF', pdfParams);
+
+    // If filename provided, save via downloads API
+    if (filename && result.data) {
+      const dataUrl = `data:application/pdf;base64,${result.data}`;
+      const downloadId = await chrome.downloads.download({
+        url: dataUrl,
+        filename: filename.endsWith('.pdf') ? filename : `${filename}.pdf`,
+        saveAs: false
+      });
+      await chrome.debugger.detach({ tabId: target });
+      logOperation({ action: 'savePDF', tabId: target, success: true, durationMs: Date.now() - startedAt });
+      sendToDaemon({ type: 'savePDFResult', requestId, success: true, downloadId, filename, message: 'PDF saved to downloads' });
+    } else {
+      await chrome.debugger.detach({ tabId: target });
+      logOperation({ action: 'savePDF', tabId: target, success: true, durationMs: Date.now() - startedAt });
+      sendToDaemon({ type: 'savePDFResult', requestId, success: true, data: result.data, format: 'pdf', message: 'PDF generated (base64)' });
+    }
+  } catch (e) {
+    try { await chrome.debugger.detach({ tabId: target }); } catch { /* already detached */ }
+    logOperation({ action: 'savePDF', tabId: target, success: false, error: e.message, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'savePDFResult', requestId, success: false, error: e.message });
+  }
+}
+
+// ===== 地理位置覆盖 =====
+async function cmdSetGeolocation(options, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  const startedAt = Date.now();
+  try {
+    await chrome.debugger.attach({ tabId: target }, '1.3');
+    await chrome.debugger.sendCommand({ tabId: target }, 'Emulation.setGeolocationOverride', {
+      latitude: options.latitude,
+      longitude: options.longitude,
+      accuracy: options.accuracy || 100,
+    });
+    await chrome.debugger.detach({ tabId: target });
+    logOperation({ action: 'setGeolocation', tabId: target, success: true, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'setGeolocationResult', requestId, success: true, message: `Geolocation set to ${options.latitude}, ${options.longitude}` });
+  } catch (e) {
+    try { await chrome.debugger.detach({ tabId: target }); } catch { /* already detached */ }
+    logOperation({ action: 'setGeolocation', tabId: target, success: false, error: e.message, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'setGeolocationResult', requestId, success: false, error: e.message });
+  }
+}
+
+// ===== 网络限速/离线 =====
+async function cmdSetNetworkThrottle(options, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  const startedAt = Date.now();
+  try {
+    await chrome.debugger.attach({ tabId: target }, '1.3');
+
+    if (options.offline === true) {
+      await chrome.debugger.sendCommand({ tabId: target }, 'Network.emulateNetworkConditions', {
+        offline: true,
+        latency: 0,
+        downloadThroughput: 0,
+        uploadThroughput: 0,
+      });
+      await chrome.debugger.detach({ tabId: target });
+      logOperation({ action: 'setNetworkThrottle', tabId: target, success: true, mode: 'offline', durationMs: Date.now() - startedAt });
+      sendToDaemon({ type: 'setNetworkThrottleResult', requestId, success: true, message: 'Network set to offline mode' });
+    } else if (options.reset === true) {
+      await chrome.debugger.sendCommand({ tabId: target }, 'Network.emulateNetworkConditions', {
+        offline: false,
+        latency: 0,
+        downloadThroughput: -1,
+        uploadThroughput: -1,
+      });
+      await chrome.debugger.detach({ tabId: target });
+      logOperation({ action: 'setNetworkThrottle', tabId: target, success: true, mode: 'reset', durationMs: Date.now() - startedAt });
+      sendToDaemon({ type: 'setNetworkThrottleResult', requestId, success: true, message: 'Network conditions reset to normal' });
+    } else {
+      const conditions = {
+        offline: false,
+        latency: options.latency || 100,
+        downloadThroughput: (options.downloadKbps || 1000) * 1024 / 8,
+        uploadThroughput: (options.uploadKbps || 500) * 1024 / 8,
+      };
+      await chrome.debugger.sendCommand({ tabId: target }, 'Network.emulateNetworkConditions', conditions);
+      await chrome.debugger.detach({ tabId: target });
+      logOperation({ action: 'setNetworkThrottle', tabId: target, success: true, mode: 'throttle', durationMs: Date.now() - startedAt });
+      sendToDaemon({ type: 'setNetworkThrottleResult', requestId, success: true, message: `Network throttled: ${options.latency || 100}ms latency, ${options.downloadKbps || 1000}kbps down, ${options.uploadKbps || 500}kbps up` });
+    }
+  } catch (e) {
+    try { await chrome.debugger.detach({ tabId: target }); } catch { /* already detached */ }
+    logOperation({ action: 'setNetworkThrottle', tabId: target, success: false, error: e.message, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'setNetworkThrottleResult', requestId, success: false, error: e.message });
+  }
+}
+
+// ===== 时区覆盖 =====
+async function cmdSetTimezone(timezone, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  const startedAt = Date.now();
+  try {
+    await chrome.debugger.attach({ tabId: target }, '1.3');
+    await chrome.debugger.sendCommand({ tabId: target }, 'Emulation.setTimezoneOverride', {
+      timezoneId: timezone,
+    });
+    await chrome.debugger.detach({ tabId: target });
+    logOperation({ action: 'setTimezone', tabId: target, success: true, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'setTimezoneResult', requestId, success: true, message: `Timezone set to ${timezone}` });
+  } catch (e) {
+    try { await chrome.debugger.detach({ tabId: target }); } catch { /* already detached */ }
+    logOperation({ action: 'setTimezone', tabId: target, success: false, error: e.message, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'setTimezoneResult', requestId, success: false, error: e.message });
   }
 }
 

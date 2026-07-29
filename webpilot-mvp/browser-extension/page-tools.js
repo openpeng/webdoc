@@ -395,6 +395,306 @@
     return { resources, count: resources.length, url: location.href, title: document.title };
   };
 
+  // ===== 鼠标悬停 =====
+  const hover = selector => {
+    const resolved = resolve(selector);
+    if (!resolved.element) return resolved.error || { error: 'Element not found' };
+    const el = resolved.element;
+    el.scrollIntoView({ block: 'center', inline: 'center' });
+    const rect = el.getBoundingClientRect();
+    const cx = rect.x + rect.width / 2;
+    const cy = rect.y + rect.height / 2;
+    const opts = { bubbles: true, cancelable: true, view: window, clientX: cx, clientY: cy };
+    el.dispatchEvent(new MouseEvent('mousemove', opts));
+    el.dispatchEvent(new MouseEvent('mouseover', opts));
+    el.dispatchEvent(new MouseEvent('mouseenter', { ...opts, bubbles: false }));
+    el.dispatchEvent(new MouseEvent('mousemove', opts));
+    return { success: true, tagName: el.tagName, text: name(el), diagnostics: { locator: selector, strategy: resolved.strategy, element: describe(el, resolved.index) } };
+  };
+
+  // ===== 特殊键/键盘按键 =====
+  const KEY_MAP = {
+    enter: 'Enter', escape: 'Escape', escape2: 'Esc',
+    tab: 'Tab', space: ' ', arrowup: 'ArrowUp', arrowdown: 'ArrowDown',
+    arrowleft: 'ArrowLeft', arrowright: 'ArrowRight',
+    backspace: 'Backspace', delete: 'Delete',
+  };
+  const pressKey = (selector, key) => {
+    const resolved = resolve(selector);
+    const el = resolved.element || document.activeElement || document.body;
+    const normalized = (key || '').toLowerCase().replace(/^key/, '');
+    const keyValue = KEY_MAP[normalized] || (normalized.length === 1 ? normalized.toUpperCase() : normalized);
+    const keyboardOpts = { key: keyValue, code: keyValue, bubbles: true, cancelable: true };
+    el.dispatchEvent(new KeyboardEvent('keydown', keyboardOpts));
+    el.dispatchEvent(new KeyboardEvent('keypress', keyboardOpts));
+    el.dispatchEvent(new KeyboardEvent('keyup', keyboardOpts));
+    if (keyValue === 'Enter' && el.tagName === 'TEXTAREA') {
+      // For textarea, Enter inserts a newline; for form, submit
+    } else if (keyValue === 'Enter' && el.form) {
+      el.form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+    }
+    return { success: true, key: keyValue, tagName: el.tagName, diagnostics: { locator: selector, strategy: resolved.strategy, element: el === document.body ? null : describe(el) } };
+  };
+
+  // ===== 滚动 =====
+  const scroll = options => {
+    const target = options?.selector ? resolve(options.selector) : null;
+    if (options?.selector && target?.element) {
+      target.element.scrollIntoView({ block: options.block || 'center', inline: options.inline || 'center', behavior: options.smooth ? 'smooth' : 'auto' });
+      return { success: true, mode: 'intoView', element: describe(target.element) };
+    }
+    if (options?.direction) {
+      const dx = options.direction === 'right' ? (options.amount || 300) : options.direction === 'left' ? -(options.amount || 300) : 0;
+      const dy = options.direction === 'down' ? (options.amount || 300) : options.direction === 'up' ? -(options.amount || 300) : 0;
+      window.scrollBy({ left: dx, top: dy, behavior: options.smooth ? 'smooth' : 'auto' });
+      return { success: true, mode: 'by', direction: options.direction, amount: options.amount || 300 };
+    }
+    const x = typeof options?.x === 'number' ? options.x : window.scrollX;
+    const y = typeof options?.y === 'number' ? options.y : window.scrollY;
+    window.scrollTo({ left: x, top: y, behavior: options?.smooth ? 'smooth' : 'auto' });
+    return { success: true, mode: 'to', x, y };
+  };
+
+  // ===== 下拉选择框 =====
+  const selectOption = (selector, value, options = {}) => {
+    const resolved = resolve(selector);
+    if (!resolved.element) return { error: resolved.error || 'Element not found' };
+    const el = resolved.element;
+    if (el.tagName.toLowerCase() !== 'select') return { error: `Element is ${el.tagName}, not a <select>`, diagnostics: { element: describe(el, resolved.index) } };
+    let matched = false;
+    if (options.byLabel) {
+      for (const opt of el.options) {
+        if (normalise(opt.textContent) === value || opt.textContent.includes(value)) { opt.selected = true; matched = true; break; }
+      }
+    } else if (options.byText) {
+      for (const opt of el.options) {
+        if (normalise(opt.textContent) === value) { opt.selected = true; matched = true; break; }
+      }
+    } else {
+      el.value = value;
+      matched = el.value === value;
+    }
+    if (!matched && options.fuzzy) {
+      for (const opt of el.options) {
+        if (normalise(opt.textContent).includes(value) || normalise(opt.value).includes(value)) { opt.selected = true; matched = true; break; }
+      }
+    }
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+    return {
+      success: matched,
+      value: el.value,
+      selectedText: el.options[el.selectedIndex]?.textContent?.trim() || '',
+      selectedIndex: el.selectedIndex,
+      optionCount: el.options.length,
+      diagnostics: { locator: selector, strategy: resolved.strategy, element: describe(el, resolved.index) }
+    };
+  };
+
+  // ===== 拖拽 =====
+  const dragDrop = (fromSelector, toSelector) => {
+    const fromResolved = resolve(fromSelector);
+    const toResolved = resolve(toSelector);
+    if (!fromResolved.element) return { error: `Source element not found: ${fromResolved.error || ''}` };
+    if (!toResolved.element) return { error: `Target element not found: ${toResolved.error || ''}` };
+    const fromEl = fromResolved.element;
+    const toEl = toResolved.element;
+    fromEl.scrollIntoView({ block: 'center' });
+    const fromRect = fromEl.getBoundingClientRect();
+    const toRect = toEl.getBoundingClientRect();
+    const fromX = fromRect.x + fromRect.width / 2;
+    const fromY = fromRect.y + fromRect.height / 2;
+    const toX = toRect.x + toRect.width / 2;
+    const toY = toRect.y + toRect.height / 2;
+    const opts = (x, y) => ({ bubbles: true, cancelable: true, view: window, clientX: x, clientY: y });
+    // HTML5 drag events
+    const dataTransfer = new DataTransfer();
+    fromEl.dispatchEvent(new DragEvent('dragstart', { ...opts(fromX, fromY), dataTransfer }));
+    fromEl.dispatchEvent(new DragEvent('drag', { ...opts(fromX, fromY), dataTransfer }));
+    toEl.dispatchEvent(new DragEvent('dragenter', { ...opts(toX, toY), dataTransfer }));
+    toEl.dispatchEvent(new DragEvent('dragover', { ...opts(toX, toY), dataTransfer }));
+    toEl.dispatchEvent(new DragEvent('drop', { ...opts(toX, toY), dataTransfer }));
+    fromEl.dispatchEvent(new DragEvent('dragend', { ...opts(toX, toY), dataTransfer }));
+    // Also fire mouse events for libraries that use mouse-based dragging
+    fromEl.dispatchEvent(new MouseEvent('mousedown', opts(fromX, fromY)));
+    document.dispatchEvent(new MouseEvent('mousemove', opts((fromX + toX) / 2, (fromY + toY) / 2)));
+    toEl.dispatchEvent(new MouseEvent('mouseup', opts(toX, toY)));
+    return {
+      success: true,
+      from: describe(fromEl, fromResolved.index),
+      to: describe(toEl, toResolved.index),
+      diagnostics: { fromX: Math.round(fromX), fromY: Math.round(fromY), toX: Math.round(toX), toY: Math.round(toY) }
+    };
+  };
+
+  // ===== SPA 动态内容等待 (MutationObserver) =====
+  const waitForDynamic = options => {
+    return new Promise(resolvePromise => {
+      const timeoutMs = Math.min(options?.timeoutMs || 10000, 30000);
+      const startedAt = performance.now();
+      const selector = options?.selector;
+      const textPattern = options?.textContains;
+      const elementCount = options?.minElementCount;
+      const settled = result => resolvePromise({ ...result, durationMs: Math.round(performance.now() - startedAt) });
+
+      // Check initial state
+      const check = () => {
+        if (selector) {
+          const el = document.querySelector(selector);
+          if (el && visible(el)) return { success: true, reason: 'selector_visible', element: describe(el) };
+        }
+        if (textPattern) {
+          const bodyText = document.body?.innerText || '';
+          if (bodyText.includes(textPattern)) return { success: true, reason: 'text_found', match: textPattern };
+        }
+        if (elementCount) {
+          const count = document.querySelectorAll(INTERACTIVE_SELECTOR).length;
+          if (count >= elementCount) return { success: true, reason: 'element_count', count };
+        }
+        if (options?.networkIdle && performance.now() - lastActivity > 800) {
+          return { success: true, reason: 'network_idle', idleMs: Math.round(performance.now() - lastActivity) };
+        }
+        return null;
+      };
+      let lastActivity = performance.now();
+
+      const initial = check();
+      if (initial) return settled(initial);
+
+      const observer = new MutationObserver(() => {
+        lastActivity = performance.now();
+        const result = check();
+        if (result) { observer.disconnect(); settled(result); }
+      });
+      observer.observe(document.body, { childList: true, subtree: true, attributes: true, characterData: true });
+
+      setTimeout(() => { observer.disconnect(); settled({ success: false, error: `Timed out after ${timeoutMs}ms`, diagnostics: { selector, textPattern, elementCount, page: snapshot() } }); }, timeoutMs);
+    });
+  };
+
+  // ===== iframe 内容操作 =====
+  const iframeAction = (options = {}) => {
+    const frames = Array.from(document.querySelectorAll('iframe')).filter(f => {
+      try { return f.contentDocument; } catch { return false; }
+    });
+    if (!frames.length) return { error: 'No same-origin iframe found on page', iframeCount: document.querySelectorAll('iframe').length };
+    let targetFrame = null;
+    if (options.iframeSelector) {
+      targetFrame = frames.find(f => f.matches(options.iframeSelector));
+    } else if (options.iframeIndex !== undefined) {
+      targetFrame = frames[options.iframeIndex];
+    } else {
+      targetFrame = frames[0];
+    }
+    if (!targetFrame) return { error: 'Specified iframe not found or cross-origin', iframeCount: frames.length };
+    const iframeDoc = targetFrame.contentDocument;
+    if (options.action === 'getText') {
+      const text = (iframeDoc.body?.innerText || '').replace(/\n{3,}/g, '\n\n').trim().slice(0, 50000);
+      return { success: true, action: 'getText', iframeSrc: targetFrame.src, text, characterCount: text.length };
+    }
+    if (options.action === 'query') {
+      const elements = Array.from(iframeDoc.querySelectorAll(options.selector || INTERACTIVE_SELECTOR)).filter(visible);
+      return { success: true, action: 'query', iframeSrc: targetFrame.src, count: elements.length, elements: elements.slice(0, 30).map((el, i) => describe(el, i)) };
+    }
+    if (options.action === 'click') {
+      const el = options.selector ? iframeDoc.querySelector(options.selector) : null;
+      if (!el) return { error: `Element not found in iframe: ${options.selector}` };
+      el.click();
+      return { success: true, action: 'click', iframeSrc: targetFrame.src, element: describe(el) };
+    }
+    return { error: `Unknown iframe action: ${options.action}. Supported: getText, query, click` };
+  };
+
+  // ===== Shadow DOM 穿透操作 =====
+  const pierceShadow = (hostSelector, innerSelector) => {
+    const host = document.querySelector(hostSelector);
+    if (!host) return { error: `Shadow host not found: ${hostSelector}` };
+    if (!host.shadowRoot) return { error: `Element has no shadow root: ${hostSelector}`, element: describe(host) };
+    const el = host.shadowRoot.querySelector(innerSelector);
+    if (!el) return { error: `Element not found in shadow DOM: ${innerSelector}`, hostElement: describe(host) };
+    return { host, el };
+  };
+
+  const shadowDomAction = (options = {}) => {
+    const action = options.action;
+    const hostSelector = options.hostSelector;
+    const innerSelector = options.innerSelector;
+
+    // Auto-pierce: find element across all shadow roots
+    const deepQuery = selector => {
+      const allHosts = [];
+      document.querySelectorAll('*').forEach(el => {
+        if (el.shadowRoot) allHosts.push(el);
+      });
+      for (const host of allHosts) {
+        const found = host.shadowRoot.querySelector(selector);
+        if (found) return { host, el: found };
+      }
+      return null;
+    };
+
+    if (action === 'query') {
+      const results = [];
+      const hosts = [];
+      document.querySelectorAll('*').forEach(el => { if (el.shadowRoot) hosts.push(el); });
+      const targetSelector = innerSelector || options.selector;
+      if (!targetSelector) return { error: 'innerSelector or selector is required for query' };
+      for (const host of hosts) {
+        const elements = Array.from(host.shadowRoot.querySelectorAll(targetSelector)).filter(visible);
+        for (const el of elements.slice(0, 20)) {
+          results.push({ ...describe(el, results.length), hostTag: host.tagName.toLowerCase(), hostId: host.id || undefined });
+        }
+      }
+      return { success: true, action: 'query', shadowHostCount: hosts.length, count: results.length, elements: results };
+    }
+
+    if (action === 'click') {
+      if (!hostSelector) {
+        const found = deepQuery(innerSelector || options.selector);
+        if (!found) return { error: `Element not found in any shadow root: ${innerSelector || options.selector}` };
+        found.el.click();
+        return { success: true, action: 'click', hostTag: found.host.tagName.toLowerCase(), element: describe(found.el) };
+      }
+      const pierced = pierceShadow(hostSelector, innerSelector || options.selector);
+      if (pierced.error) return pierced;
+      pierced.el.click();
+      return { success: true, action: 'click', hostTag: pierced.host.tagName.toLowerCase(), element: describe(pierced.el) };
+    }
+
+    if (action === 'getText') {
+      const texts = [];
+      const hosts = [];
+      document.querySelectorAll('*').forEach(el => { if (el.shadowRoot) hosts.push(el); });
+      for (const host of hosts) {
+        const text = (host.shadowRoot.textContent || '').replace(/\s+/g, ' ').trim();
+        if (text) texts.push({ hostTag: host.tagName.toLowerCase(), hostId: host.id || undefined, text: text.slice(0, 500) });
+      }
+      return { success: true, action: 'getText', shadowHostCount: hosts.length, hosts: texts };
+    }
+
+    if (action === 'type') {
+      const text = options.text || '';
+      if (!hostSelector) {
+        const found = deepQuery(innerSelector || options.selector);
+        if (!found) return { error: `Input element not found in any shadow root: ${innerSelector || options.selector}` };
+        found.el.focus();
+        found.el.value = text;
+        found.el.dispatchEvent(new Event('input', { bubbles: true }));
+        found.el.dispatchEvent(new Event('change', { bubbles: true }));
+        return { success: true, action: 'type', hostTag: found.host.tagName.toLowerCase(), element: describe(found.el) };
+      }
+      const pierced = pierceShadow(hostSelector, innerSelector || options.selector);
+      if (pierced.error) return pierced;
+      pierced.el.focus();
+      pierced.el.value = text;
+      pierced.el.dispatchEvent(new Event('input', { bubbles: true }));
+      pierced.el.dispatchEvent(new Event('change', { bubbles: true }));
+      return { success: true, action: 'type', hostTag: pierced.host.tagName.toLowerCase(), element: describe(pierced.el) };
+    }
+
+    return { error: `Unknown shadow DOM action: ${action}. Supported: query, click, getText, type` };
+  };
+
   globalThis.__webpilot = {
     page,
     inspect,
@@ -404,6 +704,14 @@
     extract,
     getResourceList,
     safeEvaluate,
+    hover,
+    pressKey,
+    scroll,
+    selectOption,
+    dragDrop,
+    waitForDynamic,
+    iframeAction,
+    shadowDomAction,
     async waitFor(selector, state = 'visible', timeoutMs = 10000, stableMs = 150) {
       const startedAt = performance.now();
       const deadline = startedAt + timeoutMs;

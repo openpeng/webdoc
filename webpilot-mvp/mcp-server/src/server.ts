@@ -340,6 +340,326 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: "hover",
+        description: "在指定元素上触发鼠标悬停事件（mouseover/mouseenter/mousemove）。适用于下拉菜单、工具提示等 hover 交互场景。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            selector: { type: "string", description: "CSS、@eN、text=文本或 role=… 定位器" },
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+          },
+          required: ["selector"],
+        },
+      },
+      {
+        name: "press_key",
+        description: "在指定元素上模拟按键。支持 Enter、Escape、Tab、Space、ArrowUp/Down/Left/Right、Backspace、Delete 等特殊键。Enter 在表单元素上会触发提交。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            key: { type: "string", description: "按键名称，如 Enter、Escape、Tab、Space、ArrowDown 等" },
+            selector: { type: "string", description: "目标元素定位器（可选，默认当前焦点元素）" },
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+          },
+          required: ["key"],
+        },
+      },
+      {
+        name: "scroll",
+        description: "滚动页面。支持三种模式：滚动到指定元素（selector）、按方向滚动（direction）、滚动到绝对坐标（x/y）。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+            selector: { type: "string", description: "滚动到该元素（与 direction/x,y 互斥）" },
+            direction: { type: "string", enum: ["up", "down", "left", "right"], description: "按方向滚动（与 selector 互斥）" },
+            amount: { type: "number", description: "方向滚动的像素量，默认 300" },
+            x: { type: "number", description: "绝对横坐标" },
+            y: { type: "number", description: "绝对纵坐标" },
+            smooth: { type: "boolean", description: "是否使用平滑滚动，默认 false" },
+            block: { type: "string", enum: ["start", "center", "end", "nearest"], description: "scrollIntoView 的 block 对齐，默认 center" },
+          },
+          required: [],
+        },
+      },
+      {
+        name: "select_option",
+        description: "设置 <select> 下拉框的选中值。支持按 value、按文本、按标签匹配，以及模糊匹配。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            selector: { type: "string", description: "select 元素的定位器" },
+            value: { type: "string", description: "要选中的值或文本" },
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+            byLabel: { type: "boolean", description: "按 option 标签文本匹配（包含匹配）" },
+            byText: { type: "boolean", description: "按 option 文本精确匹配" },
+            fuzzy: { type: "boolean", description: "模糊匹配，当精确匹配失败时启用" },
+          },
+          required: ["selector", "value"],
+        },
+      },
+      {
+        name: "drag_drop",
+        description: "从源元素拖拽到目标元素。同时触发 HTML5 拖拽事件和鼠标事件，兼容大多数拖拽库。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            fromSelector: { type: "string", description: "源元素定位器" },
+            toSelector: { type: "string", description: "目标元素定位器" },
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+          },
+          required: ["fromSelector", "toSelector"],
+        },
+      },
+      {
+        name: "wait_for_dynamic",
+        description: "使用 MutationObserver 等待 SPA 动态内容出现。比 wait_for 更适合异步渲染场景，支持等待元素出现、文本出现、元素数量达标、网络空闲。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+            selector: { type: "string", description: "等待该 CSS 选择器匹配的元素出现" },
+            textContains: { type: "string", description: "等待页面包含该文本" },
+            minElementCount: { type: "number", description: "等待可交互元素数量达到该值" },
+            networkIdle: { type: "boolean", description: "等待 DOM 变更停止 800ms（网络空闲）" },
+            timeoutMs: { type: "number", description: "超时毫秒数，默认 10000，最大 30000" },
+          },
+          required: [],
+        },
+      },
+      {
+        name: "iframe_action",
+        description: "操作同源 iframe 内的内容。支持 getText（读取文本）、query（查询元素）、click（点击元素）。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+            action: { type: "string", enum: ["getText", "query", "click"], description: "要执行的操作" },
+            iframeSelector: { type: "string", description: "iframe 的 CSS 选择器（可选，默认第一个同源 iframe）" },
+            iframeIndex: { type: "number", description: "iframe 索引（可选，从 0 开始）" },
+            selector: { type: "string", description: "iframe 内的目标元素选择器（query/click 时使用）" },
+          },
+          required: ["action"],
+        },
+      },
+      {
+        name: "upload_file",
+        description: "通过 CDP 向 <input type=\"file\"> 元素上传文件。需提供文件的本地绝对路径。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            selector: { type: "string", description: "file input 的 CSS 选择器（可选，默认 input[type=\"file\"]）" },
+            filePath: { type: "string", description: "要上传的文件的本地绝对路径" },
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+          },
+          required: ["filePath"],
+        },
+      },
+      {
+        name: "handle_dialog",
+        description: "处理浏览器弹窗（alert/confirm/prompt）。通过 CDP Page.handleJavaScriptDialog 实现。action 设为 'dismiss' 拒绝，其他值接受并可选填 promptText。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+            action: { type: "string", description: "dismiss 拒绝弹窗；accept 接受弹窗；其他字符串作为 prompt 的输入文本接受" },
+          },
+          required: ["action"],
+        },
+      },
+      {
+        name: "download_file",
+        description: "通过浏览器下载 API 下载文件到本地下载目录。使用浏览器的登录态，可下载需要认证的资源。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            url: { type: "string", description: "要下载的文件 URL" },
+            filename: { type: "string", description: "保存的文件名（可选，默认使用 URL 中的文件名）" },
+            tabId: { type: "number", description: "目标标签页 ID（可选，仅用于审计）" },
+          },
+          required: ["url"],
+        },
+      },
+      {
+        name: "reload",
+        description: "刷新当前页面。可选择绕过缓存强制刷新。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+            bypassCache: { type: "boolean", description: "是否绕过缓存（Ctrl+Shift+R 效果），默认 false" },
+          },
+          required: [],
+        },
+      },
+      {
+        name: "go_back_forward",
+        description: "浏览器历史导航：前进或后退。当已到达历史边界时返回错误。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+            direction: { type: "string", enum: ["back", "forward"], description: "back 后退，forward 前进" },
+          },
+          required: ["direction"],
+        },
+      },
+      {
+        name: "get_url",
+        description: "获取当前页面的 URL、标题和 favicon。轻量级工具，不注入页面脚本。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+          },
+          required: [],
+        },
+      },
+      {
+        name: "full_page_screenshot",
+        description: "截取整个可滚动页面的完整截图（非仅可见区域）。通过 CDP captureBeyondViewport 实现。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+          },
+          required: [],
+        },
+      },
+      {
+        name: "element_screenshot",
+        description: "截取指定元素的截图。先定位元素获取边界，再通过 CDP clip 参数截取该区域。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            selector: { type: "string", description: "目标元素定位器（CSS、@eN、text= 等）" },
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+          },
+          required: ["selector"],
+        },
+      },
+      {
+        name: "get_console_logs",
+        description: "捕获页面的 JavaScript 控制台日志。通过 CDP Runtime.consoleAPICalled 和 Log.entryAdded 事件监听。持续指定时长后返回所有捕获的日志。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+            duration: { type: "number", description: "捕获时长（毫秒），默认 3000，最大 10000" },
+          },
+          required: [],
+        },
+      },
+      {
+        name: "shadow_dom_action",
+        description: "操作 Shadow DOM 内的元素。支持 query（查询）、click（点击）、getText（读取文本）、type（输入文本）。可自动穿透所有 shadow root 查找元素。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+            action: { type: "string", enum: ["query", "click", "getText", "type"], description: "要执行的操作" },
+            hostSelector: { type: "string", description: "Shadow host 的 CSS 选择器（可选，不填则自动搜索所有 shadow root）" },
+            innerSelector: { type: "string", description: "Shadow DOM 内的目标元素选择器" },
+            selector: { type: "string", description: "innerSelector 的别名" },
+            text: { type: "string", description: "type 操作要输入的文本" },
+          },
+          required: ["action"],
+        },
+      },
+      {
+        name: "set_viewport",
+        description: "设置视口大小和设备模拟参数。可模拟移动设备、设置 DPR、启用触摸事件。也可同时覆盖 User-Agent。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+            width: { type: "number", description: "视口宽度（像素），默认 1280" },
+            height: { type: "number", description: "视口高度（像素），默认 800" },
+            deviceScaleFactor: { type: "number", description: "设备像素比，默认 1" },
+            mobile: { type: "boolean", description: "是否模拟移动设备，默认 false" },
+            touch: { type: "boolean", description: "是否启用触摸事件模拟，默认 false" },
+            userAgent: { type: "string", description: "同时设置 User-Agent（可选）" },
+          },
+          required: [],
+        },
+      },
+      {
+        name: "set_user_agent",
+        description: "覆盖浏览器的 User-Agent 字符串。会影响后续所有网络请求和 JS navigator.userAgent。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+            userAgent: { type: "string", description: "要设置的 User-Agent 字符串" },
+          },
+          required: ["userAgent"],
+        },
+      },
+      {
+        name: "save_pdf",
+        description: "将当前页面保存为 PDF。通过 CDP Page.printToPDF 实现。可指定文件名保存到下载目录，或返回 base64 数据。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+            filename: { type: "string", description: "保存文件名（带或不带 .pdf 后缀）。不填则返回 base64 数据。" },
+            landscape: { type: "boolean", description: "横向打印，默认 false" },
+            printBackground: { type: "boolean", description: "打印背景色，默认 true" },
+            scale: { type: "number", description: "缩放比例，默认 1" },
+            paperWidth: { type: "number", description: "纸张宽度（英寸），默认 8.5" },
+            paperHeight: { type: "number", description: "纸张高度（英寸），默认 11" },
+            marginTop: { type: "number", description: "上边距（英寸），默认 0.4" },
+            marginBottom: { type: "number", description: "下边距（英寸），默认 0.4" },
+            marginLeft: { type: "number", description: "左边距（英寸），默认 0.4" },
+            marginRight: { type: "number", description: "右边距（英寸），默认 0.4" },
+            displayHeaderFooter: { type: "boolean", description: "显示页眉页脚，默认 false" },
+          },
+          required: [],
+        },
+      },
+      {
+        name: "set_geolocation",
+        description: "覆盖浏览器的地理位置。通过 CDP Emulation.setGeolocationOverride 实现。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+            latitude: { type: "number", description: "纬度" },
+            longitude: { type: "number", description: "经度" },
+            accuracy: { type: "number", description: "精度（米），默认 100" },
+          },
+          required: ["latitude", "longitude"],
+        },
+      },
+      {
+        name: "set_network_throttle",
+        description: "模拟网络条件：限速、离线或恢复正常。通过 CDP Network.emulateNetworkConditions 实现。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+            offline: { type: "boolean", description: "设为离线模式" },
+            reset: { type: "boolean", description: "恢复正常网络条件" },
+            latency: { type: "number", description: "额外延迟（毫秒），默认 100" },
+            downloadKbps: { type: "number", description: "下载速率（kbps），默认 1000" },
+            uploadKbps: { type: "number", description: "上传速率（kbps），默认 500" },
+          },
+          required: [],
+        },
+      },
+      {
+        name: "set_timezone",
+        description: "覆盖浏览器的时区。通过 CDP Emulation.setTimezoneOverride 实现。如 'Asia/Shanghai'、'America/New_York'。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+            timezone: { type: "string", description: "IANA 时区标识符，如 'Asia/Shanghai'" },
+          },
+          required: ["timezone"],
+        },
+      },
+      {
         name: "execute_js",
         description: "Deprecated: arbitrary page JavaScript is disabled. Use inspect or probe_selector instead.",
         inputSchema: {
@@ -704,6 +1024,197 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           content: [{ type: "text", text: `网络资源\n已捕获: ${result.totalCaptured}, 返回: ${result.count}, 活跃: ${result.active}\n开始时间: ${result.startedAt}\n\n${netResources}` }],
           isError: !result.success,
         };
+
+      case "hover":
+        result = await sendToExtension("hover", { selector: args.selector, tabId: args.tabId });
+        return { content: [{ type: "text", text: result.success ? `悬停成功: <${result.tagName}> ${result.text || ""}` : `悬停失败: ${result.error}` }], isError: !result.success };
+
+      case "press_key":
+        result = await sendToExtension("pressKey", { selector: args.selector, key: args.key, tabId: args.tabId });
+        return { content: [{ type: "text", text: result.success ? `按键成功: ${result.key} on <${result.tagName}>` : `按键失败: ${result.error}` }], isError: !result.success };
+
+      case "scroll":
+        result = await sendToExtension("scroll", { tabId: args.tabId, options: {
+          selector: typeof args.selector === "string" ? args.selector : undefined,
+          direction: typeof args.direction === "string" ? args.direction : undefined,
+          amount: typeof args.amount === "number" ? args.amount : undefined,
+          x: typeof args.x === "number" ? args.x : undefined,
+          y: typeof args.y === "number" ? args.y : undefined,
+          smooth: args.smooth === true,
+          block: typeof args.block === "string" ? args.block : undefined,
+        }});
+        return { content: [{ type: "text", text: result.success ? `滚动成功 (${result.mode})` : `滚动失败: ${result.error}` }], isError: !result.success };
+
+      case "select_option":
+        result = await sendToExtension("selectOption", {
+          selector: args.selector, value: args.value, tabId: args.tabId,
+          options: { byLabel: args.byLabel === true, byText: args.byText === true, fuzzy: args.fuzzy === true },
+        });
+        return { content: [{ type: "text", text: result.success
+          ? `选择成功: value="${result.value}", text="${result.selectedText}", index=${result.selectedIndex}/${result.optionCount}`
+          : `选择失败: ${result.error}` }], isError: !result.success };
+
+      case "drag_drop":
+        result = await sendToExtension("dragDrop", { fromSelector: args.fromSelector, toSelector: args.toSelector, tabId: args.tabId });
+        return { content: [{ type: "text", text: result.success
+          ? `拖拽成功: <${result.from?.tag}> → <${result.to?.tag}>`
+          : `拖拽失败: ${result.error}` }], isError: !result.success };
+
+      case "wait_for_dynamic":
+        result = await sendToExtension("waitForDynamic", { tabId: args.tabId, options: {
+          selector: typeof args.selector === "string" ? args.selector : undefined,
+          textContains: typeof args.textContains === "string" ? args.textContains : undefined,
+          minElementCount: typeof args.minElementCount === "number" ? args.minElementCount : undefined,
+          networkIdle: args.networkIdle === true,
+          timeoutMs: normalizeTimeout(args.timeoutMs),
+        }});
+        return { content: [{ type: "text", text: result.success
+          ? `动态等待成功: ${result.reason}, 耗时 ${result.durationMs}ms`
+          : `动态等待失败: ${result.error}` }], isError: !result.success };
+
+      case "iframe_action":
+        result = await sendToExtension("iframeAction", { tabId: args.tabId, options: {
+          action: args.action,
+          iframeSelector: typeof args.iframeSelector === "string" ? args.iframeSelector : undefined,
+          iframeIndex: typeof args.iframeIndex === "number" ? args.iframeIndex : undefined,
+          selector: typeof args.selector === "string" ? args.selector : undefined,
+        }});
+        if (result.action === 'getText') {
+          return { content: [{ type: "text", text: `iframe (${result.iframeSrc})\n字符数: ${result.characterCount}\n\n${result.text}` }] };
+        }
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+
+      case "upload_file":
+        result = await sendToExtension("uploadFile", { selector: args.selector, filePath: args.filePath, tabId: args.tabId });
+        return { content: [{ type: "text", text: result.success ? `上传成功: ${result.filePath}` : `上传失败: ${result.error}` }], isError: !result.success };
+
+      case "handle_dialog":
+        result = await sendToExtension("handleDialog", { action: args.action, tabId: args.tabId });
+        return { content: [{ type: "text", text: result.success ? result.message : `弹窗处理失败: ${result.error}` }], isError: !result.success };
+
+      case "download_file":
+        result = await sendToExtension("downloadFile", { url: args.url, filename: args.filename, tabId: args.tabId });
+        return { content: [{ type: "text", text: result.success ? `下载已启动 (ID: ${result.downloadId})\nURL: ${result.url}\n文件名: ${result.filename || "(默认)"}` : `下载失败: ${result.error}` }], isError: !result.success };
+
+      case "reload":
+        result = await sendToExtension("reload", { bypassCache: args.bypassCache === true, tabId: args.tabId });
+        return { content: [{ type: "text", text: result.success ? result.message : `刷新失败: ${result.error}` }], isError: !result.success };
+
+      case "go_back_forward":
+        result = await sendToExtension("goBackForward", { direction: args.direction, tabId: args.tabId });
+        return { content: [{ type: "text", text: result.success ? `${args.direction === "back" ? "后退" : "前进"}成功 → ${result.url}` : `导航失败: ${result.error}` }], isError: !result.success };
+
+      case "get_url":
+        result = await sendToExtension("getURL", { tabId: args.tabId });
+        return { content: [{ type: "text", text: result.success ? `URL: ${result.url}\n标题: ${result.title}` : `获取失败: ${result.error}` }], isError: !result.success };
+
+      case "full_page_screenshot":
+        result = await sendToExtension("fullPageScreenshot", { tabId: args.tabId });
+        if (result.success) {
+          return { content: [{ type: "image", data: result.data, mimeType: "image/png" }], isError: false };
+        }
+        return { content: [{ type: "text", text: `整页截图失败: ${result.error}` }], isError: true };
+
+      case "element_screenshot":
+        result = await sendToExtension("elementScreenshot", { selector: args.selector, tabId: args.tabId });
+        if (result.success) {
+          return { content: [{ type: "image", data: result.data, mimeType: "image/png" }], isError: false };
+        }
+        return { content: [{ type: "text", text: `元素截图失败: ${result.error}` }], isError: true };
+
+      case "get_console_logs":
+        result = await sendToExtension("getConsoleLogs", {
+          tabId: args.tabId,
+          options: { duration: typeof args.duration === "number" ? Math.min(args.duration, 10000) : 3000 },
+        });
+        if (result.success) {
+          const logStr = result.logs?.map((l: any) =>
+            `[${l.type}] ${Array.isArray(l.args) ? l.args.join(" ") : l.text || ""}${l.stackTrace ? "\n  " + l.stackTrace.join("\n  ") : ""}`
+          ).join("\n") || "(无日志)";
+          return { content: [{ type: "text", text: `控制台日志 (${result.count} 条, ${result.duration}ms)\n\n${logStr}` }] };
+        }
+        return { content: [{ type: "text", text: `日志捕获失败: ${result.error}` }], isError: true };
+
+      case "shadow_dom_action":
+        result = await sendToExtension("shadowDomAction", {
+          tabId: args.tabId,
+          options: {
+            action: args.action,
+            hostSelector: typeof args.hostSelector === "string" ? args.hostSelector : undefined,
+            innerSelector: typeof args.innerSelector === "string" ? args.innerSelector : (typeof args.selector === "string" ? args.selector : undefined),
+            text: typeof args.text === "string" ? args.text : undefined,
+          },
+        });
+        if (result.action === "getText") {
+          const textStr = result.hosts?.map((h: any) => `<${h.hostTag}${h.hostId ? " #" + h.hostId : ""}>: ${h.text}`).join("\n") || "(无文本)";
+          return { content: [{ type: "text", text: `Shadow DOM 文本 (${result.shadowHostCount} 个 host)\n\n${textStr}` }] };
+        }
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+
+      case "set_viewport":
+        result = await sendToExtension("setViewport", {
+          tabId: args.tabId,
+          options: {
+            width: typeof args.width === "number" ? args.width : undefined,
+            height: typeof args.height === "number" ? args.height : undefined,
+            deviceScaleFactor: typeof args.deviceScaleFactor === "number" ? args.deviceScaleFactor : undefined,
+            mobile: args.mobile === true,
+            touch: args.touch === true,
+            userAgent: typeof args.userAgent === "string" ? args.userAgent : undefined,
+          },
+        });
+        return { content: [{ type: "text", text: result.success ? result.message : `设置失败: ${result.error}` }], isError: !result.success };
+
+      case "set_user_agent":
+        result = await sendToExtension("setUserAgent", { userAgent: args.userAgent, tabId: args.tabId });
+        return { content: [{ type: "text", text: result.success ? result.message : `设置失败: ${result.error}` }], isError: !result.success };
+
+      case "save_pdf":
+        result = await sendToExtension("savePDF", {
+          tabId: args.tabId,
+          options: {
+            landscape: args.landscape === true,
+            printBackground: args.printBackground !== false,
+            scale: typeof args.scale === "number" ? args.scale : undefined,
+            paperWidth: typeof args.paperWidth === "number" ? args.paperWidth : undefined,
+            paperHeight: typeof args.paperHeight === "number" ? args.paperHeight : undefined,
+            marginTop: typeof args.marginTop === "number" ? args.marginTop : undefined,
+            marginBottom: typeof args.marginBottom === "number" ? args.marginBottom : undefined,
+            marginLeft: typeof args.marginLeft === "number" ? args.marginLeft : undefined,
+            marginRight: typeof args.marginRight === "number" ? args.marginRight : undefined,
+            displayHeaderFooter: args.displayHeaderFooter === true,
+          },
+          filename: typeof args.filename === "string" ? args.filename : undefined,
+        });
+        return { content: [{ type: "text", text: result.success ? result.message || "PDF 生成成功" : `PDF 生成失败: ${result.error}` }], isError: !result.success };
+
+      case "set_geolocation":
+        result = await sendToExtension("setGeolocation", {
+          tabId: args.tabId,
+          options: {
+            latitude: args.latitude,
+            longitude: args.longitude,
+            accuracy: typeof args.accuracy === "number" ? args.accuracy : undefined,
+          },
+        });
+        return { content: [{ type: "text", text: result.success ? result.message : `设置失败: ${result.error}` }], isError: !result.success };
+
+      case "set_network_throttle":
+        result = await sendToExtension("setNetworkThrottle", {
+          tabId: args.tabId,
+          options: {
+            offline: args.offline === true,
+            reset: args.reset === true,
+            latency: typeof args.latency === "number" ? args.latency : undefined,
+            downloadKbps: typeof args.downloadKbps === "number" ? args.downloadKbps : undefined,
+            uploadKbps: typeof args.uploadKbps === "number" ? args.uploadKbps : undefined,
+          },
+        });
+        return { content: [{ type: "text", text: result.success ? result.message : `设置失败: ${result.error}` }], isError: !result.success };
+
+      case "set_timezone":
+        result = await sendToExtension("setTimezone", { timezone: args.timezone, tabId: args.tabId });
+        return { content: [{ type: "text", text: result.success ? result.message : `设置失败: ${result.error}` }], isError: !result.success };
 
       case "execute_js":
         return {
