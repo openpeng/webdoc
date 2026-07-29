@@ -660,6 +660,67 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         },
       },
       {
+        name: "get_cookies",
+        description: "获取当前页面关联的 Cookie 列表。可按名称、域名、路径筛选。通过 chrome.cookies API 实现。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+            name: { type: "string", description: "按 Cookie 名称筛选" },
+            domain: { type: "string", description: "按域名筛选" },
+            path: { type: "string", description: "按路径筛选" },
+            secure: { type: "boolean", description: "仅返回安全 Cookie" },
+            session: { type: "boolean", description: "仅返回会话 Cookie" },
+          },
+          required: [],
+        },
+      },
+      {
+        name: "get_all_cookies",
+        description: "获取浏览器中所有 Cookie（跨域）。会自动过滤到当前页面相关的域名。用于审计或排查登录态问题。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选，用于确定当前域名）" },
+          },
+          required: [],
+        },
+      },
+      {
+        name: "set_cookie",
+        description: "设置或修改 Cookie。可指定名称、值、域名、路径、过期时间、安全/HttpOnly/SameSite 属性。不指定域名时自动使用当前页面域名。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+            name: { type: "string", description: "Cookie 名称" },
+            value: { type: "string", description: "Cookie 值" },
+            url: { type: "string", description: "关联 URL（可选，默认当前页面）" },
+            domain: { type: "string", description: "域名（可选，默认当前页面域名）" },
+            path: { type: "string", description: "路径，默认 /" },
+            secure: { type: "boolean", description: "是否仅 HTTPS 传输" },
+            httpOnly: { type: "boolean", description: "是否 HttpOnly" },
+            sameSite: { type: "string", enum: ["no_restriction", "lax", "strict", "unspecified"], description: "SameSite 策略" },
+            expirationDate: { type: "number", description: "过期时间（Unix 时间戳，秒）。不填为会话 Cookie。" },
+          },
+          required: ["name", "value"],
+        },
+      },
+      {
+        name: "delete_cookie",
+        description: "删除指定 Cookie。需提供 Cookie 名称，域名默认为当前页面。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+            name: { type: "string", description: "要删除的 Cookie 名称" },
+            url: { type: "string", description: "关联 URL（可选，默认当前页面）" },
+            domain: { type: "string", description: "域名（可选）" },
+          },
+          required: ["name"],
+        },
+      },
+      {
         name: "execute_js",
         description: "Deprecated: arbitrary page JavaScript is disabled. Use inspect or probe_selector instead.",
         inputSchema: {
@@ -1215,6 +1276,63 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "set_timezone":
         result = await sendToExtension("setTimezone", { timezone: args.timezone, tabId: args.tabId });
         return { content: [{ type: "text", text: result.success ? result.message : `设置失败: ${result.error}` }], isError: !result.success };
+
+      case "get_cookies":
+        result = await sendToExtension("getCookies", {
+          tabId: args.tabId,
+          options: {
+            name: typeof args.name === "string" ? args.name : undefined,
+            domain: typeof args.domain === "string" ? args.domain : undefined,
+            path: typeof args.path === "string" ? args.path : undefined,
+            secure: typeof args.secure === "boolean" ? args.secure : undefined,
+            session: typeof args.session === "boolean" ? args.session : undefined,
+          },
+        });
+        if (result.success) {
+          const cookieStr = result.cookies?.map((c: any) =>
+            `${c.name}=${c.value}${c.domain ? ` (domain: ${c.domain})` : ""}${c.secure ? " [Secure]" : ""}${c.httpOnly ? " [HttpOnly]" : ""}${c.session ? " [Session]" : ` [expires: ${new Date(c.expirationDate * 1000).toISOString()}]`}`
+          ).join("\n") || "(无 Cookie)";
+          return { content: [{ type: "text", text: `Cookie (${result.count} 条, url: ${result.url})\n\n${cookieStr}` }] };
+        }
+        return { content: [{ type: "text", text: `获取失败: ${result.error}` }], isError: true };
+
+      case "get_all_cookies":
+        result = await sendToExtension("getAllCookies", { tabId: args.tabId });
+        if (result.success) {
+          const cookieStr = result.cookies?.map((c: any) =>
+            `${c.name}=${c.value} (domain: ${c.domain})`
+          ).join("\n") || "(无 Cookie)";
+          return { content: [{ type: "text", text: `所有 Cookie (当前域: ${result.count}/${result.totalInBrowser})\n\n${cookieStr}` }] };
+        }
+        return { content: [{ type: "text", text: `获取失败: ${result.error}` }], isError: true };
+
+      case "set_cookie":
+        result = await sendToExtension("setCookie", {
+          tabId: args.tabId,
+          details: {
+            name: args.name,
+            value: args.value,
+            url: typeof args.url === "string" ? args.url : undefined,
+            domain: typeof args.domain === "string" ? args.domain : undefined,
+            path: typeof args.path === "string" ? args.path : undefined,
+            secure: typeof args.secure === "boolean" ? args.secure : undefined,
+            httpOnly: typeof args.httpOnly === "boolean" ? args.httpOnly : undefined,
+            sameSite: typeof args.sameSite === "string" ? args.sameSite : undefined,
+            expirationDate: typeof args.expirationDate === "number" ? args.expirationDate : undefined,
+          },
+        });
+        return { content: [{ type: "text", text: result.success ? result.message : `设置失败: ${result.error}` }], isError: !result.success };
+
+      case "delete_cookie":
+        result = await sendToExtension("deleteCookie", {
+          tabId: args.tabId,
+          details: {
+            name: args.name,
+            url: typeof args.url === "string" ? args.url : undefined,
+            domain: typeof args.domain === "string" ? args.domain : undefined,
+          },
+        });
+        return { content: [{ type: "text", text: result.success ? result.message : `删除失败: ${result.error}` }], isError: !result.success };
 
       case "execute_js":
         return {

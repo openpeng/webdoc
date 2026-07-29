@@ -28,7 +28,8 @@ const TAB_SCOPED_COMMANDS = new Set([
   'uploadFile', 'handleDialog', 'downloadFile',
   'reload', 'goBackForward', 'getURL', 'fullPageScreenshot', 'elementScreenshot',
   'getConsoleLogs', 'shadowDomAction', 'setViewport', 'setUserAgent',
-  'savePDF', 'setGeolocation', 'setNetworkThrottle', 'setTimezone'
+  'savePDF', 'setGeolocation', 'setNetworkThrottle', 'setTimezone',
+  'getCookies', 'setCookie', 'deleteCookie', 'getAllCookies'
 ]);
 
 function normalizeAllowedDomains(value) {
@@ -396,6 +397,18 @@ async function handleDaemonMessage(msg) {
       break;
     case 'setTimezone':
       await cmdSetTimezone(msg.timezone, msg.tabId, msg.requestId);
+      break;
+    case 'getCookies':
+      await cmdGetCookies(msg.options, msg.tabId, msg.requestId);
+      break;
+    case 'getAllCookies':
+      await cmdGetAllCookies(msg.tabId, msg.requestId);
+      break;
+    case 'setCookie':
+      await cmdSetCookie(msg.details, msg.tabId, msg.requestId);
+      break;
+    case 'deleteCookie':
+      await cmdDeleteCookie(msg.details, msg.tabId, msg.requestId);
       break;
     case 'screenshot':
       await cmdScreenshot(msg.tabId, msg.requestId);
@@ -1334,6 +1347,97 @@ async function cmdSetTimezone(timezone, tabId, requestId) {
     try { await chrome.debugger.detach({ tabId: target }); } catch { /* already detached */ }
     logOperation({ action: 'setTimezone', tabId: target, success: false, error: e.message, durationMs: Date.now() - startedAt });
     sendToDaemon({ type: 'setTimezoneResult', requestId, success: false, error: e.message });
+  }
+}
+
+// ===== Cookie 管理 =====
+async function cmdGetCookies(options, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  try {
+    const tab = await chrome.tabs.get(target);
+    const url = tab.url;
+    const cookieParams = { url };
+    if (options?.name) cookieParams.name = options.name;
+    if (options?.domain) cookieParams.domain = options.domain;
+    if (options?.path) cookieParams.path = options.path;
+    if (options?.secure !== undefined) cookieParams.secure = options.secure;
+    if (options?.session !== undefined) cookieParams.session = options.session;
+    const cookies = await chrome.cookies.getAll(cookieParams);
+    logOperation({ action: 'getCookies', tabId: target, success: true, cookieCount: cookies.length });
+    sendToDaemon({ type: 'getCookiesResult', requestId, success: true, cookies, count: cookies.length, url });
+  } catch (e) {
+    logOperation({ action: 'getCookies', tabId: target, success: false, error: e.message });
+    sendToDaemon({ type: 'getCookiesResult', requestId, success: false, error: e.message });
+  }
+}
+
+async function cmdGetAllCookies(tabId, requestId) {
+  try {
+    const tab = await chrome.tabs.get(await getTargetTabId(tabId));
+    const url = tab.url;
+    let domain;
+    try { domain = new URL(url).hostname; } catch { domain = undefined; }
+    const cookies = await chrome.cookies.getAll({});
+    // If we have a domain, filter to relevant cookies
+    const filtered = domain ? cookies.filter(c => c.domain === domain || c.domain === '.' + domain || domain.endsWith(c.domain.replace(/^\./, ''))) : cookies;
+    logOperation({ action: 'getAllCookies', tabId, success: true, cookieCount: filtered.length });
+    sendToDaemon({ type: 'getAllCookiesResult', requestId, success: true, cookies: filtered, count: filtered.length, totalInBrowser: cookies.length });
+  } catch (e) {
+    logOperation({ action: 'getAllCookies', tabId, success: false, error: e.message });
+    sendToDaemon({ type: 'getAllCookiesResult', requestId, success: false, error: e.message });
+  }
+}
+
+async function cmdSetCookie(details, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  const startedAt = Date.now();
+  try {
+    const tab = await chrome.tabs.get(target);
+    const url = details.url || tab.url;
+    let domain = details.domain;
+    if (!domain) {
+      try { domain = new URL(url).hostname; } catch { domain = undefined; }
+    }
+    const cookieDetails = {
+      url: url,
+      name: details.name,
+      value: details.value,
+      domain: domain,
+      path: details.path || '/',
+      secure: details.secure !== undefined ? details.secure : url.startsWith('https'),
+      httpOnly: details.httpOnly || false,
+      sameSite: details.sameSite || 'unspecified',
+    };
+    if (details.expirationDate) cookieDetails.expirationDate = details.expirationDate;
+    const cookie = await chrome.cookies.set(cookieDetails);
+    logOperation({ action: 'setCookie', tabId: target, success: true, cookieName: details.name, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'setCookieResult', requestId, success: true, cookie, message: `Cookie '${details.name}' set successfully` });
+  } catch (e) {
+    logOperation({ action: 'setCookie', tabId: target, success: false, error: e.message, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'setCookieResult', requestId, success: false, error: e.message });
+  }
+}
+
+async function cmdDeleteCookie(details, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  const startedAt = Date.now();
+  try {
+    const tab = await chrome.tabs.get(target);
+    const url = details.url || tab.url;
+    let domain = details.domain;
+    if (!domain) {
+      try { domain = new URL(url).hostname; } catch { domain = undefined; }
+    }
+    await chrome.cookies.remove({
+      url: url,
+      name: details.name,
+      storeId: details.storeId,
+    });
+    logOperation({ action: 'deleteCookie', tabId: target, success: true, cookieName: details.name, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'deleteCookieResult', requestId, success: true, message: `Cookie '${details.name}' deleted` });
+  } catch (e) {
+    logOperation({ action: 'deleteCookie', tabId: target, success: false, error: e.message, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'deleteCookieResult', requestId, success: false, error: e.message });
   }
 }
 
