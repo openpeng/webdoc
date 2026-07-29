@@ -2,7 +2,7 @@
 /**
  * WebPilot MCP Server
  * 暴露浏览器操作工具，供 Claude Code / Cursor / Codex 等 MCP 兼容 Agent 调用
- * 通过内置 WebSocket 服务直接与 Chrome 扩展通信
+ * 通过 BrowserBridge（Leader-Follower）与 Chrome 扩展通信，支持多进程共享
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -11,141 +11,20 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
-import { z } from "zod";
-import WebSocket, { WebSocketServer } from "ws";
 import { TaskRuntime } from "./task-runtime.js";
 import { AdapterRegistry } from "./adapters.js";
+import { BrowserBridge } from "./bridge.js";
 
-// The MCP process owns the local WebSocket bridge. This removes the need to
-// start a separate daemon process before the browser extension can connect.
-const PORT = Number(process.env.WEBPILOT_PORT) || 8765;
-let extensionClient: WebSocket | null = null;
-let requestIdCounter = 0;
-type PendingRequest = { resolve: Function; reject: Function; timeout: NodeJS.Timeout };
-type ActionLog = {
-  id: number;
-  action: string;
-  parameters: Record<string, unknown>;
-  startedAt: string;
-  finishedAt?: string;
-  durationMs?: number;
-  success?: boolean;
-  error?: string;
-};
-class BrowserActionError extends Error {
-  constructor(message: string, readonly diagnostics?: unknown) {
-    super(message);
-    this.name = "BrowserActionError";
-  }
-}
-const pendingRequests = new Map<number, PendingRequest>();
-const actionLog: ActionLog[] = [];
 const MAX_ACTION_LOG_ENTRIES = 100;
-
-function safeParameters(params: Record<string, any>): Record<string, unknown> {
-  // Keep diagnostics useful without retaining typed values or arbitrary scripts.
-  const { text, script, ...safe } = params;
-  return safe;
-}
-
-function logAction(entry: ActionLog) {
-  actionLog.push(entry);
-  if (actionLog.length > MAX_ACTION_LOG_ENTRIES) actionLog.shift();
-}
 
 function normalizeTimeout(value: unknown): number {
   if (typeof value !== "number" || !Number.isFinite(value)) return 10000;
   return Math.max(100, Math.min(Math.floor(value), 30000));
 }
 
-function rejectPendingRequests(error: Error) {
-  for (const [requestId, pending] of pendingRequests) {
-    clearTimeout(pending.timeout);
-    pendingRequests.delete(requestId);
-    pending.reject(error);
-  }
-}
-
-function startBrowserBridge(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const wss = new WebSocketServer({ port: PORT });
-
-    wss.once("listening", () => {
-      console.error(`[WebPilot MCP] Browser bridge listening on ws://localhost:${PORT}`);
-      resolve();
-    });
-    wss.once("error", reject);
-
-    wss.on("connection", (socket) => {
-      if (extensionClient && extensionClient.readyState === WebSocket.OPEN) {
-        extensionClient.close(1000, "Replaced by a newer browser extension connection");
-      }
-
-      extensionClient = socket;
-      console.error("[WebPilot MCP] Browser extension connected");
-
-      socket.on("message", (data) => {
-      try {
-        const msg = JSON.parse(data.toString());
-        if (typeof msg.requestId === "number" && pendingRequests.has(msg.requestId)) {
-          const { resolve, reject, timeout } = pendingRequests.get(msg.requestId)!;
-          clearTimeout(timeout);
-          pendingRequests.delete(msg.requestId);
-          if (msg.success === false) {
-            reject(new BrowserActionError(msg.error || "Unknown error", msg.diagnostics));
-          } else {
-            resolve(msg);
-          }
-        }
-      } catch (error) {
-        console.error("[WebPilot MCP] Failed to parse extension response:", error);
-      }
-      });
-
-      socket.on("close", () => {
-        if (extensionClient === socket) {
-          extensionClient = null;
-          console.error("[WebPilot MCP] Browser extension disconnected");
-          rejectPendingRequests(new Error("Browser extension disconnected"));
-        }
-      });
-
-      socket.on("error", (error) => {
-        console.error("[WebPilot MCP] Browser extension socket error:", error.message);
-      });
-    });
-  });
-}
-
-function sendToExtension(type: string, params: Record<string, any>): Promise<any> {
-  return new Promise((resolve, reject) => {
-    if (!extensionClient || extensionClient.readyState !== WebSocket.OPEN) {
-      reject(new Error("Browser extension is not connected. Open the WebPilot extension and click Connect."));
-      return;
-    }
-    const requestId = ++requestIdCounter;
-    const startedAt = Date.now();
-    const entry: ActionLog = { id: requestId, action: type, parameters: safeParameters(params), startedAt: new Date(startedAt).toISOString() };
-    const timeout = setTimeout(() => {
-      pendingRequests.delete(requestId);
-      const error = new Error("Request timeout (30s)");
-      logAction({ ...entry, finishedAt: new Date().toISOString(), durationMs: Date.now() - startedAt, success: false, error: error.message });
-      reject(error);
-    }, 30000);
-    pendingRequests.set(requestId, {
-      timeout,
-      resolve: (result: any) => {
-        logAction({ ...entry, finishedAt: new Date().toISOString(), durationMs: Date.now() - startedAt, success: true });
-        resolve(result);
-      },
-      reject: (error: Error) => {
-        logAction({ ...entry, finishedAt: new Date().toISOString(), durationMs: Date.now() - startedAt, success: false, error: error.message });
-        reject(error);
-      }
-    });
-    extensionClient.send(JSON.stringify({ type, requestId, ...params }));
-  });
-}
+// 本进程抢到 8765 则直连扩展（Leader），否则经 8766 转发给 Leader（Follower）。
+const bridge = new BrowserBridge();
+const sendToExtension = (type: string, params: Record<string, any>): Promise<any> => bridge.send(type, params);
 
 const taskRuntime = new TaskRuntime(sendToExtension);
 const adapterRegistry = new AdapterRegistry(sendToExtension);
@@ -796,8 +675,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "get_action_log",
-        description: "读取最近浏览器操作的时间线、耗时和错误信息；不会包含输入文本或执行脚本。",
+        description: "读取最近浏览器操作的时间线、耗时和错误信息，并附带本进程角色（leader/follower）与会话状态；不会包含输入文本或执行脚本。",
         inputSchema: { type: "object" as const, properties: { limit: { type: "number", description: "最多返回条数，默认 20，最大 100" } }, required: [] }
+      },
+      {
+        name: "cleanup_sessions",
+        description: "清理浏览器中的 WebPilot 会话标签组。默认只关闭闲置（idle）组；可指定 sessionId 定向清理。",
+        inputSchema: { type: "object" as const, properties: {
+          onlyIdle: { type: "boolean", description: "仅清理闲置组，默认 true；为 false 时连同非活跃的 active 组一起清理" },
+          sessionId: { type: "string", description: "只清理指定 sessionId 的标签组（可选）" }
+        }, required: [] }
       },
       {
         name: "start_task",
@@ -1365,8 +1252,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case "get_action_log": {
         const limit = typeof args.limit === "number" ? Math.max(1, Math.min(Math.floor(args.limit), MAX_ACTION_LOG_ENTRIES)) : 20;
-        return { content: [{ type: "text", text: JSON.stringify(actionLog.slice(-limit), null, 2) }] };
+        return { content: [{ type: "text", text: JSON.stringify({ ...bridge.status(), entries: bridge.actionLogEntries(limit) }, null, 2) }] };
       }
+
+      case "cleanup_sessions":
+        result = await sendToExtension("cleanupSessions", {
+          options: {
+            onlyIdle: args.onlyIdle !== false,
+            sessionId: typeof args.sessionId === "string" ? args.sessionId : undefined,
+          },
+        });
+        return { content: [{ type: "text", text: `已清理会话组: ${result.closed?.length ? result.closed.join(", ") : "(无)"}\n剩余组数: ${result.remaining}` }] };
 
       case "start_task":
         result = await taskRuntime.start(String(args.goal), { tabId: typeof args.tabId === "number" ? args.tabId : undefined, maxSteps: typeof args.maxSteps === "number" ? args.maxSteps : undefined });
@@ -1447,10 +1343,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
 // ===== 启动 =====
 async function main() {
-  await startBrowserBridge();
+  await bridge.start();
   const transport = new StdioServerTransport();
+  // initialize 完成后用 clientInfo.name 重新派生稳定 sessionId（同一窗口/项目重启不变）
+  server.oninitialized = () => {
+    const clientInfo = server.getClientVersion();
+    if (clientInfo?.name) bridge.setClientName(clientInfo.name);
+    console.error(`[WebPilot MCP] Session: ${bridge.sessionId} (role: ${bridge.role})`);
+  };
   await server.connect(transport);
-  console.error("[WebPilot MCP] Server running on stdio");
+  console.error(`[WebPilot MCP] Server running on stdio (role: ${bridge.role})`);
 }
 
 main().catch((err) => {

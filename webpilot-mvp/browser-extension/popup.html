@@ -47,6 +47,21 @@
     .info-value { color: #e2e8f0; font-weight: 500; }
     .security { margin-top: 12px; border-top: 1px solid #1a2340; padding-top: 12px; }
     .security-title { font-size: 12px; font-weight: 700; margin-bottom: 8px; }
+    .sessions { margin-top: 12px; border-top: 1px solid #1a2340; padding-top: 12px; }
+    .sessions-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+    .sessions-title { font-size: 12px; font-weight: 700; }
+    .btn-small { padding: 4px 8px; font-size: 10px; border: 1px solid #253354; border-radius: 5px; background: #131a2b; color: #e2e8f0; cursor: pointer; font-family: inherit; }
+    .btn-small:hover { background: #1a2340; }
+    .btn-small:disabled { color: #7a8ba7; cursor: not-allowed; }
+    .session-row {
+      display: flex; justify-content: space-between; align-items: center;
+      padding: 5px 0; border-bottom: 1px solid #1a2340; font-size: 11px;
+    }
+    .session-row:last-child { border-bottom: none; }
+    .session-name { color: #e2e8f0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 130px; }
+    .session-meta { color: #7a8ba7; flex-shrink: 0; }
+    .session-idle .session-name { color: #7a8ba7; }
+    .sessions-empty { font-size: 11px; color: #7a8ba7; padding: 4px 0; }
     label { display: block; color: #aab7cf; font-size: 11px; margin: 8px 0 4px; }
     textarea { width: 100%; min-height: 52px; resize: vertical; padding: 7px; border-radius: 6px; border: 1px solid #253354; background: #0b0f19; color: #e2e8f0; font: inherit; font-size: 11px; }
     .toggle { display: flex; align-items: center; gap: 6px; margin: 9px 0; font-size: 11px; color: #e2e8f0; cursor: pointer; }
@@ -93,6 +108,14 @@
       <span class="info-label">版本</span>
       <span class="info-value">v0.1.0</span>
     </div>
+  </div>
+
+  <div class="sessions">
+    <div class="sessions-header">
+      <span class="sessions-title">会话标签组 <span id="sessionCount"></span></span>
+      <button id="cleanupBtn" class="btn-small">清理闲置组</button>
+    </div>
+    <div id="sessionList"><div class="sessions-empty">暂无会话组</div></div>
   </div>
 
   <div class="security">

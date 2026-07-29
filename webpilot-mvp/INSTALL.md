@@ -1,6 +1,6 @@
 # Install WebPilot
 
-WebPilot connects an MCP-compatible AI client to Chrome through a local Chrome extension. One MCP Server process owns the local WebSocket bridge; do not run the legacy `daemon/` package.
+WebPilot connects an MCP-compatible AI client to Chrome through a local Chrome extension. Multiple MCP Server processes can run at the same time: the first process to bind port `8765` becomes the **leader** (it owns the extension connection), and every other process becomes a **follower** that forwards commands through the leader. Do not run the legacy `daemon/` package.
 
 ## Prerequisites
 
@@ -29,6 +29,30 @@ npm run build
 ```
 
 This creates `mcp-server/dist/server.js`. The server starts a WebSocket bridge at `ws://localhost:8765` when the AI client starts it.
+
+### Multi-agent sharing (leader-follower)
+
+Each MCP client (for example two different AI IDEs, or two windows of the same IDE in different workspaces) launches its own MCP Server process:
+
+- The first process binds `127.0.0.1:8765` and becomes the **leader**. It holds the single extension connection and additionally listens on `127.0.0.1:8766` as an internal proxy port for other processes.
+- Later processes detect that `8765` is taken, connect to `8766`, and become **followers**. Their commands are forwarded through the leader transparently.
+- When the leader exits, followers re-elect after a short random backoff: one of them binds `8765` and is promoted; the extension reconnects to the new leader automatically.
+
+Both ports bind to `127.0.0.1` only. No extra configuration is needed for multi-agent use.
+
+### Tab-group session model
+
+Every MCP process derives a stable session id from the MCP client name plus its working directory. The extension isolates each session into its own Chrome tab group named `WebPilot·{short-id}`:
+
+- Commands without an explicit `tabId` operate on the most recently used tab **inside that session's group** (a new tab is created in the group if it has none).
+- Commands with an explicit `tabId` that belongs to another session's group are rejected, so parallel agents cannot interfere with each other.
+- Different groups run in parallel; commands on the same tab run one at a time; screenshot/click-at briefly focus the tab under a global foreground lock.
+
+### Group lifecycle
+
+- When a session's MCP process disconnects, its group is marked idle: the title gains an `·idle` suffix, the group turns grey and collapses. A returning session with the same id reclaims its group.
+- Idle groups are garbage-collected after a TTL (default 30 minutes, env `WEBPILOT_GROUP_TTL_MIN` on the leader process) and the total number of groups is capped (default 5, env `WEBPILOT_MAX_GROUPS`; the oldest idle groups are closed first).
+- Manual cleanup: the extension popup has a **清理闲置组** button, and MCP clients can call the `cleanup_sessions` tool (`onlyIdle` defaults to `true`; pass a `sessionId` to close a specific group).
 
 ## 3. Register the MCP Server
 
@@ -79,7 +103,7 @@ The extension enforces these controls locally, including for MCP clients:
 
 ## Port configuration
 
-The MCP Server reads `WEBPILOT_PORT` and defaults to `8765`. The bundled extension currently connects to `ws://localhost:8765`, so do not change the server port unless you also update and reload `browser-extension/background.js` and `browser-extension/popup.js` to use the same port.
+The MCP Server reads `WEBPILOT_PORT` (extension bridge, default `8765`) and `WEBPILOT_PROXY_PORT` (internal leader-follower proxy, default `WEBPILOT_PORT + 1`, i.e. `8766`). The bundled extension currently connects to `ws://localhost:8765`, so do not change the server port unless you also update and reload `browser-extension/background.js` and `browser-extension/popup.js` to use the same port. Keep `8766` free for the internal proxy; only local processes on `127.0.0.1` can reach it.
 
 Example for a shell that supports environment variables:
 
@@ -96,6 +120,8 @@ WEBPILOT_PORT=8765 node /absolute/path/to/mcp-server/dist/server.js
 | Navigation is blocked | Add the target domain to the allowlist, including any expected redirect domain. |
 | Click or type is blocked | Disable read-only mode only when interaction is intended. |
 | Target element cannot be found | Ask the agent to call `get_page_info`, use a fresh `@eN` reference or accessible locator, and wait for the next page state with `wait_for`. |
+| A tab refuses commands ("belongs to another session") | The tab is inside another agent's `WebPilot·…` tab group. Omit `tabId` to work in your own group, or operate on tabs your session created. |
+| A `WebPilot·…` tab group disappeared | Idle groups are reclaimed by the TTL (`WEBPILOT_GROUP_TTL_MIN`, default 30 min) or the group cap (`WEBPILOT_MAX_GROUPS`, default 5). Just issue a new command — a fresh group is created automatically. |
 | Build fails | Verify the Node.js installation, delete only the project's generated dependency directory if appropriate, rerun `npm install`, then rerun `npm run build`. |
 
 For browser-task usage patterns and verified multi-step workflows, see `README.md`. For the project-distributed Codex skill, see `skills/webpilot-browser/`.

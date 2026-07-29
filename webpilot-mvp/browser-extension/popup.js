@@ -10,6 +10,9 @@ const allowlistInput = document.getElementById('allowlistInput');
 const readOnlyInput = document.getElementById('readOnlyInput');
 const saveSecurityBtn = document.getElementById('saveSecurityBtn');
 const stopBtn = document.getElementById('stopBtn');
+const sessionListEl = document.getElementById('sessionList');
+const sessionCountEl = document.getElementById('sessionCount');
+const cleanupBtn = document.getElementById('cleanupBtn');
 
 const WS_URL = 'ws://localhost:8765';
 
@@ -42,8 +45,39 @@ function setStatus(state, detail) {
   }
 }
 
+// 渲染会话标签组列表（活跃/闲置 + 各组 tab 数）
+function renderSessions(sessions) {
+  const list = Array.isArray(sessions) ? sessions : [];
+  const activeCount = list.filter(s => s.state === 'active').length;
+  sessionCountEl.textContent = list.length ? `(${activeCount} 活跃 / ${list.length - activeCount} 闲置)` : '';
+  cleanupBtn.disabled = !list.some(s => s.state !== 'active');
+  sessionListEl.textContent = '';
+  if (!list.length) {
+    const empty = document.createElement('div');
+    empty.className = 'sessions-empty';
+    empty.textContent = '暂无会话组';
+    sessionListEl.appendChild(empty);
+    return;
+  }
+  for (const s of list) {
+    const row = document.createElement('div');
+    row.className = 'session-row' + (s.state === 'active' ? '' : ' session-idle');
+    const name = document.createElement('span');
+    name.className = 'session-name';
+    name.textContent = s.title || s.sessionId;
+    name.title = s.sessionId;
+    const meta = document.createElement('span');
+    meta.className = 'session-meta';
+    meta.textContent = `${s.tabCount} tab · ${s.state === 'active' ? '活跃' : '闲置'}`;
+    row.appendChild(name);
+    row.appendChild(meta);
+    sessionListEl.appendChild(row);
+  }
+}
+
 // 加载时查询后台的连接状态
 chrome.runtime.sendMessage({ type: 'getStatus' }, (res) => {
+  renderSessions(res?.sessions);
   if (res?.security?.emergencyStopped) {
     setStatus('stopped');
     tabCountEl.textContent = 0;
@@ -103,6 +137,19 @@ stopBtn.addEventListener('click', () => {
   });
 });
 
+cleanupBtn.addEventListener('click', () => {
+  cleanupBtn.disabled = true;
+  chrome.runtime.sendMessage({ type: 'cleanupIdleGroups' }, (res) => {
+    if (res?.success) {
+      renderSessions(res.sessions);
+      statusDetail.textContent = res.closed?.length ? `已清理 ${res.closed.length} 个闲置组` : '没有可清理的闲置组';
+    } else {
+      cleanupBtn.disabled = false;
+      statusDetail.textContent = res?.error || '清理失败';
+    }
+  });
+});
+
 // 监听来自 background 的状态变化
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'statusChange') {
@@ -116,5 +163,8 @@ chrome.runtime.onMessage.addListener((msg) => {
   }
   if (msg.type === 'tabCountChange') {
     tabCountEl.textContent = msg.count || 0;
+  }
+  if (msg.type === 'sessionSummary') {
+    renderSessions(msg.sessions);
   }
 });

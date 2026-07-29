@@ -4,15 +4,30 @@ const WS_URL = 'ws://localhost:8765';
 const AUTO_CONNECT_ALARM = 'webpilot-auto-connect';
 const AUTO_CONNECT_RETRY_MINUTES = 1;
 const HEARTBEAT_INTERVAL_MS = 20_000;
-const WEBPILOT_TAB_GROUP_TITLE = 'webpilot';
+const SESSION_GROUP_PREFIX = 'WebPilot';
+const DEFAULT_SESSION_ID = 'default';
+const GROUP_GC_ALARM = 'webpilot-group-gc';
+const GROUP_GC_PERIOD_MINUTES = 5;
+const GROUP_COLORS = ['blue', 'red', 'yellow', 'green', 'pink', 'purple', 'cyan', 'orange'];
+const DEFAULT_GROUP_TTL_MINUTES = 30;
+const DEFAULT_MAX_GROUPS = 5;
+// 必须前台可见的命令：captureVisibleTab / 视口坐标点击，受全局前台锁保护
+const FOREGROUND_COMMANDS = new Set(['screenshot', 'clickAt']);
 
 let ws = null;
 let isConnected = false;
 let connectingPromise = null;
 let heartbeatTimer = null;
 let managedTabs = new Set();
-let webpilotTabGroupId = null;
-let webpilotTabGroupQueue = Promise.resolve();
+// sessionId -> { groupId, state: 'active'|'idle', lastActiveAt, color }，持久化到 storage.local
+let sessionGroups = null;
+let sessionGroupsLoading = null;
+const sessionGroupQueues = new Map(); // sessionId -> promise 链，防止并发重复建组
+const sessionLastTab = new Map();     // sessionId -> 组内最近使用的 tabId
+let activeSessions = new Set();       // Leader 下发的活跃 sessionId 列表
+let gcConfig = { ttlMinutes: DEFAULT_GROUP_TTL_MINUTES, maxGroups: DEFAULT_MAX_GROUPS };
+const tabQueues = new Map();          // tabId -> promise 链（同 tab 串行）
+let foregroundLock = Promise.resolve(); // 全局前台互斥锁
 let cdpSocket = null;
 let cdpTabId = null;
 const MAX_OPERATION_LOGS = 100;
@@ -68,9 +83,8 @@ async function assertCommandAllowed(msg) {
   if (settings.emergencyStopped) throw new Error('WebPilot has been stopped locally. Re-enable it from the extension popup before continuing.');
   if (settings.readOnlyMode && READ_ONLY_BLOCKED_COMMANDS.has(msg.type)) throw new Error(`Blocked by read-only mode: ${msg.type}`);
   if (!settings.allowedDomains.length || !TAB_SCOPED_COMMANDS.has(msg.type)) return;
-  const tab = msg.type === 'navigate'
-    ? null
-    : await chrome.tabs.get(await getTargetTabId(msg.tabId));
+  // msg.tabId 已在 handleDaemonMessage 中解析为本 session 的具体 tab
+  const tab = msg.type === 'navigate' ? null : await chrome.tabs.get(msg.tabId);
   const url = msg.type === 'navigate' ? msg.url : tab?.url;
   if (!isUrlAllowed(url, settings.allowedDomains)) throw new Error(`Blocked by domain allowlist: ${url || 'unknown URL'}`);
 }
@@ -203,7 +217,6 @@ function disconnectWebSocket() {
   if (socket) socket.close();
   isConnected = false;
   managedTabs.clear();
-  webpilotTabGroupId = null;
   cdpSocket = null;
   cdpTabId = null;
   // Stop all network captures
@@ -218,17 +231,20 @@ function disconnectWebSocket() {
 chrome.runtime.onInstalled.addListener(async () => {
   const { autoConnectEnabled } = await chrome.storage.local.get('autoConnectEnabled');
   if (autoConnectEnabled === undefined) await chrome.storage.local.set({ autoConnectEnabled: true });
+  await ensureGroupGcAlarm();
   await restoreManagedTabs();
   await tryAutoConnect();
 });
 
 chrome.runtime.onStartup.addListener(() => {
+  void ensureGroupGcAlarm();
   void restoreManagedTabs();
   void tryAutoConnect();
 });
 
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === AUTO_CONNECT_ALARM) void tryAutoConnect();
+  if (alarm.name === GROUP_GC_ALARM) void runGroupGc();
 });
 
 // A click can trigger a navigation without an explicit navigate command. For
@@ -243,12 +259,26 @@ chrome.tabs.onUpdated.addListener(async (tabId, changeInfo) => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
+  tabQueues.delete(tabId);
+  for (const [sessionId, lastTab] of sessionLastTab) {
+    if (lastTab === tabId) sessionLastTab.delete(sessionId);
+  }
   if (!managedTabs.delete(tabId)) return;
   chrome.runtime.sendMessage({ type: 'tabCountChange', count: managedTabs.size }).catch(() => {});
 });
 
-chrome.tabGroups.onRemoved.addListener((group) => {
-  if (group.id === webpilotTabGroupId) webpilotTabGroupId = null;
+// 组被用户手动关闭时同步清理 session 映射
+chrome.tabGroups.onRemoved.addListener(async (group) => {
+  const groups = await getSessionGroups();
+  let changed = false;
+  for (const sessionId of Object.keys(groups)) {
+    if (groups[sessionId].groupId === group.id) {
+      delete groups[sessionId];
+      sessionLastTab.delete(sessionId);
+      changed = true;
+    }
+  }
+  if (changed) await saveSessionGroups();
 });
 
 // 向所有监听者广播状态变化
@@ -264,12 +294,25 @@ function broadcastStatus(connected, wsUrl, reason) {
 
 // ===== 处理 Daemon 发来的指令 =====
 async function handleDaemonMessage(msg) {
-  console.log('[WebPilot] Daemon msg:', msg.type);
+  console.log('[WebPilot] Daemon msg:', msg.type, msg.sessionId ? `(session ${String(msg.sessionId).slice(0, 8)})` : '');
 
+  // Leader 推送的活跃会话列表（无 requestId，单向）
+  if (msg.type === 'sessionUpdate') {
+    await handleSessionUpdate(msg);
+    return;
+  }
+
+  const sessionId = typeof msg.sessionId === 'string' && msg.sessionId ? msg.sessionId : DEFAULT_SESSION_ID;
+  let targetTabId = null;
   try {
+    if (TAB_SCOPED_COMMANDS.has(msg.type)) {
+      // 默认 tab = 本 session 组内最近使用的 tab；显式 tabId 做跨组校验
+      targetTabId = await getTargetTabId(msg.tabId, sessionId);
+      msg.tabId = targetTabId;
+    }
     await assertCommandAllowed(msg);
-    if (TAB_SCOPED_COMMANDS.has(msg.type) && msg.type !== 'navigate') {
-      await markTabAsManaged(await getTargetTabId(msg.tabId));
+    if (targetTabId !== null && msg.type !== 'navigate') {
+      await markTabAsManaged(targetTabId, sessionId);
     }
   } catch (error) {
     logOperation({ action: msg.type, tabId: msg.tabId, success: false, error: error.message, policyBlocked: true });
@@ -277,9 +320,22 @@ async function handleDaemonMessage(msg) {
     return;
   }
 
+  if (targetTabId === null) {
+    await dispatchCommand(msg, sessionId);
+    return;
+  }
+
+  sessionLastTab.set(sessionId, targetTabId);
+  // 同 tab 串行；不同 tab（含跨 session 组）并行；前台命令再套全局前台锁
+  await enqueueOnTab(targetTabId, () => FOREGROUND_COMMANDS.has(msg.type)
+    ? runWithForegroundLock(targetTabId, () => dispatchCommand(msg, sessionId))
+    : dispatchCommand(msg, sessionId));
+}
+
+async function dispatchCommand(msg, sessionId) {
   switch (msg.type) {
     case 'navigate':
-      await cmdNavigate(msg.url, msg.tabId, msg.requestId);
+      await cmdNavigate(msg.url, msg.tabId, msg.requestId, sessionId);
       break;
     case 'click':
       await cmdClick(msg.selector, msg.tabId, msg.requestId, msg.timeoutMs);
@@ -419,69 +475,174 @@ async function handleDaemonMessage(msg) {
     case 'getOperationLog':
       await cmdGetOperationLog(msg.requestId);
       break;
+    case 'cleanupSessions':
+      await cmdCleanupSessions(msg.options, msg.requestId);
+      break;
     default:
       sendToDaemon({ type: 'error', requestId: msg.requestId, error: `Unknown command: ${msg.type}` });
   }
 }
 
-// ===== CDP 操作封装 =====
-async function getTargetTabId(tabId) {
-  if (tabId) return tabId;
-  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-  return tabs[0]?.id;
-}
-
-async function findWebPilotTabGroup() {
-  if (typeof webpilotTabGroupId === 'number') {
-    try {
-      const group = await chrome.tabGroups.get(webpilotTabGroupId);
-      if (group.title === WEBPILOT_TAB_GROUP_TITLE) return group;
-    } catch {
-      // The group may have been closed or moved while the service worker slept.
-    }
-    webpilotTabGroupId = null;
+// ===== 会话标签组：一个 agent = 一个标签组 =====
+async function getSessionGroups() {
+  if (sessionGroups) return sessionGroups;
+  if (!sessionGroupsLoading) {
+    // service worker 休眠/浏览器重启后从 storage.local 恢复映射
+    sessionGroupsLoading = chrome.storage.local.get(['sessionGroups', 'gcConfig']).then(stored => {
+      if (!sessionGroups) sessionGroups = stored.sessionGroups || {};
+      if (stored.gcConfig) gcConfig = stored.gcConfig;
+      return sessionGroups;
+    });
   }
-
-  const groups = await chrome.tabGroups.query({ title: WEBPILOT_TAB_GROUP_TITLE });
-  const group = groups.sort((left, right) => left.id - right.id)[0];
-  if (group) webpilotTabGroupId = group.id;
-  return group || null;
+  return sessionGroupsLoading;
 }
 
-async function addTabToWebPilotGroup(tabId) {
+function saveSessionGroups() {
+  return chrome.storage.local.set({ sessionGroups: sessionGroups || {} });
+}
+
+function sessionShortId(sessionId) {
+  return String(sessionId || DEFAULT_SESSION_ID).slice(0, 12);
+}
+
+function groupTitle(sessionId, idle) {
+  return `${SESSION_GROUP_PREFIX}·${sessionShortId(sessionId)}${idle ? '·idle' : ''}`;
+}
+
+function pickGroupColor(groups) {
+  const used = new Set(Object.values(groups).map(entry => entry.color));
+  return GROUP_COLORS.find(color => !used.has(color)) || GROUP_COLORS[Object.keys(groups).length % GROUP_COLORS.length];
+}
+
+async function getSessionGroupId(sessionId) {
+  const groups = await getSessionGroups();
+  const entry = groups[sessionId];
+  if (!entry) return null;
+  try {
+    await chrome.tabGroups.get(entry.groupId);
+    return entry.groupId;
+  } catch {
+    // 组已被关闭或浏览器重启后 groupId 失效
+    delete groups[sessionId];
+    await saveSessionGroups();
+    return null;
+  }
+}
+
+async function assertTabUsableBySession(tabId, sessionId) {
   const tab = await chrome.tabs.get(tabId);
-  let group = await findWebPilotTabGroup();
+  if (typeof tab.groupId !== 'number' || tab.groupId < 0) return; // 用户自己的散 tab，允许认领
+  const groups = await getSessionGroups();
+  const owner = Object.keys(groups).find(id => groups[id].groupId === tab.groupId);
+  if (owner && owner !== sessionId) {
+    throw new Error(`Tab ${tabId} belongs to another agent's group "${groupTitle(owner, groups[owner].state === 'idle')}". Use a tab in your own WebPilot group or omit tabId.`);
+  }
+}
 
-  // Chrome tab groups are scoped to one window. Keep a single WebPilot group
-  // by moving a tool-managed tab into the window that owns the existing group.
-  if (group && group.windowId !== tab.windowId) {
-    await chrome.tabs.move(tabId, { windowId: group.windowId, index: -1 });
+async function getTargetTabId(tabId, sessionId) {
+  if (tabId) {
+    // sessionId 缺省时为内部调用（tab 已经过跨组校验），直接放行
+    if (sessionId) await assertTabUsableBySession(tabId, sessionId);
+    return tabId;
+  }
+  const session = sessionId || DEFAULT_SESSION_ID;
+  const groupId = await getSessionGroupId(session);
+  if (groupId !== null) {
+    const tabs = await chrome.tabs.query({ groupId });
+    if (tabs.length) {
+      const remembered = sessionLastTab.get(session);
+      if (remembered && tabs.some(tab => tab.id === remembered)) return remembered;
+      tabs.sort((left, right) => (right.lastAccessed || 0) - (left.lastAccessed || 0));
+      return tabs[0].id;
+    }
+  }
+  // 组内无 tab：新建空 tab 纳入本组，避免落到其他 agent 的前台 tab
+  const created = await chrome.tabs.create({ url: 'about:blank', active: false });
+  await markTabAsManaged(created.id, session);
+  return created.id;
+}
+
+async function addTabToSessionGroup(tabId, sessionId) {
+  const groups = await getSessionGroups();
+  const tab = await chrome.tabs.get(tabId);
+  let entry = groups[sessionId];
+  let groupId = await getSessionGroupId(sessionId);
+
+  if (groupId === null) {
+    // 复用优先：认领任一 idle 组（保留其 tab 与登录态并重命名），再没有才新建
+    const idleId = Object.keys(groups).find(id => id !== sessionId && groups[id].state === 'idle');
+    if (idleId) {
+      try {
+        await chrome.tabGroups.get(groups[idleId].groupId);
+        groupId = groups[idleId].groupId;
+        entry = { ...groups[idleId] };
+      } catch { /* 映射已失效 */ }
+      delete groups[idleId];
+      sessionLastTab.delete(idleId);
+    }
   }
 
-  const groupId = group
-    ? await chrome.tabs.group({ tabIds: [tabId], groupId: group.id })
-    : await chrome.tabs.group({ tabIds: [tabId] });
+  if (groupId !== null) {
+    const group = await chrome.tabGroups.get(groupId);
+    // Chrome 标签组只属于一个窗口；把 tab 移到组所在窗口保持单组
+    if (group.windowId !== tab.windowId) await chrome.tabs.move(tabId, { windowId: group.windowId, index: -1 });
+    if (tab.groupId !== groupId) await chrome.tabs.group({ tabIds: [tabId], groupId });
+  } else {
+    groupId = await chrome.tabs.group({ tabIds: [tabId] });
+  }
 
-  if (!group) await chrome.tabGroups.update(groupId, { title: WEBPILOT_TAB_GROUP_TITLE });
-  webpilotTabGroupId = groupId;
+  const wasActive = entry && entry.groupId === groupId && entry.state === 'active';
+  const color = entry?.color || pickGroupColor(groups);
+  groups[sessionId] = { groupId, state: 'active', lastActiveAt: Date.now(), color };
+  if (!wasActive) {
+    await chrome.tabGroups.update(groupId, { title: groupTitle(sessionId, false), color, collapsed: false });
+  }
+  await saveSessionGroups();
   return groupId;
 }
 
-function markTabAsManaged(tabId) {
+function markTabAsManaged(tabId, sessionId) {
   if (!tabId) throw new Error('No active tab');
   managedTabs.add(tabId);
-  // Commands arrive serially from the bridge most of the time, but this queue
-  // also prevents simultaneous commands from creating duplicate tab groups.
-  const queued = webpilotTabGroupQueue.then(() => addTabToWebPilotGroup(tabId));
-  webpilotTabGroupQueue = queued.catch(() => {});
+  const session = sessionId || DEFAULT_SESSION_ID;
+  // 每个 session 一条建组队列，防止并发命令重复建组
+  const prev = sessionGroupQueues.get(session) || Promise.resolve();
+  const queued = prev.then(() => addTabToSessionGroup(tabId, session));
+  sessionGroupQueues.set(session, queued.catch(() => {}));
   return queued;
 }
 
 async function restoreManagedTabs() {
-  const group = await findWebPilotTabGroup();
-  if (!group) return;
-  const tabs = await chrome.tabs.query({ groupId: group.id });
-  for (const tab of tabs) managedTabs.add(tab.id);
+  const groups = await getSessionGroups();
+  for (const sessionId of Object.keys(groups)) {
+    try {
+      const tabs = await chrome.tabs.query({ groupId: groups[sessionId].groupId });
+      for (const tab of tabs) managedTabs.add(tab.id);
+    } catch { /* 组已不存在 */ }
+  }
+}
+
+// ===== 并发控制：同 tab 串行 + 全局前台锁 =====
+function enqueueOnTab(tabId, run) {
+  const prev = tabQueues.get(tabId) || Promise.resolve();
+  const next = prev.catch(() => {}).then(run);
+  tabQueues.set(tabId, next);
+  next.finally(() => {
+    if (tabQueues.get(tabId) === next) tabQueues.delete(tabId);
+  }).catch(() => {});
+  return next;
+}
+
+function runWithForegroundLock(tabId, run) {
+  // 抢锁 → 激活 tab → 执行 → 释放；锁粒度为单命令
+  const acquired = foregroundLock.catch(() => {}).then(async () => {
+    const tab = await chrome.tabs.get(tabId);
+    await chrome.windows.update(tab.windowId, { focused: true });
+    await chrome.tabs.update(tabId, { active: true });
+    return run();
+  });
+  foregroundLock = acquired.catch(() => {});
+  return acquired;
 }
 
 function waitForTabLoad(tabId, timeoutMs = 30000) {
@@ -524,9 +685,10 @@ async function callPageTool(tabId, method, args = []) {
   return result.result;
 }
 
-async function cmdNavigate(url, tabId, requestId) {
+async function cmdNavigate(url, tabId, requestId, sessionId) {
   const startedAt = Date.now();
-  const targetTab = tabId || (await chrome.tabs.query({ active: true, currentWindow: true }))[0]?.id;
+  // handleDaemonMessage 已把 tabId 解析为本 session 组内的 tab
+  const targetTab = tabId;
   if (!targetTab) {
     sendToDaemon({ type: 'navigateResult', requestId, success: false, error: 'No active tab' });
     return;
@@ -534,10 +696,10 @@ async function cmdNavigate(url, tabId, requestId) {
   try {
     // Mark before navigation so an immediate server-side redirect is covered by
     // the allowlist listener as well.
-    await markTabAsManaged(targetTab);
+    await markTabAsManaged(targetTab, sessionId);
     const tab = await chrome.tabs.update(targetTab, { url });
     const loadedTab = await waitForTabLoad(tab.id);
-    await markTabAsManaged(tab.id);
+    await markTabAsManaged(tab.id, sessionId);
     chrome.runtime.sendMessage({ type: 'tabCountChange', count: managedTabs.size }).catch(()=>{});
     const result = { success: true, tabId: tab.id, url: loadedTab.url, title: loadedTab.title, diagnostics: { durationMs: Date.now() - startedAt } };
     logOperation({ action: 'navigate', tabId: tab.id, url, success: true, durationMs: result.diagnostics.durationMs });
@@ -1444,7 +1606,9 @@ async function cmdDeleteCookie(details, tabId, requestId) {
 async function cmdScreenshot(tabId, requestId) {
   const target = await getTargetTabId(tabId);
   try {
-    const dataUrl = await chrome.tabs.captureVisibleTab(undefined, { format: 'png' });
+    // 前台锁已先激活目标 tab；按其所在窗口截取可见区域
+    const tab = await chrome.tabs.get(target);
+    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'png' });
     // 转为 base64 字符串
     const base64 = dataUrl.split(',')[1];
     sendToDaemon({ type: 'screenshotResult', requestId, success: true, data: base64, format: 'png' });
@@ -1469,6 +1633,137 @@ async function cmdGetOperationLog(requestId) {
   sendToDaemon({ type: 'operationLogResult', requestId, success: true, entries: operationLogs });
 }
 
+// ===== 标签组生命周期：闲置标记、TTL/上限回收、手动清理 =====
+function ensureGroupGcAlarm() {
+  return chrome.alarms.create(GROUP_GC_ALARM, { periodInMinutes: GROUP_GC_PERIOD_MINUTES });
+}
+
+async function handleSessionUpdate(msg) {
+  activeSessions = new Set(Array.isArray(msg.activeSessions) ? msg.activeSessions : []);
+  if (msg.config) {
+    gcConfig = {
+      ttlMinutes: Number.isFinite(msg.config.ttlMinutes) ? msg.config.ttlMinutes : DEFAULT_GROUP_TTL_MINUTES,
+      maxGroups: Number.isFinite(msg.config.maxGroups) && msg.config.maxGroups > 0 ? msg.config.maxGroups : DEFAULT_MAX_GROUPS
+    };
+    await chrome.storage.local.set({ gcConfig });
+  }
+  const groups = await getSessionGroups();
+  for (const sessionId of Object.keys(groups)) {
+    if (activeSessions.has(sessionId) && groups[sessionId].state === 'idle') {
+      await setGroupIdleState(sessionId, false);
+    } else if (!activeSessions.has(sessionId) && groups[sessionId].state === 'active') {
+      await setGroupIdleState(sessionId, true);
+    }
+  }
+  broadcastSessionSummary();
+}
+
+// 会话断开 = 标记闲置（变灰+折叠+·idle），tab 全部保留；恢复时反向
+async function setGroupIdleState(sessionId, idle) {
+  const groups = await getSessionGroups();
+  const entry = groups[sessionId];
+  if (!entry) return;
+  entry.state = idle ? 'idle' : 'active';
+  entry.lastActiveAt = Date.now();
+  try {
+    await chrome.tabGroups.update(entry.groupId, idle
+      ? { title: groupTitle(sessionId, true), color: 'grey', collapsed: true }
+      : { title: groupTitle(sessionId, false), color: entry.color || pickGroupColor(groups), collapsed: false });
+  } catch {
+    delete groups[sessionId];
+  }
+  await saveSessionGroups();
+}
+
+async function closeSessionGroup(sessionId) {
+  const groups = await getSessionGroups();
+  const entry = groups[sessionId];
+  if (!entry) return false;
+  try {
+    const tabs = await chrome.tabs.query({ groupId: entry.groupId });
+    if (tabs.length) await chrome.tabs.remove(tabs.map(tab => tab.id));
+  } catch { /* 组已不存在 */ }
+  delete groups[sessionId];
+  sessionLastTab.delete(sessionId);
+  await saveSessionGroups();
+  return true;
+}
+
+// TTL + 组数上限兜底回收，由 chrome.alarms 周期触发（不依赖 service worker 常驻）
+async function runGroupGc() {
+  const groups = await getSessionGroups();
+  const now = Date.now();
+  if (gcConfig.ttlMinutes > 0) {
+    const ttlMs = gcConfig.ttlMinutes * 60_000;
+    for (const sessionId of Object.keys(groups)) {
+      if (groups[sessionId].state === 'idle' && now - groups[sessionId].lastActiveAt > ttlMs) {
+        await closeSessionGroup(sessionId);
+      }
+    }
+  }
+  // 超上限时关闭最旧的 idle 组（活跃组永不回收）
+  const idleOldestFirst = Object.keys(groups)
+    .filter(sessionId => groups[sessionId].state === 'idle')
+    .sort((left, right) => groups[left].lastActiveAt - groups[right].lastActiveAt);
+  while (Object.keys(groups).length > gcConfig.maxGroups && idleOldestFirst.length) {
+    await closeSessionGroup(idleOldestFirst.shift());
+  }
+}
+
+async function cleanupGroups({ onlyIdle = true, sessionId } = {}) {
+  const groups = await getSessionGroups();
+  const closed = [];
+  for (const id of Object.keys(groups)) {
+    if (sessionId) {
+      if (id !== sessionId) continue;
+    } else if (onlyIdle && groups[id].state !== 'idle') {
+      continue;
+    } else if (!onlyIdle && activeSessions.has(id)) {
+      continue; // 活跃会话的组不参与批量清理
+    }
+    if (await closeSessionGroup(id)) closed.push(id);
+  }
+  return { closed, remaining: Object.keys(groups).length };
+}
+
+async function cmdCleanupSessions(options, requestId) {
+  try {
+    const result = await cleanupGroups(options || {});
+    logOperation({ action: 'cleanupSessions', success: true, closed: result.closed });
+    sendToDaemon({ type: 'cleanupSessionsResult', requestId, success: true, ...result });
+  } catch (e) {
+    logOperation({ action: 'cleanupSessions', success: false, error: e.message });
+    sendToDaemon({ type: 'cleanupSessionsResult', requestId, success: false, error: e.message });
+  }
+}
+
+async function getSessionSummaries() {
+  const groups = await getSessionGroups();
+  const sessions = [];
+  for (const sessionId of Object.keys(groups)) {
+    let tabCount = 0;
+    try {
+      tabCount = (await chrome.tabs.query({ groupId: groups[sessionId].groupId })).length;
+    } catch {
+      continue;
+    }
+    sessions.push({
+      sessionId,
+      state: groups[sessionId].state,
+      tabCount,
+      title: groupTitle(sessionId, groups[sessionId].state === 'idle'),
+      active: activeSessions.has(sessionId)
+    });
+  }
+  return sessions;
+}
+
+function broadcastSessionSummary() {
+  getSessionSummaries()
+    .then(sessions => chrome.runtime.sendMessage({ type: 'sessionSummary', sessions }).catch(() => {}))
+    .catch(() => {});
+}
+
 function sendToDaemon(data) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify(data));
@@ -1478,7 +1773,14 @@ function sendToDaemon(data) {
 // ===== Message Router =====
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'getStatus') {
-    getSecuritySettings().then(security => sendResponse({ connected: isConnected, wsUrl: WS_URL, tabCount: managedTabs.size, security }));
+    Promise.all([getSecuritySettings(), getSessionSummaries()])
+      .then(([security, sessions]) => sendResponse({ connected: isConnected, wsUrl: WS_URL, tabCount: managedTabs.size, security, sessions }));
+    return true;
+  }
+  if (msg.type === 'cleanupIdleGroups') {
+    cleanupGroups({ onlyIdle: true })
+      .then(result => getSessionSummaries().then(sessions => sendResponse({ success: true, ...result, sessions })))
+      .catch(error => sendResponse({ success: false, error: error.message }));
     return true;
   }
   if (msg.type === 'getSecuritySettings') {
