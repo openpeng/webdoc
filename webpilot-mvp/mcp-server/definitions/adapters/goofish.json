@@ -1,0 +1,33 @@
+[
+  {
+    "id": "goofish-search-results",
+    "name": "闲鱼搜索结果",
+    "description": "将闲鱼搜索结果提取成商品标题和链接数组。只读。",
+    "domains": ["goofish.com"],
+    "pathPattern": "^/search",
+    "spec": {
+      "list": {
+        "selector": "a[href*=\"/item\"]",
+        "limit": 20,
+        "fields": {
+          "title": { "selector": "$self" },
+          "url": { "selector": "$self", "attribute": "href" }
+        }
+      }
+    }
+  },
+  {
+    "id": "goofish-item",
+    "name": "闲鱼商品详情",
+    "description": "读取闲鱼商品页的标题、价格和描述元信息。只读。",
+    "domains": ["goofish.com"],
+    "pathPattern": "^/item",
+    "spec": {
+      "fields": {
+        "title": { "selector": "meta[property=\"og:title\"]", "attribute": "content" },
+        "description": { "selector": "meta[name=\"description\"]", "attribute": "content" },
+        "price": { "selector": "[class*=\"price\"]" }
+      }
+    }
+  }
+]

@@ -1,0 +1,27 @@
+[
+  {
+    "id": "preset-weixin-article-open",
+    "name": "打开公众号文章",
+    "goal": "打开公众号文章 {{articleUrl}} 并等待正文加载",
+    "createdAt": "2026-07-29T00:00:00.000Z",
+    "domains": ["mp.weixin.qq.com"],
+    "plan": {
+      "name": "打开公众号文章",
+      "currentStep": 0,
+      "steps": [
+        {
+          "id": "open-article",
+          "objective": "打开文章链接",
+          "action": { "action": "navigate", "url": "{{articleUrl}}" },
+          "verification": { "kind": "url_includes", "value": "mp.weixin.qq.com" }
+        },
+        {
+          "id": "wait-content",
+          "objective": "等待正文渲染，之后可用 weixin-article 适配器提取",
+          "action": { "action": "wait", "selector": "#js_content", "state": "visible" },
+          "verification": { "kind": "locator_visible", "selector": "#js_content" }
+        }
+      ]
+    }
+  }
+]

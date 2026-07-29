@@ -1236,7 +1236,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case "list_adapters": {
         const page = await sendToExtension("getPageInfo", { tabId: args.tabId });
-        return { content: [{ type: "text", text: JSON.stringify(adapterRegistry.list(page.url), null, 2) }] };
+        return { content: [{ type: "text", text: JSON.stringify(await adapterRegistry.list(page.url), null, 2) }] };
       }
 
       case "extract_with_adapter":
@@ -1248,7 +1248,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
 
       case "get_adapter_health":
-        return { content: [{ type: "text", text: JSON.stringify(adapterRegistry.healthReport(), null, 2) }] };
+        return { content: [{ type: "text", text: JSON.stringify(await adapterRegistry.healthReport(), null, 2) }] };
 
       case "get_action_log": {
         const limit = typeof args.limit === "number" ? Math.max(1, Math.min(Math.floor(args.limit), MAX_ACTION_LOG_ENTRIES)) : 20;

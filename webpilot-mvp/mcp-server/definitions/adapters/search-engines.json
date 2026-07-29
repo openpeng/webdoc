@@ -1,0 +1,42 @@
+[
+  {
+    "id": "baidu-search-results",
+    "name": "百度搜索结果",
+    "description": "提取百度搜索结果页的标题、链接和相关搜索词。只读。",
+    "domains": ["baidu.com"],
+    "pathPattern": "^/s/?$",
+    "spec": {
+      "fields": {
+        "relatedSearches": { "selector": "#rs a, .rs-link_2DE3Q", "multiple": true, "limit": 10 }
+      },
+      "list": {
+        "selector": "#content_left h3 a",
+        "limit": 20,
+        "fields": {
+          "title": { "selector": "$self" },
+          "url": { "selector": "$self", "attribute": "href" }
+        }
+      }
+    }
+  },
+  {
+    "id": "google-search-results",
+    "name": "Google 搜索结果",
+    "description": "提取 Google 搜索结果页的标题、链接和结果统计。只读。",
+    "domains": ["www.google.com", "google.com"],
+    "pathPattern": "^/search",
+    "spec": {
+      "fields": {
+        "resultStats": { "selector": "#result-stats" }
+      },
+      "list": {
+        "selector": "#search a:has(> h3), #search a:has(h3)",
+        "limit": 20,
+        "fields": {
+          "title": { "selector": "h3" },
+          "url": { "selector": "$self", "attribute": "href" }
+        }
+      }
+    }
+  }
+]

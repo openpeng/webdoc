@@ -1,0 +1,42 @@
+[
+  {
+    "id": "zhihu-question",
+    "name": "知乎问题页",
+    "description": "读取知乎问题标题、问题描述和前 10 条回答的作者、摘要与赞同数。只读。",
+    "domains": ["zhihu.com"],
+    "pathPattern": "^/question/\\d+",
+    "spec": {
+      "fields": {
+        "title": { "selector": "h1.QuestionHeader-title" },
+        "detail": { "selector": ".QuestionRichText" }
+      },
+      "list": {
+        "selector": ".List-item",
+        "limit": 10,
+        "fields": {
+          "author": { "selector": ".AuthorInfo-name" },
+          "excerpt": { "selector": ".RichContent-inner" },
+          "upvotes": { "selector": "button.VoteButton--up" }
+        }
+      }
+    }
+  },
+  {
+    "id": "zhihu-search-results",
+    "name": "知乎搜索结果",
+    "description": "将知乎搜索结果提取成标题、链接和摘要数组。只读。",
+    "domains": ["zhihu.com"],
+    "pathPattern": "^/search",
+    "spec": {
+      "list": {
+        "selector": ".SearchResult-Card",
+        "limit": 20,
+        "fields": {
+          "title": { "selector": "h2.ContentItem-title" },
+          "url": { "selector": "h2.ContentItem-title a", "attribute": "href" },
+          "excerpt": { "selector": ".RichContent-inner" }
+        }
+      }
+    }
+  }
+]

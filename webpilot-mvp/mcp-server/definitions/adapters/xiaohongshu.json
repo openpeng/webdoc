@@ -1,0 +1,37 @@
+[
+  {
+    "id": "xiaohongshu-feed",
+    "name": "小红书信息流/搜索结果",
+    "description": "提取小红书发现页或搜索结果中的笔记卡片：标题、链接、作者和点赞数。只读。",
+    "domains": ["xiaohongshu.com"],
+    "pathPattern": "^/(explore/?$|search_result)",
+    "spec": {
+      "list": {
+        "selector": "section.note-item",
+        "limit": 20,
+        "fields": {
+          "title": { "selector": "a.title, .footer .title" },
+          "url": { "selector": "a.cover", "attribute": "href" },
+          "author": { "selector": ".author .name, .card-bottom-wrapper .name" },
+          "likes": { "selector": ".like-wrapper .count" }
+        }
+      }
+    }
+  },
+  {
+    "id": "xiaohongshu-note",
+    "name": "小红书笔记详情",
+    "description": "读取小红书笔记的标题、正文、作者和点赞数。只读。",
+    "domains": ["xiaohongshu.com"],
+    "pathPattern": "^/(explore|discovery/item)/[0-9a-zA-Z]+",
+    "spec": {
+      "fields": {
+        "title": { "selector": "#detail-title" },
+        "content": { "selector": "#detail-desc" },
+        "author": { "selector": ".author-container .username, .info .name" },
+        "likes": { "selector": ".like-wrapper .count" },
+        "ogTitle": { "selector": "meta[property=\"og:title\"]", "attribute": "content" }
+      }
+    }
+  }
+]

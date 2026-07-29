@@ -148,15 +148,38 @@ Saved workflows also retain the domains observed during their completed run.
 Use `recommend_workflows` on a page to retrieve only matching experience before
 choosing whether to instantiate a workflow.
 
+The server also ships **preset workflows** (ids prefixed with `preset-`,
+defined as JSON data files in `mcp-server/definitions/workflows/`) for common
+operations on frequently used sites: direct search on Baidu, Google, GitHub,
+Zhihu, Juejin, Xiaohongshu, and Goofish (`{{query}}`, URL-encoded by the
+caller), opening a WeChat article (`{{articleUrl}}`), and asking ChatGLM,
+Doubao, or Gemini (`{{prompt}}`). Presets appear in `list_workflows` /
+`recommend_workflows` with `preset: true`, are never written to
+`workflows.json`, and replay with the same observation and verification
+discipline as saved workflows.
+
+Both adapters and preset workflows load at runtime from JSON definition files
+(`mcp-server/definitions/adapters/` and `.../workflows/`), so adding, editing,
+or sharing a definition never requires code changes or a rebuild — just edit
+JSON. Set `WEBPILOT_ADAPTER_DIR` / `WEBPILOT_WORKFLOW_DEF_DIR` to an external
+directory to add or override definitions per user/team (same `id` overrides the
+built-in). Every definition is re-validated on load against a strict whitelist,
+so external JSON can never inject executable JavaScript or literal typed input.
+
 ## Site adapters
 
 Adapters return compact, structured, read-only data for frequently visited pages;
-they do not expose arbitrary JavaScript. Start with `list_adapters`, or use
+they do not expose arbitrary JavaScript. Coverage currently includes GitHub,
+Baidu and Google search results, Zhihu, Xiaohongshu, Juejin, WeChat articles,
+Goofish, and the ChatGLM/Doubao/Gemini conversation views, plus a generic
+summary for any HTTPS page. Start with `list_adapters`, or use
 `extract_with_best_adapter` to prefer the most specific matching adapter. If a
 site-specific extractor breaks after a DOM change, the tool falls back to the
 generic summary and returns the failed adapter list. `get_adapter_health` makes
 those failures and latency visible so an adapter can be repaired deliberately.
-See `docs/adapter-authoring.md` for the restricted declarative adapter contract.
+See `docs/adapter-authoring.md` for the restricted declarative adapter contract,
+and `docs/task-sedimentation-guide.md` for choosing between adapters, workflows,
+and skill guidance when persisting page-specific tasks.
 
 ## Security boundary
 

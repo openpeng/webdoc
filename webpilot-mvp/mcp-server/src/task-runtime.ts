@@ -1,8 +1,18 @@
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
+import { loadDefinitions, workflowDefinitionDirs } from "./definitions.js";
 
 type BrowserCall = (type: string, params: Record<string, unknown>) => Promise<any>;
+
+// 预置工作流 id 前缀：与用户保存的 UUID 工作流区分，且永不写回磁盘。
+const PRESET_WORKFLOW_PREFIX = "preset-";
+// type 动作文本必须是 {{参数}} 占位符，绝不能包含字面输入或凭据。
+const PARAMETER_PLACEHOLDER = /^\{\{[A-Za-z_][A-Za-z0-9_]*\}\}$/;
+// navigate 目标只允许 http(s)，阻止外部 JSON 定义导航到 file://、chrome:// 等非 Web scheme。
+const NAVIGATE_URL = /^https?:\/\//i;
+const WAIT_STATES = new Set(["visible", "hidden", "attached"]);
+const VERIFICATION_KINDS = new Set(["url_includes", "url_equals", "title_includes", "text_present", "text_absent", "locator_visible", "locator_hidden", "interactive_count_at_least"]);
 type TaskState = "observing" | "verifying" | "completed" | "paused" | "failed" | "cancelled";
 type PageSnapshot = { url: string; title: string; readyState: string; elementCount: number; interactiveElements: any[]; fingerprint: string };
 type TaskEvent = { at: string; type: string; data: Record<string, unknown> };
@@ -47,6 +57,66 @@ function sanitizePage(page: any): PageSnapshot {
 function safeAction(action: Record<string, any>): Record<string, unknown> {
   const { text, script, ...safe } = action;
   return safe;
+}
+
+// 校验并重建一个步骤动作：与适配器一致，只保留各动作的白名单键，不透传未知字段。
+function toStepAction(raw: any, where: string): Record<string, any> {
+  if (!raw || typeof raw !== "object" || !["navigate", "click", "type", "wait"].includes(raw.action)) throw new Error(`${where}: action must be navigate, click, type, or wait`);
+  if (raw.action === "navigate") {
+    if (typeof raw.url !== "string") throw new Error(`${where}: navigate requires url`);
+    if (!NAVIGATE_URL.test(raw.url) && !PARAMETER_PLACEHOLDER.test(raw.url)) throw new Error(`${where}: navigate url must be http(s) or a {{param}} placeholder`);
+    return { action: "navigate", url: raw.url };
+  }
+  if (typeof raw.selector !== "string" || !raw.selector.trim()) throw new Error(`${where}: ${raw.action} requires a selector`);
+  if (raw.action === "type") {
+    if (typeof raw.text !== "string") throw new Error(`${where}: type requires text`);
+    if (!PARAMETER_PLACEHOLDER.test(raw.text)) throw new Error(`${where}: type text must be a {{param}} placeholder`);
+    return { action: "type", selector: raw.selector, text: raw.text };
+  }
+  if (raw.action === "wait") {
+    const safe: Record<string, any> = { action: "wait", selector: raw.selector };
+    if (raw.state !== undefined) {
+      if (!WAIT_STATES.has(raw.state)) throw new Error(`${where}: wait state must be one of visible|hidden|attached`);
+      safe.state = raw.state;
+    }
+    return safe;
+  }
+  return { action: "click", selector: raw.selector };
+}
+
+// 校验并重建验证断言：kind 必须在白名单内，只保留 value/selector 两个已知字段。
+function toVerification(raw: any, where: string): Record<string, unknown> | undefined {
+  if (raw === undefined) return undefined;
+  if (!raw || typeof raw !== "object" || typeof raw.kind !== "string" || !VERIFICATION_KINDS.has(raw.kind)) throw new Error(`${where}: verification.kind must be a supported assertion`);
+  const safe: Record<string, unknown> = { kind: raw.kind };
+  if (raw.value !== undefined) {
+    if (typeof raw.value !== "string" && typeof raw.value !== "number") throw new Error(`${where}: verification.value must be a string or number`);
+    safe.value = raw.value;
+  }
+  if (raw.selector !== undefined) {
+    if (typeof raw.selector !== "string") throw new Error(`${where}: verification.selector must be a string`);
+    safe.selector = raw.selector;
+  }
+  return safe;
+}
+
+// 校验并重建一条预置工作流：外部 JSON 定义必须通过与手写工作流一致的安全门槛。
+// id 必须带 preset- 前缀，步骤动作与验证断言都按白名单重建，type 文本必须是 {{参数}} 占位符。
+function validatePresetWorkflow(raw: any): Workflow {
+  if (!raw || typeof raw !== "object") throw new Error("workflow must be an object");
+  if (typeof raw.id !== "string" || !raw.id.startsWith(PRESET_WORKFLOW_PREFIX)) throw new Error(`preset workflow id must start with ${PRESET_WORKFLOW_PREFIX}`);
+  const where = `workflow ${raw.id}`;
+  if (typeof raw.name !== "string" || !raw.name.trim()) throw new Error(`${where}: requires a name`);
+  if (typeof raw.goal !== "string" || !raw.goal.trim()) throw new Error(`${where}: requires a goal`);
+  if (!Array.isArray(raw.domains) || !raw.domains.every((domain: any) => typeof domain === "string")) throw new Error(`${where}: domains must be an array of strings`);
+  const plan = raw.plan;
+  if (!plan || typeof plan !== "object" || !Array.isArray(plan.steps) || plan.steps.length === 0 || plan.steps.length > 50) throw new Error(`${where}: plan requires 1–50 steps`);
+  const steps: PlannedStep[] = plan.steps.map((rawStep: any, index: number): PlannedStep => {
+    const stepWhere = `${where} step ${index + 1}`;
+    const action = toStepAction(rawStep?.action, stepWhere);
+    return { id: typeof rawStep.id === "string" ? rawStep.id : `step-${index + 1}`, objective: String(rawStep.objective || action.action), action, verification: toVerification(rawStep.verification, stepWhere) };
+  });
+  return { id: raw.id, name: raw.name, goal: raw.goal, createdAt: typeof raw.createdAt === "string" ? raw.createdAt : new Date().toISOString(), plan: { name: String(plan.name || raw.name), steps, currentStep: 0 }, domains: raw.domains };
 }
 
 export class TaskRuntime {
@@ -315,10 +385,14 @@ export class TaskRuntime {
   private async loadWorkflows() {
     if (this.workflowsLoaded) return;
     this.workflowsLoaded = true;
+    // 预置工作流以 JSON 数据文件沉淀，运行时加载并只在内存中合并；保存的工作流使用 UUID，不会与 preset- 前缀冲突。
+    const { items, errors } = await loadDefinitions(workflowDefinitionDirs(), validatePresetWorkflow);
+    for (const preset of items) this.workflows.set(preset.id, preset);
+    for (const error of errors) console.error(`[workflows] skipped preset from ${error.source}: ${error.error}`);
     try {
       const workflows = JSON.parse(await readFile(this.workflowFile, "utf8"));
       if (Array.isArray(workflows)) workflows.forEach((workflow: Workflow) => {
-        if (workflow?.id && workflow?.plan) this.workflows.set(workflow.id, { ...workflow, domains: Array.isArray(workflow.domains) ? workflow.domains : [] });
+        if (workflow?.id && workflow?.plan && !workflow.id.startsWith(PRESET_WORKFLOW_PREFIX)) this.workflows.set(workflow.id, { ...workflow, domains: Array.isArray(workflow.domains) ? workflow.domains : [] });
       });
     } catch (error: any) {
       if (error.code !== "ENOENT") throw new Error(`Could not load workflows: ${error.message}`);
@@ -327,12 +401,13 @@ export class TaskRuntime {
 
   private async persistWorkflows() {
     await mkdir(dirname(this.workflowFile), { recursive: true });
-    await writeFile(this.workflowFile, JSON.stringify([...this.workflows.values()], null, 2), "utf8");
+    const saved = [...this.workflows.values()].filter(workflow => !workflow.id.startsWith(PRESET_WORKFLOW_PREFIX));
+    await writeFile(this.workflowFile, JSON.stringify(saved, null, 2), "utf8");
   }
 
   private assertWorkflowSafe(plan: TaskPlan) {
     for (const step of plan.steps) {
-      if (step.action.action === "type" && typeof step.action.text === "string" && !/^\{\{[A-Za-z_][A-Za-z0-9_]*\}\}$/.test(step.action.text)) {
+      if (step.action.action === "type" && typeof step.action.text === "string" && !PARAMETER_PLACEHOLDER.test(step.action.text)) {
         throw new Error(`Plan step ${step.id} has literal typed text. Replace it with a parameter such as {{query}} before saving a workflow.`);
       }
     }
@@ -351,7 +426,7 @@ export class TaskRuntime {
   }
 
   private workflowSummary(workflow: Workflow) {
-    return { id: workflow.id, name: workflow.name, goal: workflow.goal, createdAt: workflow.createdAt, stepCount: workflow.plan.steps.length, domains: workflow.domains || [] };
+    return { id: workflow.id, name: workflow.name, goal: workflow.goal, createdAt: workflow.createdAt, stepCount: workflow.plan.steps.length, domains: workflow.domains || [], preset: workflow.id.startsWith(PRESET_WORKFLOW_PREFIX) };
   }
 
   private workflowDomains(task: Task) {

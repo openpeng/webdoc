@@ -1,0 +1,177 @@
+[
+  {
+    "id": "preset-baidu-search",
+    "name": "百度搜索",
+    "goal": "在百度搜索 {{query}} 并等待结果列表",
+    "createdAt": "2026-07-29T00:00:00.000Z",
+    "domains": ["baidu.com"],
+    "plan": {
+      "name": "百度搜索",
+      "currentStep": 0,
+      "steps": [
+        {
+          "id": "open-results",
+          "objective": "直达搜索结果页",
+          "action": { "action": "navigate", "url": "https://www.baidu.com/s?wd={{query}}" },
+          "verification": { "kind": "url_includes", "value": "baidu.com/s" }
+        },
+        {
+          "id": "wait-results",
+          "objective": "等待结果列表渲染",
+          "action": { "action": "wait", "selector": "#content_left", "state": "visible" },
+          "verification": { "kind": "locator_visible", "selector": "#content_left" }
+        }
+      ]
+    }
+  },
+  {
+    "id": "preset-google-search",
+    "name": "Google 搜索",
+    "goal": "在 Google 搜索 {{query}} 并等待结果列表",
+    "createdAt": "2026-07-29T00:00:00.000Z",
+    "domains": ["www.google.com"],
+    "plan": {
+      "name": "Google 搜索",
+      "currentStep": 0,
+      "steps": [
+        {
+          "id": "open-results",
+          "objective": "直达搜索结果页",
+          "action": { "action": "navigate", "url": "https://www.google.com/search?q={{query}}" },
+          "verification": { "kind": "url_includes", "value": "google.com/search" }
+        },
+        {
+          "id": "wait-results",
+          "objective": "等待结果列表渲染",
+          "action": { "action": "wait", "selector": "#search", "state": "visible" },
+          "verification": { "kind": "locator_visible", "selector": "#search" }
+        }
+      ]
+    }
+  },
+  {
+    "id": "preset-github-repo-search",
+    "name": "GitHub 仓库搜索",
+    "goal": "在 GitHub 搜索仓库 {{query}} 并等待结果列表",
+    "createdAt": "2026-07-29T00:00:00.000Z",
+    "domains": ["github.com"],
+    "plan": {
+      "name": "GitHub 仓库搜索",
+      "currentStep": 0,
+      "steps": [
+        {
+          "id": "open-results",
+          "objective": "直达搜索结果页",
+          "action": { "action": "navigate", "url": "https://github.com/search?q={{query}}&type=repositories" },
+          "verification": { "kind": "url_includes", "value": "github.com/search" }
+        },
+        {
+          "id": "wait-results",
+          "objective": "等待结果列表渲染",
+          "action": { "action": "wait", "selector": "[data-testid=\"results-list\"]", "state": "visible" },
+          "verification": { "kind": "locator_visible", "selector": "[data-testid=\"results-list\"]" }
+        }
+      ]
+    }
+  },
+  {
+    "id": "preset-zhihu-search",
+    "name": "知乎搜索",
+    "goal": "在知乎搜索 {{query}} 并等待结果卡片",
+    "createdAt": "2026-07-29T00:00:00.000Z",
+    "domains": ["zhihu.com"],
+    "plan": {
+      "name": "知乎搜索",
+      "currentStep": 0,
+      "steps": [
+        {
+          "id": "open-results",
+          "objective": "直达搜索结果页",
+          "action": { "action": "navigate", "url": "https://www.zhihu.com/search?type=content&q={{query}}" },
+          "verification": { "kind": "url_includes", "value": "zhihu.com/search" }
+        },
+        {
+          "id": "wait-results",
+          "objective": "等待结果列表渲染",
+          "action": { "action": "wait", "selector": ".SearchResult-Card", "state": "visible" },
+          "verification": { "kind": "locator_visible", "selector": ".SearchResult-Card" }
+        }
+      ]
+    }
+  },
+  {
+    "id": "preset-juejin-search",
+    "name": "掘金搜索",
+    "goal": "在掘金搜索 {{query}} 并等待文章列表",
+    "createdAt": "2026-07-29T00:00:00.000Z",
+    "domains": ["juejin.cn"],
+    "plan": {
+      "name": "掘金搜索",
+      "currentStep": 0,
+      "steps": [
+        {
+          "id": "open-results",
+          "objective": "直达搜索结果页",
+          "action": { "action": "navigate", "url": "https://juejin.cn/search?query={{query}}" },
+          "verification": { "kind": "url_includes", "value": "juejin.cn/search" }
+        },
+        {
+          "id": "wait-results",
+          "objective": "等待结果列表渲染",
+          "action": { "action": "wait", "selector": "a[href*=\"/post/\"]", "state": "visible" },
+          "verification": { "kind": "locator_visible", "selector": "a[href*=\"/post/\"]" }
+        }
+      ]
+    }
+  },
+  {
+    "id": "preset-xiaohongshu-search",
+    "name": "小红书搜索",
+    "goal": "在小红书搜索 {{query}} 并等待笔记卡片",
+    "createdAt": "2026-07-29T00:00:00.000Z",
+    "domains": ["xiaohongshu.com"],
+    "plan": {
+      "name": "小红书搜索",
+      "currentStep": 0,
+      "steps": [
+        {
+          "id": "open-results",
+          "objective": "直达搜索结果页",
+          "action": { "action": "navigate", "url": "https://www.xiaohongshu.com/search_result?keyword={{query}}" },
+          "verification": { "kind": "url_includes", "value": "xiaohongshu.com/search_result" }
+        },
+        {
+          "id": "wait-results",
+          "objective": "等待结果列表渲染",
+          "action": { "action": "wait", "selector": "section.note-item", "state": "visible" },
+          "verification": { "kind": "locator_visible", "selector": "section.note-item" }
+        }
+      ]
+    }
+  },
+  {
+    "id": "preset-goofish-search",
+    "name": "闲鱼搜索",
+    "goal": "在闲鱼搜索 {{query}} 并等待商品列表",
+    "createdAt": "2026-07-29T00:00:00.000Z",
+    "domains": ["goofish.com"],
+    "plan": {
+      "name": "闲鱼搜索",
+      "currentStep": 0,
+      "steps": [
+        {
+          "id": "open-results",
+          "objective": "直达搜索结果页",
+          "action": { "action": "navigate", "url": "https://www.goofish.com/search?q={{query}}" },
+          "verification": { "kind": "url_includes", "value": "goofish.com/search" }
+        },
+        {
+          "id": "wait-results",
+          "objective": "等待结果列表渲染",
+          "action": { "action": "wait", "selector": "a[href*=\"/item\"]", "state": "visible" },
+          "verification": { "kind": "locator_visible", "selector": "a[href*=\"/item\"]" }
+        }
+      ]
+    }
+  }
+]

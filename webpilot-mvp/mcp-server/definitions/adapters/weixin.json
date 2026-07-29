@@ -1,0 +1,18 @@
+[
+  {
+    "id": "weixin-article",
+    "name": "微信公众号文章",
+    "description": "读取公众号文章的标题、公众号名称、发布时间、摘要和正文标题层级。只读。",
+    "domains": ["mp.weixin.qq.com"],
+    "pathPattern": "^/s",
+    "spec": {
+      "fields": {
+        "title": { "selector": "#activity-name" },
+        "account": { "selector": "#js_name" },
+        "publishTime": { "selector": "#publish_time" },
+        "description": { "selector": "meta[property=\"og:description\"]", "attribute": "content" },
+        "headings": { "selector": "#js_content h1, #js_content h2, #js_content h3", "multiple": true, "limit": 30 }
+      }
+    }
+  }
+]
