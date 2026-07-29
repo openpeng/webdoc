@@ -12,6 +12,7 @@ Use WebPilot to operate the user's locally connected Chrome extension. Prefer ob
 - Call `list_tabs` when the target tab is unclear, then pass its `tabId` to subsequent tools.
 - If the extension is disconnected, instruct the user to open the WebPilot extension and select **Connect**. Do not start the legacy `daemon/` package.
 - Respect the extension's domain allowlist, read-only mode, and emergency stop. These are local safeguards; do not try to bypass them.
+- Each MCP session works inside its own `WebPilot·{id}` Chrome tab group. Omit `tabId` to act in your own group; a `tabId` from another session's group is rejected. Use `cleanup_sessions` only to close idle groups (default `onlyIdle: true`) or a specific `sessionId`.
 - Treat navigation, reading, adapter extraction, and screenshots as low-risk. Before any irreversible or consequential action (submitting, purchasing, deleting, sending, or publishing), describe the final effect and obtain confirmation unless the user explicitly asked for that exact action.
 
 ## Select the workflow

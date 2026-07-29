@@ -10,6 +10,8 @@ AI client -- stdio --> MCP Server (also WebSocket bridge) <-- ws://localhost:876
 
 The MCP Server now includes the WebSocket bridge. Do not start the legacy `daemon/` package: one MCP process is the only required local service.
 
+Multiple MCP processes can run at once. The first to bind `8765` becomes the **leader** and owns the extension connection; later processes become **followers** and forward commands through the leader over the internal proxy port `8766`. See `INSTALL.md` for the full leader-follower and session model.
+
 ## Setup
 
 1. Install the extension from `browser-extension/` through `chrome://extensions/` in developer mode.
@@ -47,6 +49,9 @@ Clicking **Disconnect** intentionally disables automatic reconnection; use
 | Variable | Default | Description |
 | --- | --- | --- |
 | `WEBPILOT_PORT` | `8765` | Port used by the MCP Server's built-in WebSocket bridge. |
+| `WEBPILOT_PROXY_PORT` | `WEBPILOT_PORT + 1` (`8766`) | Internal `127.0.0.1` proxy port used by followers to reach the leader. |
+| `WEBPILOT_GROUP_TTL_MIN` | `30` | Minutes an idle session tab group is kept before it is garbage-collected (leader process). |
+| `WEBPILOT_MAX_GROUPS` | `5` | Maximum number of session tab groups; the oldest idle groups are closed first. |
 
 ## Tools
 
@@ -65,6 +70,7 @@ Clicking **Disconnect** intentionally disables automatic reconnection; use
 | `list_tabs` | List browser tabs. |
 | `wait_for` | Wait until a locator is visible, attached, or hidden. |
 | `get_action_log` | Read recent action durations and errors (without entered text or scripts). |
+| `cleanup_sessions` | Close WebPilot session tab groups; by default only idle groups (`onlyIdle`), or a specific `sessionId`. |
 | `list_adapters` / `extract_with_adapter` | Discover and use a specific read-only site adapter. |
 | `extract_with_best_adapter` | Select the most specific adapter and fall back to a generic summary with evidence. |
 | `get_adapter_health` | Inspect adapter success, latency, and recent DOM-extraction errors. |
@@ -165,12 +171,24 @@ bypass them:
 - **Emergency stop:** disconnects the bridge, disables automatic reconnection,
   and rejects new remote commands. Select **Connect** to resume deliberately.
 
-## Browser tab group
+## Session tab groups
 
-WebPilot puts every tab it operates into one Chrome tab group named
-**webpilot**. The extension reuses this group after restart; if a target tab is
-in another window, it moves that tab into the group's window so the browser
-still contains only one WebPilot group.
+Each MCP process derives a stable session id from its MCP client name plus working
+directory, and the extension isolates that session into its own Chrome tab group
+named `WebPilot·{short-id}`:
+
+- A command without an explicit `tabId` operates on the most recently used tab
+  inside its own session group, creating one if the group is empty.
+- A command whose `tabId` belongs to another session's group is rejected, so
+  parallel agents cannot interfere with each other.
+- When a session's MCP process disconnects, its group is marked `·idle`, turns
+  grey, and collapses; a returning session with the same id reclaims it.
+- Idle groups are garbage-collected after `WEBPILOT_GROUP_TTL_MIN` (default 30
+  minutes) and the total is capped by `WEBPILOT_MAX_GROUPS` (default 5, oldest
+  idle groups closed first).
+- Clean up manually with the extension popup's **清理闲置组** button or the
+  `cleanup_sessions` tool (`onlyIdle` defaults to `true`; pass a `sessionId` to
+  close a specific group).
 
 ## Notes
 
