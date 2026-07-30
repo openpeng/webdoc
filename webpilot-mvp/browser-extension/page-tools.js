@@ -120,6 +120,32 @@
       return fail(`Invalid CSS selector: ${error.message}`, value);
     }
   };
+  // 为选择器缓存派生可跨会话复用的定位符：每个候选都用 resolve() 复验，
+  // 必须唯一命中同一元素才采用；@eN/@wpN 不可序列化，永不作为结果。
+  const durableLocator = element => {
+    const candidates = [];
+    if (element.id && /^[A-Za-z][\w-]*$/.test(element.id)) candidates.push(`#${CSS.escape(element.id)}`);
+    for (const attr of ['data-testid', 'data-test']) {
+      const value = element.getAttribute(attr);
+      if (value && !/["\\]/.test(value)) candidates.push(`[${attr}="${value}"]`);
+    }
+    const label = name(element);
+    if (label && label.length <= 80 && !/["']/.test(label)) {
+      const role = element.getAttribute('role') || implicitRole(element);
+      if (role) candidates.push(`role=${role}[name="${label}"]`);
+      candidates.push(`text=${label}`);
+    }
+    const hint = classHint(element);
+    if (hint) candidates.push(`${element.tagName.toLowerCase()}.${hint.split(' ').join('.')}`);
+    for (const candidate of candidates) {
+      // CSS 候选额外要求全文档唯一；text=/role= 的唯一性由 resolve 自身保证。
+      if (!candidate.startsWith('text=') && !candidate.startsWith('role=')) {
+        try { if (document.querySelectorAll(candidate).length !== 1) continue; } catch { continue; }
+      }
+      if (resolve(candidate).element === element) return candidate;
+    }
+    return undefined;
+  };
   const focusedScope = () => {
     let focus = document.activeElement;
     if (!focus || focus === document.body || focus === document.documentElement) {
@@ -199,6 +225,60 @@
       viewport: { width: innerWidth, height: innerHeight, scrollX, scrollY },
       elementCount: current.length,
       interactiveElements: current.slice(0, limit).map((el, index) => describe(el, index))
+    };
+  };
+  // —— 树形页面表示：把交互元素按语义容器（landmark/dialog/list 行等）分组 ——
+  // 只收录“能帮 Agent 消歧义”的容器，不是完整 aria 树；元素集合与平铺 page() 一致，
+  // 因此 @eN 索引在两种形态间可互换。
+  const CONTAINER_ROLES = new Set(['main', 'navigation', 'banner', 'contentinfo', 'complementary', 'search', 'dialog', 'alertdialog', 'form', 'list', 'listitem', 'row', 'table', 'grid', 'tablist', 'menu', 'region', 'article']);
+  const containerRole = element => {
+    const explicit = element.getAttribute?.('role');
+    if (explicit && CONTAINER_ROLES.has(explicit)) return explicit;
+    const tag = element.tagName?.toLowerCase();
+    return {
+      main: 'main', nav: 'navigation', header: 'banner', footer: 'contentinfo', aside: 'complementary',
+      dialog: 'dialog', form: 'form', ul: 'list', ol: 'list', li: 'listitem', tr: 'row', table: 'table',
+      article: 'article', fieldset: 'form', section: element.getAttribute?.('aria-label') ? 'region' : ''
+    }[tag] || '';
+  };
+  const containerLabel = element => normalise(
+    element.getAttribute?.('aria-label') ||
+    element.querySelector?.(':scope > legend, :scope > summary, :scope h1, :scope h2, :scope h3')?.innerText ||
+    (['listitem', 'row'].includes(containerRole(element)) ? element.innerText : '')
+  ).slice(0, 60);
+  const containerPath = element => {
+    const path = [];
+    let current = element.parentElement;
+    while (current && current !== document.body && path.length < 4) {
+      const role = containerRole(current);
+      if (role) path.unshift(current);
+      current = current.parentElement;
+    }
+    return path;
+  };
+  const pageTree = (limit = 60) => {
+    const current = elements();
+    const root = { role: 'page', label: '', children: [], elements: [] };
+    const nodeFor = new Map(); // 容器 DOM 节点 -> 树节点，同一容器只建一次
+    current.slice(0, limit).forEach((el, index) => {
+      let parent = root;
+      for (const container of containerPath(el)) {
+        let node = nodeFor.get(container);
+        if (!node) {
+          node = { role: containerRole(container), label: containerLabel(container), children: [], elements: [] };
+          nodeFor.set(container, node);
+          parent.children.push(node);
+        }
+        parent = node;
+      }
+      parent.elements.push(describe(el, index));
+    });
+    return {
+      url: location.href,
+      title: document.title,
+      readyState: document.readyState,
+      elementCount: current.length,
+      tree: root
     };
   };
   const snapshot = () => ({ url: location.href, title: document.title, readyState: document.readyState, timestamp: new Date().toISOString() });
@@ -697,6 +777,7 @@
 
   globalThis.__webpilot = {
     page,
+    pageTree,
     inspect,
     probe,
     readText,
@@ -746,11 +827,13 @@
       const element = resolved.element;
       if (element.disabled || element.getAttribute('aria-disabled') === 'true') return { success: false, error: 'Element is disabled', diagnostics: { element: describe(element, resolved.index) } };
       const before = snapshot();
+      // 点击可能触发导航，耐久定位符必须在点击前派生。
+      const durableSelector = durableLocator(element);
       element.scrollIntoView({ block: 'center', inline: 'center' });
       element.click();
       await new Promise(resolve => setTimeout(resolve, 100));
       const after = snapshot();
-      return { success: true, tagName: element.tagName, text: name(element), diagnostics: { locator: selector, strategy: resolved.strategy, element: describe(element, resolved.index), before, after, pageChanged: before.url !== after.url || before.title !== after.title } };
+      return { success: true, tagName: element.tagName, text: name(element), diagnostics: { locator: selector, strategy: resolved.strategy, durableSelector, element: describe(element, resolved.index), before, after, pageChanged: before.url !== after.url || before.title !== after.title } };
     },
     async clickAt(x, y) {
       if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || y < 0 || x >= innerWidth || y >= innerHeight) {
@@ -787,7 +870,7 @@
       element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
       element.dispatchEvent(new Event('change', { bubbles: true }));
       await new Promise(resolve => setTimeout(resolve, 50));
-      return { success: true, tagName: element.tagName, mode, diagnostics: { locator: selector, strategy: resolved.strategy, element: describe(element, resolved.index), before, after: snapshot() } };
+      return { success: true, tagName: element.tagName, mode, diagnostics: { locator: selector, strategy: resolved.strategy, durableSelector: durableLocator(element), element: describe(element, resolved.index), before, after: snapshot() } };
     }
   };
 })();

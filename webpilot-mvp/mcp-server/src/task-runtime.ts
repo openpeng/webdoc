@@ -2,6 +2,7 @@ import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
 import { loadDefinitions, workflowDefinitionDirs } from "./definitions.js";
+import { formatElementLine } from "./page-format.js";
 
 type BrowserCall = (type: string, params: Record<string, unknown>) => Promise<any>;
 
@@ -13,6 +14,18 @@ const PARAMETER_PLACEHOLDER = /^\{\{[A-Za-z_][A-Za-z0-9_]*\}\}$/;
 const NAVIGATE_URL = /^https?:\/\//i;
 const WAIT_STATES = new Set(["visible", "hidden", "attached"]);
 const VERIFICATION_KINDS = new Set(["url_includes", "url_equals", "title_includes", "text_present", "text_absent", "locator_visible", "locator_hidden", "interactive_count_at_least"]);
+// 登录页检测：URL 路径段/主机名特征，或页面出现密码输入框。
+// 只在"动作后新进入登录页"时暂停任务交还人工；已停在登录页上的后续操作不会重复触发。
+const LOGIN_PATH_SEGMENT = /(^|\/)(login|log-in|signin|sign-in|sign_in|sso|oauth2?|authorize|passport)(\/|$)/i;
+const LOGIN_HOSTNAME = /^(login|signin|sso|auth|accounts?|passport|id)\./i;
+// 导出供测试直接断言；运行时入口是 TaskRuntime.act/resume。
+export function looksLikeLoginPage(page: { url: string; interactiveElements?: any[] }): boolean {
+  try {
+    const { hostname, pathname } = new URL(page.url);
+    if (LOGIN_PATH_SEGMENT.test(pathname) || LOGIN_HOSTNAME.test(hostname)) return true;
+  } catch { /* 非法 URL 不参与 URL 判定 */ }
+  return (page.interactiveElements || []).some((element: any) => element?.tag === "input" && element?.type === "password");
+}
 type TaskState = "observing" | "verifying" | "completed" | "paused" | "failed" | "cancelled";
 type PageSnapshot = { url: string; title: string; readyState: string; elementCount: number; interactiveElements: any[]; fingerprint: string };
 type TaskEvent = { at: string; type: string; data: Record<string, unknown> };
@@ -59,6 +72,21 @@ function safeAction(action: Record<string, any>): Record<string, unknown> {
   return safe;
 }
 
+// 任务循环返回给 Agent 的紧凑页面表示（与 get_page_info 的元素行格式一致，见 page-format.ts）。
+// 富字段（box/testId/classHint 等）只服务于服务端的指纹计算、登录页检测与耐久定位，
+// 不随每步观察回传，避免长任务里重复支付全量 JSON 的 token 成本。
+export function compactPage(page?: PageSnapshot) {
+  if (!page) return undefined;
+  return {
+    url: page.url,
+    title: page.title,
+    readyState: page.readyState,
+    elementCount: page.elementCount,
+    fingerprint: page.fingerprint,
+    elements: (page.interactiveElements || []).map((element: any) => formatElementLine(element))
+  };
+}
+
 // 校验并重建一个步骤动作：与适配器一致，只保留各动作的白名单键，不透传未知字段。
 function toStepAction(raw: any, where: string): Record<string, any> {
   if (!raw || typeof raw !== "object" || !["navigate", "click", "type", "wait"].includes(raw.action)) throw new Error(`${where}: action must be navigate, click, type, or wait`);
@@ -102,7 +130,8 @@ function toVerification(raw: any, where: string): Record<string, unknown> | unde
 
 // 校验并重建一条预置工作流：外部 JSON 定义必须通过与手写工作流一致的安全门槛。
 // id 必须带 preset- 前缀，步骤动作与验证断言都按白名单重建，type 文本必须是 {{参数}} 占位符。
-function validatePresetWorkflow(raw: any): Workflow {
+// 导出仅供测试直接断言安全门槛；运行时入口仍是 TaskRuntime.loadWorkflows。
+export function validatePresetWorkflow(raw: any): Workflow {
   if (!raw || typeof raw !== "object") throw new Error("workflow must be an object");
   if (typeof raw.id !== "string" || !raw.id.startsWith(PRESET_WORKFLOW_PREFIX)) throw new Error(`preset workflow id must start with ${PRESET_WORKFLOW_PREFIX}`);
   const where = `workflow ${raw.id}`;
@@ -148,6 +177,22 @@ export class TaskRuntime {
     return this.publicTask(task);
   }
 
+  // 人工接管后恢复 paused 任务：清零停滞计数、重新观察页面并回到 observing。
+  // 若仍在登录页，照常恢复但在返回值中标出，由 Agent 决定等待或再次提示用户。
+  async resume(taskId: string) {
+    const task = this.requireRunnable(taskId);
+    if (task.state !== "paused") throw new Error(`Task ${taskId} is ${task.state}; only paused tasks can be resumed`);
+    const previousReason = task.pauseReason;
+    task.state = "observing";
+    task.pauseReason = undefined;
+    task.repeatedActionCount = 0;
+    task.stagnantSteps = 0;
+    task.lastActionPageKey = undefined;
+    const page = await this.observeInternal(task);
+    await this.event(task, "task_resumed", { previousReason, url: page.url, stillOnLoginPage: looksLikeLoginPage(page) });
+    return { ...this.publicTask(task), stillOnLoginPage: looksLikeLoginPage(page) };
+  }
+
   async act(taskId: string, action: Record<string, any>) {
     const task = this.requireActive(taskId);
     if (task.stepCount >= task.maxSteps) return this.pause(task, `Maximum step budget (${task.maxSteps}) reached`);
@@ -172,6 +217,11 @@ export class TaskRuntime {
     task.stepCount += 1;
     await this.event(task, "action", { step: task.stepCount, action: actionName, parameters: safeAction(params), success: result.success !== false });
     const after = await this.observeInternal(task);
+    // 会话失效检测：动作后被带到登录页时暂停并交还人工，避免在登录墙上盲目重试。
+    if (!looksLikeLoginPage(before) && looksLikeLoginPage(after)) {
+      await this.event(task, "login_page_detected", { url: after.url });
+      return this.pause(task, `Redirected to a login page (${after.url}). Log in manually in the browser, then call resume_task to continue.`);
+    }
     const actionKey = this.actionKey(actionName, params);
     const actionPageKey = `${actionKey}|${after.fingerprint}`;
     task.repeatedActionCount = task.lastActionPageKey === actionPageKey ? task.repeatedActionCount + 1 : 1;
@@ -441,7 +491,7 @@ export class TaskRuntime {
   private publicTask(task: Task) {
     return {
       id: task.id, goal: task.goal, tabId: task.tabId, state: task.state, stepCount: task.stepCount,
-      maxSteps: task.maxSteps, pauseReason: task.pauseReason, page: task.lastPage,
+      maxSteps: task.maxSteps, pauseReason: task.pauseReason, page: compactPage(task.lastPage),
       checkpoints: task.checkpoints.map(checkpoint => ({ id: checkpoint.id, label: checkpoint.label, createdAt: checkpoint.createdAt, url: checkpoint.page.url, fingerprint: checkpoint.page.fingerprint })),
       plan: task.plan && { name: task.plan.name, currentStep: task.plan.currentStep, stepCount: task.plan.steps.length, nextStep: task.plan.steps[task.plan.currentStep] && { id: task.plan.steps[task.plan.currentStep].id, objective: task.plan.steps[task.plan.currentStep].objective } },
       logEntries: task.events.length

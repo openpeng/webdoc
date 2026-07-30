@@ -84,7 +84,8 @@ function toSpec(raw: any, where: string): ExtractSpec {
   return spec;
 }
 
-function validateAdapter(raw: any, source: string): Adapter {
+// 导出仅供测试直接断言白名单重建行为；运行时入口仍是 AdapterRegistry。
+export function validateAdapter(raw: any, source: string): Adapter {
   if (!raw || typeof raw !== "object") throw new Error("adapter must be an object");
   if (typeof raw.id !== "string" || !raw.id.trim()) throw new Error("adapter requires a non-empty id");
   const where = `adapter ${raw.id}`;

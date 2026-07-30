@@ -14,6 +14,8 @@ import {
 import { TaskRuntime } from "./task-runtime.js";
 import { AdapterRegistry } from "./adapters.js";
 import { BrowserBridge } from "./bridge.js";
+import { SelectorCache, isCacheableSelector, isValidIntent } from "./selector-cache.js";
+import { formatElementLine, formatPageTree } from "./page-format.js";
 
 const MAX_ACTION_LOG_ENTRIES = 100;
 
@@ -28,6 +30,64 @@ const sendToExtension = (type: string, params: Record<string, any>): Promise<any
 
 const taskRuntime = new TaskRuntime(sendToExtension);
 const adapterRegistry = new AdapterRegistry(sendToExtension);
+const selectorCache = new SelectorCache();
+
+// click/type 的 (站点, intent) 缓存流程：命中时用缓存定位符直接执行（零观察），
+// 失败或未命中时回退显式 selector，成功后用耐久定位符回写缓存。
+// 返回扩展端结果与缓存备注；cacheError 非空表示无法发起任何执行。
+async function performWithSelectorCache(
+  action: "click" | "type",
+  args: Record<string, any>
+): Promise<{ result?: any; notes: string[]; cacheError?: string }> {
+  const explicit = typeof args.selector === "string" && args.selector.trim() ? args.selector.trim() : undefined;
+  const extra = action === "type" ? { text: args.text } : {};
+  const send = (selector: string) =>
+    sendToExtension(action, { selector, ...extra, tabId: args.tabId, timeoutMs: normalizeTimeout(args.timeoutMs) });
+  if (args.intent === undefined) {
+    if (!explicit) return { notes: [], cacheError: "selector is required when intent is not provided" };
+    return { result: await send(explicit), notes: [] };
+  }
+  if (!isValidIntent(args.intent)) {
+    return { notes: [], cacheError: "intent must be lowercase letters, digits, dot, dash or underscore (max 64 chars), e.g. search-input" };
+  }
+  const intent = args.intent;
+  const page = await sendToExtension("getURL", { tabId: args.tabId });
+  let host: string;
+  try {
+    host = new URL(page.url).hostname.toLowerCase();
+  } catch {
+    return { notes: [], cacheError: `could not determine hostname from current page URL: ${page.url}` };
+  }
+  const notes: string[] = [];
+  const cached = await selectorCache.lookup(host, intent);
+  if (cached) {
+    const result = await send(cached.selector);
+    if (result.success) {
+      await selectorCache.recordSuccess(host, intent, cached.selector, result.diagnostics?.durationMs ?? 0);
+      notes.push(`[cache] hit: (${host}, ${intent}) → ${cached.selector}`);
+      return { result, notes };
+    }
+    await selectorCache.recordFailure(host, intent, result.error);
+    notes.push(`[cache] cached selector failed (${cached.selector}): ${result.error}`);
+    if (!explicit) {
+      return { notes, cacheError: `cached selector for (${host}, ${intent}) failed; observe the page and retry with an explicit selector` };
+    }
+  } else if (!explicit) {
+    const status = await selectorCache.status(host, intent);
+    return { notes, cacheError: `no usable cache entry for (${host}, ${intent}) — ${status === "disabled" ? "entry disabled after repeated failures" : "no entry yet"}; observe the page and retry with an explicit selector` };
+  }
+  const result = await send(explicit!);
+  if (result.success) {
+    const durable = result.diagnostics?.durableSelector || (isCacheableSelector(explicit) ? explicit : undefined);
+    if (durable) {
+      await selectorCache.recordSuccess(host, intent, durable, result.diagnostics?.durationMs ?? 0);
+      notes.push(`[cache] stored: (${host}, ${intent}) → ${durable}`);
+    } else {
+      notes.push(`[cache] not stored: no durable locator could be derived for ${explicit}`);
+    }
+  }
+  return { result, notes };
+}
 
 // ===== MCP Server =====
 const server = new Server(
@@ -58,11 +118,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "get_page_info",
-        description: "获取当前页面的可访问性风格快照，包括可交互元素和可复用的 @eN 引用",
+        description: "获取当前页面的可访问性风格快照，包括可交互元素和可复用的 @eN 引用。structure=tree 时按语义容器（main/dialog/list 行等）分组缩进输出，适合同名元素消歧义或弹窗定位；默认平铺，token 更低。两种形态的 @eN 索引可互换。",
         inputSchema: {
           type: "object" as const,
           properties: {
             tabId: { type: "number", description: "目标标签页 ID（可选）" },
+            structure: { type: "string", enum: ["flat", "tree"], description: "页面表示形态，默认 flat" },
           },
           required: [],
         },
@@ -81,29 +142,31 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "click",
-        description: "等待目标可操作后点击。支持 CSS、get_page_info 返回的 @eN、text=文本、role=button[name=\"文本\"]。",
+        description: "等待目标可操作后点击。支持 CSS、get_page_info 返回的 @eN、text=文本、role=button[name=\"文本\"]。可选 intent 启用选择器缓存：同站点同 intent 命中缓存时无需先观察页面。",
         inputSchema: {
           type: "object" as const,
           properties: {
-            selector: { type: "string", description: "CSS、@eN、text=文本或 role=button[name=\"文本\"]" },
+            selector: { type: "string", description: "CSS、@eN、text=文本或 role=button[name=\"文本\"]；提供 intent 且缓存命中时可省略" },
+            intent: { type: "string", description: "站点内稳定的操作意图标识（小写字母/数字/./_/-，如 search-button），用于 (站点, intent) 选择器缓存" },
             tabId: { type: "number", description: "目标标签页 ID（可选）" },
             timeoutMs: { type: "number", description: "等待目标可操作的毫秒数，默认 10000" },
           },
-          required: ["selector"],
+          required: [],
         },
       },
       {
         name: "type",
-        description: "等待目标可操作后清空并输入文本；支持 input、textarea 与 contenteditable。",
+        description: "等待目标可操作后清空并输入文本；支持 input、textarea 与 contenteditable。可选 intent 启用选择器缓存：同站点同 intent 命中缓存时无需先观察页面。",
         inputSchema: {
           type: "object" as const,
           properties: {
-            selector: { type: "string", description: "CSS、@eN、text=文本或 role=textbox[name=\"文本\"]" },
+            selector: { type: "string", description: "CSS、@eN、text=文本或 role=textbox[name=\"文本\"]；提供 intent 且缓存命中时可省略" },
+            intent: { type: "string", description: "站点内稳定的操作意图标识（小写字母/数字/./_/-，如 search-input），用于 (站点, intent) 选择器缓存" },
             text: { type: "string", description: "要输入的文本" },
             tabId: { type: "number", description: "目标标签页 ID（可选）" },
             timeoutMs: { type: "number", description: "等待目标可操作的毫秒数，默认 10000" },
           },
-          required: ["selector", "text"],
+          required: ["text"],
         },
       },
       {
@@ -674,6 +737,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         inputSchema: { type: "object" as const, properties: {}, required: [] }
       },
       {
+        name: "get_selector_cache",
+        description: "查看 (站点, intent) 选择器缓存条目与健康度（命中/失败/禁用状态/平均耗时），用于排查失效缓存。",
+        inputSchema: { type: "object" as const, properties: { host: { type: "string", description: "只看指定站点（可选）" } }, required: [] }
+      },
+      {
         name: "get_action_log",
         description: "读取最近浏览器操作的时间线、耗时和错误信息，并附带本进程角色（leader/follower）与会话状态；不会包含输入文本或执行脚本。",
         inputSchema: { type: "object" as const, properties: { limit: { type: "number", description: "最多返回条数，默认 20，最大 100" } }, required: [] }
@@ -728,6 +796,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         name: "cancel_task",
         description: "取消任务会话；不会关闭浏览器标签页。",
         inputSchema: { type: "object" as const, properties: { taskId: { type: "string" }, reason: { type: "string" } }, required: ["taskId"] }
+      },
+      {
+        name: "resume_task",
+        description: "恢复 paused 状态的任务并重新观察页面。典型场景：任务因跳转到登录页暂停，人工在浏览器完成登录后调用此工具继续；返回 stillOnLoginPage 指示是否仍在登录页。",
+        inputSchema: { type: "object" as const, properties: { taskId: { type: "string" } }, required: ["taskId"] }
       },
       {
         name: "get_task",
@@ -803,14 +876,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           content: [{ type: "text", text: `导航成功: ${result.title}\nURL: ${result.url}\n标签页ID: ${result.tabId}` }],
         };
 
-      case "get_page_info":
-        result = await sendToExtension("getPageInfo", { tabId: args.tabId });
+      case "get_page_info": {
+        const structure = args.structure === "tree" ? "tree" : "flat";
+        result = await sendToExtension("getPageInfo", { tabId: args.tabId, structure });
+        const header = `页面: ${result.title}\nURL: ${result.url}\n状态: ${result.readyState}\n可交互元素数: ${result.elementCount}`;
+        if (structure === "tree") {
+          const treeLines = formatPageTree(result.tree).join("\n") || "无";
+          return {
+            content: [{ type: "text", text: `${header}\n\n元素按语义容器分组（@eN 仅在页面未变化时有效）：\n${treeLines}` }],
+          };
+        }
         const elements = result.interactiveElements
-          ?.map((e: any) => `${e.ref || ""} [${e.role || e.tag}] ${e.name || e.text || e.placeholder || e.id || "(no name)"}`)
+          ?.map((e: any) => formatElementLine(e))
           .join("\n") || "无";
         return {
-          content: [{ type: "text", text: `页面: ${result.title}\nURL: ${result.url}\n状态: ${result.readyState}\n可交互元素数: ${result.elementCount}\n\n前60个元素（@eN 仅在页面未变化时有效）：\n${elements}` }],
+          content: [{ type: "text", text: `${header}\n\n前60个元素（@eN 仅在页面未变化时有效）：\n${elements}` }],
         };
+      }
 
       case "inspect":
         result = await sendToExtension("inspect", {
@@ -846,21 +928,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           content: [{ type: "text", text: `页面: ${result.title}\nURL: ${result.url}\n字符数: ${result.characterCount}${result.truncated ? "（已截断）" : ""}\n\n${result.text}` }],
         };
 
-      case "click":
-        result = await sendToExtension("click", { selector: args.selector, tabId: args.tabId, timeoutMs: normalizeTimeout(args.timeoutMs) });
-        return {
-          content: [{ type: "text", text: result.success
-            ? `点击成功: <${result.tagName}> ${result.text || ""}\n耗时: ${result.diagnostics?.durationMs ?? "?"}ms`
-            : `点击失败: ${result.error}` }],
-        };
+      case "click": {
+        const { result: clickResult, notes: clickNotes, cacheError: clickCacheError } = await performWithSelectorCache("click", args);
+        if (clickCacheError) return { content: [{ type: "text", text: [`点击失败: ${clickCacheError}`, ...clickNotes].join("\n") }], isError: true };
+        result = clickResult;
+        const clickText = result.success
+          ? `点击成功: <${result.tagName}> ${result.text || ""}\n耗时: ${result.diagnostics?.durationMs ?? "?"}ms`
+          : `点击失败: ${result.error}`;
+        return { content: [{ type: "text", text: [clickText, ...clickNotes].join("\n") }] };
+      }
 
-      case "type":
-        result = await sendToExtension("type", { selector: args.selector, text: args.text, tabId: args.tabId, timeoutMs: normalizeTimeout(args.timeoutMs) });
-        return {
-          content: [{ type: "text", text: result.success
-            ? `输入成功: <${result.tagName}>\n耗时: ${result.diagnostics?.durationMs ?? "?"}ms`
-            : `输入失败: ${result.error}` }],
-        };
+      case "type": {
+        const { result: typeResult, notes: typeNotes, cacheError: typeCacheError } = await performWithSelectorCache("type", args);
+        if (typeCacheError) return { content: [{ type: "text", text: [`输入失败: ${typeCacheError}`, ...typeNotes].join("\n") }], isError: true };
+        result = typeResult;
+        const typeText = result.success
+          ? `输入成功: <${result.tagName}>\n耗时: ${result.diagnostics?.durationMs ?? "?"}ms`
+          : `输入失败: ${result.error}`;
+        return { content: [{ type: "text", text: [typeText, ...typeNotes].join("\n") }] };
+      }
 
       case "wait_for":
         result = await sendToExtension("waitFor", {
@@ -1250,6 +1336,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "get_adapter_health":
         return { content: [{ type: "text", text: JSON.stringify(await adapterRegistry.healthReport(), null, 2) }] };
 
+      case "get_selector_cache":
+        return { content: [{ type: "text", text: JSON.stringify(await selectorCache.report(typeof args.host === "string" ? args.host : undefined), null, 2) }] };
+
       case "get_action_log": {
         const limit = typeof args.limit === "number" ? Math.max(1, Math.min(Math.floor(args.limit), MAX_ACTION_LOG_ENTRIES)) : 20;
         return { content: [{ type: "text", text: JSON.stringify({ ...bridge.status(), entries: bridge.actionLogEntries(limit) }, null, 2) }] };
@@ -1285,6 +1374,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case "cancel_task":
         result = await taskRuntime.cancel(String(args.taskId), typeof args.reason === "string" ? args.reason : undefined);
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+
+      case "resume_task":
+        result = await taskRuntime.resume(String(args.taskId));
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
 
       case "get_task":

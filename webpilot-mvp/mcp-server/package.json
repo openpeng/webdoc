@@ -4,10 +4,30 @@
   "description": "WebPilot MCP Server — 浏览器操作工具集",
   "type": "module",
   "main": "dist/server.js",
+  "bin": {
+    "webpilot-mcp": "dist/server.js"
+  },
+  "files": [
+    "dist",
+    "definitions",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/openpeng/webdoc.git",
+    "directory": "webpilot-mvp/mcp-server"
+  },
+  "homepage": "https://github.com/openpeng/webdoc/tree/main/webpilot-mvp",
   "scripts": {
     "build": "tsc",
     "dev": "tsc --watch",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "test": "npm run build && node --test",
+    "doctor": "node dist/doctor.js",
+    "prepublishOnly": "npm run build && node --test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",

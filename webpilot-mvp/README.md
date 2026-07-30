@@ -10,6 +10,8 @@ AI client -- stdio --> MCP Server (also WebSocket bridge) <-- ws://localhost:876
 
 The MCP Server now includes the WebSocket bridge. Do not start the legacy `daemon/` package: one MCP process is the only required local service.
 
+Component responsibilities, data flow, and design rationale are documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 Multiple MCP processes can run at once. The first to bind `8765` becomes the **leader** and owns the extension connection; later processes become **followers** and forward commands through the leader over the internal proxy port `8766`. See `INSTALL.md` for the full leader-follower and session model.
 
 ## Setup
@@ -58,7 +60,7 @@ Clicking **Disconnect** intentionally disables automatic reconnection; use
 | Tool | Description |
 | --- | --- |
 | `navigate` | Open a URL in a browser tab. |
-| `get_page_info` | Read the page title, URL, and interactive elements. |
+| `get_page_info` | Read the page title, URL, and interactive elements. Default flat list; `structure: "tree"` groups elements by semantic containers (main/dialog/list items) for disambiguation. |
 | `inspect` | Explore page or focused-editor controls, including unnamed clickable containers; returns reusable `@wpN` references and viewport bounds. |
 | `probe_selector` | Test a locator once without the normal visibility wait. |
 | `get_page_text` | Read the main page text without arbitrary JavaScript or `eval`. |
@@ -79,6 +81,7 @@ Clicking **Disconnect** intentionally disables automatic reconnection; use
 | `run_task_step` | Execute one action, then re-observe and run loop detection. |
 | `verify_task_step` | Evaluate a deterministic completion assertion. |
 | `get_task` / `get_task_log` / `cancel_task` | Inspect evidence or stop a task session. |
+| `resume_task` | Resume a paused task after human takeover (e.g., manual login). |
 | `create_task_checkpoint` / `restore_task_checkpoint` | Save or restore a soft URL/page-fingerprint checkpoint. |
 | `set_task_plan` / `run_planned_step` | Store an Agent plan and execute one verified plan step. |
 | `save_task_as_workflow` / `start_workflow` | Turn a completed plan into a parameterized, reusable workflow. |
@@ -114,7 +117,15 @@ actions. A task starts with `start_task`, then repeats `observe_task` → one
 `run_task_step` → `verify_task_step`. The server records URL/DOM fingerprints,
 automatically pauses after three identical action/page pairs or five unchanged
 steps, and writes redacted JSONL evidence to `.webpilot-task-logs/` (override
-with `WEBPILOT_TASK_LOG_DIR`).
+with `WEBPILOT_TASK_LOG_DIR`). Task responses return a compact page view
+(url/title/fingerprint plus indexed element lines, same format as
+`get_page_info`); rich element fields stay server-side for fingerprinting and
+selector caching.
+
+When an action lands on a login page (login-style URL or a password field
+appears), the task pauses instead of retrying blindly: log in manually in the
+browser, then call `resume_task` to continue. Credentials are never stored —
+the design relies on the real browser's own sessions plus human takeover.
 
 On an action error or failed deterministic verification, the task runtime saves
 a failure screenshot in the same evidence directory when browser capture is
@@ -166,6 +177,23 @@ directory to add or override definitions per user/team (same `id` overrides the
 built-in). Every definition is re-validated on load against a strict whitelist,
 so external JSON can never inject executable JavaScript or literal typed input.
 
+## Selector cache
+
+`click` and `type` accept an optional `intent` — a stable, lowercase operation
+label such as `search-input`. On the first successful action the server derives
+a durable locator (`#id`, `[data-testid=…]`, `role=…[name="…"]`, `text=…`, or a
+unique CSS path) and stores it under `(hostname, intent)`. Subsequent calls with
+the same intent on the same site hit the cache and run without re-observing the
+page, so repeated operations cost no extra snapshot tokens. When the cached
+locator fails, the call falls back to the explicit `selector` (when provided)
+and refreshes the cache; four consecutive failures disable the entry until a
+successful explicit run revives it. Ephemeral `@eN` / `@wpN` references are
+never cached, and typed text never enters the cache — only locators do. Entries
+persist in `selector-cache.json` under `WEBPILOT_SELECTOR_CACHE_DIR` (falling
+back to the task log directory) and are re-validated against the locator
+whitelist on load. Inspect hit rates, failures, and disabled entries with
+`get_selector_cache`.
+
 ## Site adapters
 
 Adapters return compact, structured, read-only data for frequently visited pages;
@@ -212,6 +240,21 @@ named `WebPilot·{short-id}`:
 - Clean up manually with the extension popup's **清理闲置组** button or the
   `cleanup_sessions` tool (`onlyIdle` defaults to `true`; pass a `sessionId` to
   close a specific group).
+
+## Development
+
+- `npm test` (in `mcp-server/`) builds and runs the node:test suite in `test/`.
+  Tests exercise the compiled `dist/` output: selector cache, definition
+  loading, adapter whitelist validation, and preset workflow safety gates.
+- `npm run doctor` checks the installation: Node version, build artifacts,
+  definition loading (skipped entries are listed), bridge port status, and
+  `WEBPILOT_*` environment variables. It exits non-zero on failures, so it can
+  gate CI or install scripts.
+- The package is publish-ready (`bin`, `files`, `engines`, `prepublishOnly`);
+  `npm pack --dry-run` shows the exact tarball contents. Actual publishing is a
+  manual decision.
+- Contribution paths, safety constraints for definition files, and the commit
+  message format are described in [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## Notes
 

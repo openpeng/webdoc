@@ -356,7 +356,7 @@ async function dispatchCommand(msg, sessionId) {
       await cmdExtract(msg.spec, msg.tabId, msg.requestId);
       break;
     case 'getPageInfo':
-      await cmdGetPageInfo(msg.tabId, msg.requestId);
+      await cmdGetPageInfo(msg.tabId, msg.requestId, msg.structure);
       break;
     case 'inspect':
       await cmdInspect(msg.options, msg.tabId, msg.requestId);
@@ -790,10 +790,11 @@ async function cmdExtract(spec, tabId, requestId) {
   }
 }
 
-async function cmdGetPageInfo(tabId, requestId) {
+async function cmdGetPageInfo(tabId, requestId, structure) {
   const target = await getTargetTabId(tabId);
   try {
-    const result = await callPageTool(target, 'page');
+    // structure === 'tree' 时返回语义容器分组树，默认仍为平铺列表
+    const result = await callPageTool(target, structure === 'tree' ? 'pageTree' : 'page');
     sendToDaemon({ type: 'pageInfoResult', requestId, success: true, ...result });
   } catch (e) {
     sendToDaemon({ type: 'pageInfoResult', requestId, success: false, error: e.message });
