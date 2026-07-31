@@ -194,6 +194,13 @@ back to the task log directory) and are re-validated against the locator
 whitelist on load. Inspect hit rates, failures, and disabled entries with
 `get_selector_cache`.
 
+Cache entries are keyed by `(hostname, intent)` only — they are shared across
+all pages of a site. Choose intents that are unambiguous site-wide (a global
+search box, a persistent nav button); for page-specific controls, encode the
+page into the name (e.g. `settings.save-button`, `profile.nickname-input`).
+`text=` / `role=` locators refuse to act when they match multiple elements, so
+a mismatched page fails safely rather than clicking the wrong target.
+
 ## Site adapters
 
 Adapters return compact, structured, read-only data for frequently visited pages;

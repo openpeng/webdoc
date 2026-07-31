@@ -147,7 +147,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: "object" as const,
           properties: {
             selector: { type: "string", description: "CSS、@eN、text=文本或 role=button[name=\"文本\"]；提供 intent 且缓存命中时可省略" },
-            intent: { type: "string", description: "站点内稳定的操作意图标识（小写字母/数字/./_/-，如 search-button），用于 (站点, intent) 选择器缓存" },
+            intent: { type: "string", description: "站点内稳定的操作意图标识（小写字母/数字/./_/-，如 search-button），用于 (站点, intent) 选择器缓存。缓存按站点共享、不区分页面路径，intent 应表达全站唯一语义；页面专属操作请把页面编进名称（如 settings.save-button）" },
             tabId: { type: "number", description: "目标标签页 ID（可选）" },
             timeoutMs: { type: "number", description: "等待目标可操作的毫秒数，默认 10000" },
           },
@@ -161,7 +161,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           type: "object" as const,
           properties: {
             selector: { type: "string", description: "CSS、@eN、text=文本或 role=textbox[name=\"文本\"]；提供 intent 且缓存命中时可省略" },
-            intent: { type: "string", description: "站点内稳定的操作意图标识（小写字母/数字/./_/-，如 search-input），用于 (站点, intent) 选择器缓存" },
+            intent: { type: "string", description: "站点内稳定的操作意图标识（小写字母/数字/./_/-，如 search-input），用于 (站点, intent) 选择器缓存。缓存按站点共享、不区分页面路径，intent 应表达全站唯一语义；页面专属操作请把页面编进名称（如 profile.nickname-input）" },
             text: { type: "string", description: "要输入的文本" },
             tabId: { type: "number", description: "目标标签页 ID（可选）" },
             timeoutMs: { type: "number", description: "等待目标可操作的毫秒数，默认 10000" },
