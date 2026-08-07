@@ -1,6 +1,6 @@
 {
   "name": "webpilot-mcp-server",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "WebPilot MCP Server — 浏览器操作工具集",
   "type": "module",
   "main": "dist/server.js",
