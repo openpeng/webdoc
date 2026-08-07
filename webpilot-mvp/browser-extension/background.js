@@ -689,11 +689,17 @@ function logOperation(entry) {
   if (operationLogs.length > MAX_OPERATION_LOGS) operationLogs.shift();
 }
 
+// WebMCP 命令须在 MAIN world 执行：页面 JS 将工具注册到 document.modelContext，
+// isolated world 读不到主世界的 JS 对象
+const MAIN_WORLD_METHODS = new Set(['webmcpHealth', 'webmcpGetTools', 'webmcpExecuteTool', 'probeCapabilities']);
+
 async function callPageTool(tabId, method, args = []) {
   if (!tabId) throw new Error('No active tab');
-  await chrome.scripting.executeScript({ target: { tabId }, files: ['page-tools.js'] });
+  const world = MAIN_WORLD_METHODS.has(method) ? 'MAIN' : 'ISOLATED';
+  await chrome.scripting.executeScript({ target: { tabId }, world, files: ['page-tools.js'] });
   const [result] = await chrome.scripting.executeScript({
     target: { tabId },
+    world,
     func: async (toolMethod, toolArgs) => {
       if (!globalThis.__webpilot?.[toolMethod]) throw new Error(`Page tool is unavailable: ${toolMethod}`);
       return await globalThis.__webpilot[toolMethod](...toolArgs);

@@ -949,8 +949,8 @@
     // --- 维度 4: DOM 语义模式推断 ---
     const domPatterns = [];
 
-    // 4a. 搜索表单/搜索框
-    const searchInputs = document.querySelectorAll('input[type="search"], input[name*="search" i], input[name*="query" i], input[name*="keyword" i], input[placeholder*="search" i], input[placeholder*="搜索" i], [role="search"] input, [role="searchbox"]');
+    // 4a. 搜索表单/搜索框（覆盖 name/placeholder/id/aria-label/title 含搜索关键词，常见搜索字段名 q/s/wd/k，以及 search 地标内的输入框）
+    const searchInputs = document.querySelectorAll('input[type="search"], input[name*="search" i], input[name*="query" i], input[name*="keyword" i], input[name="q"], input[name="s"], input[name="wd"], input[name="k"], input[id*="search" i], input[id*="keyword" i], input[placeholder*="search" i], input[placeholder*="搜索" i], input[aria-label*="search" i], input[aria-label*="搜索"], input[title*="search" i], input[title*="搜索"], [role="search"] input, [role="searchbox"]');
     if (searchInputs.length > 0) {
       domPatterns.push({ pattern: 'search', count: searchInputs.length, elements: Array.from(searchInputs).slice(0, 3).map(el => ({ name: el.name, placeholder: el.placeholder || '', role: el.getAttribute('role') || '' })) });
     }
