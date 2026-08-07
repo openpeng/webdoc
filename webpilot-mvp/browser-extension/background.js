@@ -387,6 +387,10 @@ async function dispatchCommand(msg, sessionId) {
     case 'getNetworkResources':
       await cmdGetNetworkResources(msg.options, msg.tabId, msg.requestId);
       break;
+    
+    case 'replayApiRequest':
+      await cmdReplayApiRequest(msg.options, msg.tabId, msg.requestId);
+      break;
     case 'hover':
       await cmdHover(msg.selector, msg.tabId, msg.requestId);
       break;
@@ -948,6 +952,7 @@ async function cmdStartNetworkCapture(filter, tabId, requestId) {
     // Initialize capture buffer
     networkCaptures.set(target, {
       resources: [],
+      requestDetails: new Map(),
       active: true,
       filter: filter || {},
       startedAt: new Date().toISOString()
@@ -957,7 +962,30 @@ async function cmdStartNetworkCapture(filter, tabId, requestId) {
     chrome.debugger.onEvent.addListener(function networkListener(source, method, params) {
       if (source.tabId !== target || !networkCaptures.get(target)?.active) return;
 
+      if (method === 'Network.requestWillBeSent') {
+        const capture = networkCaptures.get(target);
+        if (capture && params.request) {
+          // Cap request detail map to avoid memory issues
+          if (capture.requestDetails.size > 1000) {
+            const firstKey = capture.requestDetails.keys().next().value;
+            capture.requestDetails.delete(firstKey);
+          }
+          capture.requestDetails.set(params.requestId, {
+            url: params.request.url,
+            method: params.request.method,
+            headers: params.request.headers || {},
+            postData: params.request.postData || null,
+            hasPostData: params.request.hasPostData || false,
+            type: params.type,
+            initiatorType: params.initiator?.type || null,
+            timestamp: params.timestamp
+          });
+        }
+      }
+
       if (method === 'Network.responseReceived') {
+        const capture = networkCaptures.get(target);
+        const reqDetail = capture?.requestDetails?.get(params.requestId);
         const entry = {
           url: params.response.url,
           status: params.response.status,
@@ -968,11 +996,12 @@ async function cmdStartNetworkCapture(filter, tabId, requestId) {
           timestamp: params.timestamp,
           requestId: params.requestId,
           type: params.type,
-          resourceId: params.resourceId
+          resourceId: params.resourceId,
+          method: reqDetail?.method || null,
+          postData: reqDetail?.postData || null
         };
 
         // Apply filters
-        const capture = networkCaptures.get(target);
         if (capture) {
           if (capture.filter.type === 'image') {
             const isImage = entry.type === 'Image' || /\.(jpg|jpeg|png|gif|webp|svg|avif|bmp|ico)(\?|#|$)/i.test(entry.url);
@@ -1050,6 +1079,104 @@ async function cmdGetNetworkResources(options, tabId, requestId) {
     });
   } catch (e) {
     sendToDaemon({ type: 'getNetworkResourcesResult', requestId, success: false, error: e.message });
+  }
+}
+
+// ===== API 重放命令 =====
+const REPLAY_FORBIDDEN_HEADERS = new Set([
+  'host', 'connection', 'content-length', 'cookie', 'origin', 'referer',
+  'accept-encoding', 'accept-language', 'user-agent', 'sec-fetch-mode',
+  'sec-fetch-site', 'sec-fetch-dest', 'sec-ch-ua', 'sec-ch-ua-mobile',
+  'sec-ch-ua-platform', 'upgrade-insecure-requests', 'pragma', 'cache-control'
+]);
+
+async function cmdReplayApiRequest(options, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  const startedAt = Date.now();
+  try {
+    const capture = networkCaptures.get(target);
+    if (!capture || !capture.requestDetails) {
+      sendToDaemon({ type: 'replayApiRequestResult', requestId, success: false, error: 'No network capture found for this tab. Call start_network_capture first.' });
+      return;
+    }
+
+    // Locate the original request by CDP requestId or URL substring
+    let detail = null;
+    if (options?.captureRequestId != null) {
+      detail = capture.requestDetails.get(String(options.captureRequestId));
+    } else if (options?.urlContains) {
+      for (const d of capture.requestDetails.values()) {
+        if (d.url.includes(options.urlContains)) detail = d;
+      }
+    }
+    if (!detail) {
+      sendToDaemon({ type: 'replayApiRequestResult', requestId, success: false, error: 'Captured request not found. Provide captureRequestId or urlContains.' });
+      return;
+    }
+
+    // Build URL with optional query param overrides
+    let url = options?.url || detail.url;
+    if (options?.queryParams && typeof options.queryParams === 'object') {
+      const u = new URL(url);
+      for (const [k, v] of Object.entries(options.queryParams)) {
+        if (v === null || v === undefined) u.searchParams.delete(k);
+        else u.searchParams.set(k, String(v));
+      }
+      url = u.toString();
+    }
+
+    // Build headers: keep original non-forbidden headers (auth tokens etc.)
+    const headers = {};
+    for (const [k, v] of Object.entries(detail.headers || {})) {
+      if (!REPLAY_FORBIDDEN_HEADERS.has(k.toLowerCase())) headers[k] = v;
+    }
+    if (options?.headers && typeof options.headers === 'object') {
+      for (const [k, v] of Object.entries(options.headers)) {
+        if (!REPLAY_FORBIDDEN_HEADERS.has(k.toLowerCase())) headers[k] = v;
+      }
+    }
+
+    const method = (options?.method || detail.method || 'GET').toUpperCase();
+    let body;
+    if (method !== 'GET' && method !== 'HEAD') {
+      if (options?.body !== undefined) {
+        body = typeof options.body === 'string' ? options.body : JSON.stringify(options.body);
+        if (!headers['content-type'] && !headers['Content-Type']) headers['Content-Type'] = 'application/json';
+      } else if (detail.postData) {
+        body = detail.postData;
+      }
+    }
+
+    // Fetch from extension context: bypasses page CSP, carries cookies for the target host
+    const maxBodyChars = Math.min(Math.max(options?.maxBodyChars || 50000, 1000), 500000);
+    const resp = await fetch(url, { method, headers, body, credentials: 'include', redirect: 'follow' });
+    let text = await resp.text();
+    let truncated = false;
+    if (text.length > maxBodyChars) { text = text.slice(0, maxBodyChars); truncated = true; }
+    let json = null;
+    const contentType = resp.headers.get('content-type') || '';
+    if (contentType.includes('json')) {
+      try { json = JSON.parse(text); } catch { /* keep text only */ }
+    }
+
+    logOperation({ action: 'replayApiRequest', tabId: target, url, method, status: resp.status, success: resp.ok, durationMs: Date.now() - startedAt });
+    sendToDaemon({
+      type: 'replayApiRequestResult',
+      requestId,
+      success: true,
+      status: resp.status,
+      statusText: resp.statusText,
+      contentType,
+      body: json !== null ? json : text,
+      truncated,
+      bodyLength: text.length,
+      url,
+      method,
+      durationMs: Date.now() - startedAt
+    });
+  } catch (e) {
+    logOperation({ action: 'replayApiRequest', tabId: target, success: false, error: e.message, durationMs: Date.now() - startedAt });
+    sendToDaemon({ type: 'replayApiRequestResult', requestId, success: false, error: e.message });
   }
 }
 
