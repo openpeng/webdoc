@@ -10,7 +10,11 @@
   "files": [
     "dist",
     "definitions",
-    "README.md"
+    "scripts",
+    "skill",
+    "browser-extension",
+    "README.md",
+    "INSTALL.md"
   ],
   "engines": {
     "node": ">=18"
@@ -27,7 +31,8 @@
     "start": "node dist/server.js",
     "test": "npm run build && node --test",
     "doctor": "node dist/doctor.js",
-    "prepublishOnly": "npm run build && node --test"
+    "postinstall": "node scripts/postinstall.js",
+    "prepublishOnly": "node scripts/prepublish.js && npm run build && node --test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.4",
