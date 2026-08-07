@@ -3,6 +3,8 @@
 WebPilot MCP Server——通过 Chrome 扩展控制真实浏览器（复用登录态）的 MCP 工具集，供 Claude Code / Cursor / Codex 等 MCP 兼容 Agent 调用。
 
 - 50+ 浏览器工具：导航、点击、输入、快照、提取、任务循环、工作流
+- WebMCP 双通道：原生调用页面注册的工具（快、准、稳），降级浏览器自动化兜底
+- 页面能力探测：5 维度扫描（WebMCP/声明式表单/JSON-LD/DOM 语义/API 端点）
 - Leader-Follower 桥接：多个 Agent 进程共享同一个浏览器扩展连接
 - 站点资产 JSON 化：适配器与预置工作流是数据文件，新增站点无需改代码
 - 选择器缓存：click/type 带 `intent` 参数即可零观察复用历史定位

@@ -86,6 +86,21 @@ Clicking **Disconnect** intentionally disables automatic reconnection; use
 | `set_task_plan` / `run_planned_step` | Store an Agent plan and execute one verified plan step. |
 | `save_task_as_workflow` / `start_workflow` | Turn a completed plan into a parameterized, reusable workflow. |
 | `recommend_workflows` | Recommend completed workflows matching the current page's domain; it never executes one. |
+| `get_webmcp_health` | Check whether the current page supports WebMCP (`document.modelContext`). Returns `available` and the API variant in use. |
+| `list_webmcp_tools` | List all tools registered by the page via WebMCP. Each tool includes `name`, `description`, `inputSchema`, and `annotations`. |
+| `execute_webmcp_tool` | Execute a specific WebMCP-registered tool by name, passing structured input. This is the native channel — faster and more reliable than DOM automation. |
+| `probe_page_capabilities` | Multi-dimensional page capability scan: WebMCP tools, declarative forms, JSON-LD actions, DOM semantic patterns, and network API endpoints. Use to decide the best execution strategy. |
+
+## WebMCP dual-channel
+
+WebPilot supports the WebMCP standard protocol (`document.modelContext`), enabling a dual-channel architecture:
+
+1. **Native channel (preferred):** When a page registers tools via WebMCP, call them directly through `execute_webmcp_tool`. This invokes the page's own JavaScript — no DOM parsing, no screenshots, no click coordinates.
+2. **Browser automation (fallback):** When no WebMCP tools are available, use the traditional `get_page_info` → `click`/`type` workflow.
+
+Use `probe_page_capabilities` on an unknown page to get a structured capability report covering 5 dimensions: WebMCP tools, declarative `<form>` with `toolname` attributes, Schema.org/JSON-LD structured data, DOM semantic patterns (search, auth, tables, filters, dialogs, uploads, editors, maps), and API endpoint sniffing.
+
+The native channel is faster, more accurate, and more stable than pixel-based automation. Tools with `readOnlyHint: true` annotations are safe for read-only exploration; write tools should be confirmed with the user before execution.
 
 ## Reliable interaction
 

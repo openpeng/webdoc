@@ -19,12 +19,32 @@ Use WebPilot to operate the user's locally connected Chrome extension. Prefer ob
 
 Use the smallest reliable tool path:
 
+- **Check page capabilities first on an unknown site:** Call `probe_page_capabilities` to get a structured report of what the page supports. If WebMCP tools are available (`webmcp.count > 0`), prefer the native channel below.
 - **Read or research one page:** Call `get_page_text`; use `get_page_info` when interactive controls or the current URL/title matter. For a supported site, call `extract_with_best_adapter` first; it returns compact structured data and transparently falls back when needed.
 - **Explore an unlabelled control:** Call `inspect` with `scope: "focused"` or `scope: "composer"`; reuse its `@wpN` reference. Call `probe_selector` for a one-shot CSS check instead of retrying a failing click. Use `click_at` only with coordinates from a fresh inspection or screenshot.
 - **One interaction:** Call `get_page_info`, choose a locator, act with `click` or `type`, then call `wait_for` or `get_page_info` to confirm the resulting state.
 - **Multi-step work:** Use the task loop below instead of chaining raw actions.
 - **Repeated routine:** After a completed, parameterized task plan, save it as a workflow. Use `recommend_workflows` only to discover matching prior workflows; it does not execute them.
 - **Exceptional inspection:** Do not use arbitrary page JavaScript. `execute_js` is disabled; use `inspect`, `probe_selector`, page text, adapters, or screenshots instead.
+
+## WebMCP native channel (dual-channel)
+
+WebPilot supports a dual-channel architecture: prefer WebMCP native tools when available, fall back to browser automation.
+
+- **Detect:** Call `get_webmcp_health` to check if the page has `document.modelContext`. If `available` is `false`, skip this channel entirely.
+- **Discover:** Call `list_webmcp_tools` to see all registered tools with their `name`, `description`, and `inputSchema`.
+- **Execute:** Call `execute_webmcp_tool` with a `toolName` from the list and `input` matching its schema. This directly invokes the page's JavaScript function — faster and more reliable than DOM manipulation.
+- **Probe:** Call `probe_page_capabilities` for a comprehensive 5-dimension scan: WebMCP tools, declarative forms, JSON-LD actions, DOM semantic patterns, and API endpoints. Use the report to decide the best execution strategy.
+
+**Decision flow:**
+```
+probe_page_capabilities
+  → webmcp.count > 0?     → use execute_webmcp_tool (native channel)
+  → declarativeForms?     → browser automation on the form
+  → domPatterns match?    → browser automation (click/type)
+  → apiEndpoints?         → consider direct API call if appropriate
+  → fallback              → standard get_page_info + click/type loop
+```
 
 ## Locate and interact
 
@@ -60,5 +80,7 @@ Read a page:       get_page_text -> summarize with URL/title context
 Search a site:     get_page_info -> type -> click -> wait_for -> verify_task_step
 Structured page:   extract_with_best_adapter -> inspect fallback/evidence if any
 New task:          start_task -> observe -> run_task_step -> verify -> repeat
+WebMCP native:     get_webmcp_health -> list_webmcp_tools -> execute_webmcp_tool
+Capability scan:   probe_page_capabilities -> choose best channel
 Troubleshoot:      get_page_info / screenshot -> get_action_log -> revise locator or wait
 ```
