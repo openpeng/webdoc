@@ -46,6 +46,24 @@ probe_page_capabilities
   → fallback              → standard get_page_info + click/type loop
 ```
 
+## Bulk data export (paginated lists)
+
+Exporting N rows from an admin list page is fastest via the list API, not page-by-page DOM scraping:
+
+1. `probe_page_capabilities` to confirm the channel: if `webmcp.count > 0`, prefer `execute_webmcp_tool`; otherwise continue below.
+2. `start_network_capture` (optionally with `urlContains` scoped to the site's API host) before touching the page.
+3. Apply the target filters through the UI (`click` the selects, then the search button). The capture records the list API — method, URL, and request body including the filter's enum value (e.g. which `projectId` corresponds to the requested filter name).
+4. `get_network_resources` to find the list request; note its `id`.
+5. `replay_api_request` with `captureRequestId`, overriding the pagination fields in `body` (e.g. `size: 100`, `page: 1`). It automatically carries the session cookies and bypasses page CSP — one request returns the full page of structured JSON instead of ten DOM flips.
+6. Keep capture running while replaying (`stop_network_capture` only at the end). For totals beyond one page, loop `page` until `all_item_count` is covered.
+7. Post-process with a small local script into CSV/JSON; record field-enum mappings (e.g. `courseType` codes) discovered along the way.
+
+Pitfalls observed on real admin consoles:
+
+- Custom `Select` components may not expose a search box — don't waste time typing into them; reopen the dropdown and click the option matched by its `title`/text attribute.
+- Dropdown panels close between commands; select the option in the same step that follows opening the panel, or match with `:not(.xxx-hidden)`-style visibility selectors.
+- Persist no business data, session tokens, or internal hostnames into workflows or plans — keep exports as local files and use placeholders in anything saved.
+
 ## Locate and interact
 
 - Prefer a fresh `@eN` reference from `get_page_info` for the immediate next action. It becomes invalid after the page changes. For unnamed controls returned by `inspect`, use its `@wpN` reference; it remains valid until the page navigates or the node is removed.
@@ -82,5 +100,6 @@ Structured page:   extract_with_best_adapter -> inspect fallback/evidence if any
 New task:          start_task -> observe -> run_task_step -> verify -> repeat
 WebMCP native:     get_webmcp_health -> list_webmcp_tools -> execute_webmcp_tool
 Capability scan:   probe_page_capabilities -> choose best channel
+Bulk export:       start_network_capture -> trigger query -> replay_api_request (size/page override)
 Troubleshoot:      get_page_info / screenshot -> get_action_log -> revise locator or wait
 ```

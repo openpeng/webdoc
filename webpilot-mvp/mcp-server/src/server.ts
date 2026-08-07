@@ -93,7 +93,7 @@ async function performWithSelectorCache(
 const server = new Server(
   {
     name: "webpilot-mcp-server",
-    version: "0.2.0",
+    version: "0.3.0",
   },
   {
     capabilities: { tools: {} },
@@ -277,6 +277,25 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             type: { type: "string", description: "CDP 资源类型过滤，如 Image、Fetch、XHR、Script 等" },
             minStatus: { type: "number", description: "最小 HTTP 状态码，如 200" },
             limit: { type: "number", description: "返回最大条数，默认 100，最大 500" },
+          },
+          required: [],
+        },
+      },
+      {
+        name: "replay_api_request",
+        description: "在扩展上下文中重放一个已捕获的页面 API 请求（自动携带登录 Cookie，绕过页面 CSP），可覆写 URL、查询参数、请求体。典型用法：start_network_capture → 触发一次翻页/查询 → get_network_resources 找到列表接口 → 用本工具覆写分页参数一次拉全量数据，替代逐页 DOM 翻页。需保持抓包未停止（勿先调 stop_network_capture）。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+            captureRequestId: { type: "string", description: "get_network_resources 返回的 CDP requestId（与 urlContains 二选一，优先）" },
+            urlContains: { type: "string", description: "按 URL 子串匹配已捕获的请求（与 captureRequestId 二选一）" },
+            url: { type: "string", description: "完全覆写请求 URL（可选，默认用原 URL）" },
+            method: { type: "string", description: "覆写请求方法（可选，默认用原方法）" },
+            queryParams: { type: "object", description: "覆写/新增 URL 查询参数，值为 null 时删除该参数" },
+            body: { description: "覆写请求体（对象自动 JSON 序列化，也可传字符串），仅非 GET 请求生效" },
+            headers: { type: "object", description: "追加/覆写请求头（禁止头如 Cookie/Origin 会被自动过滤）" },
+            maxBodyChars: { type: "number", description: "响应体最大返回字符数，默认 50000，最大 500000" },
           },
           required: [],
         },
@@ -1099,11 +1118,34 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           },
         });
         const netResources = result.resources?.map((r: any) =>
-          `[${r.status}] ${r.mimeType} ${r.type}\n  ${r.url}`
+          `[${r.status}] ${r.method || "?"} ${r.mimeType} ${r.type} id=${r.requestId}\n  ${r.url}${r.postData ? `\n  body: ${String(r.postData).slice(0, 500)}` : ""}`
         ).join("\n") || "无";
         return {
           content: [{ type: "text", text: `网络资源\n已捕获: ${result.totalCaptured}, 返回: ${result.count}, 活跃: ${result.active}\n开始时间: ${result.startedAt}\n\n${netResources}` }],
           isError: !result.success,
+        };
+
+      case "replay_api_request":
+        result = await sendToExtension("replayApiRequest", {
+          tabId: args.tabId,
+          options: {
+            captureRequestId: args.captureRequestId != null ? String(args.captureRequestId) : undefined,
+            urlContains: typeof args.urlContains === "string" ? args.urlContains : undefined,
+            url: typeof args.url === "string" ? args.url : undefined,
+            method: typeof args.method === "string" ? args.method : undefined,
+            queryParams: args.queryParams && typeof args.queryParams === "object" ? args.queryParams : undefined,
+            body: args.body,
+            headers: args.headers && typeof args.headers === "object" ? args.headers : undefined,
+            maxBodyChars: typeof args.maxBodyChars === "number" ? args.maxBodyChars : undefined,
+          },
+        });
+        if (!result.success) {
+          return { content: [{ type: "text", text: `重放失败: ${result.error}` }], isError: true };
+        }
+        const replayBody = typeof result.body === "string" ? result.body : JSON.stringify(result.body, null, 2);
+        return {
+          content: [{ type: "text", text: `重放成功 [${result.status}] ${result.method} ${result.url}\n耗时: ${result.durationMs}ms, 响应长度: ${result.bodyLength}${result.truncated ? " (已截断)" : ""}\n\n${replayBody}` }],
+          isError: result.status >= 400,
         };
 
       case "hover":
