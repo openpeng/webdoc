@@ -775,6 +775,292 @@
     return { error: `Unknown shadow DOM action: ${action}. Supported: query, click, getText, type` };
   };
 
+  // ===== WebMCP 桥接：发现并调用页面通过 document.modelContext 注册的工具 =====
+  const getModelContext = () => {
+    // 标准 API: document.modelContext（W3C 孵化）；部分 polyfill 挂在 navigator 上
+    return document.modelContext || navigator.modelContext || null;
+  };
+
+  const webmcpHealth = () => {
+    const ctx = getModelContext();
+    const hasGetTools = typeof ctx?.getTools === 'function';
+    return {
+      available: Boolean(ctx && hasGetTools),
+      api: ctx ? (document.modelContext ? 'document.modelContext' : 'navigator.modelContext') : null,
+      url: location.href,
+      title: document.title
+    };
+  };
+
+  const webmcpGetTools = async () => {
+    const ctx = getModelContext();
+    if (!ctx || typeof ctx.getTools !== 'function') {
+      return { available: false, tools: [], error: 'WebMCP is not available on this page. The page must register tools via document.modelContext.registerTool().' };
+    }
+    try {
+      // getTools() 返回已注册工具的快照数组，每项含 name/description/inputSchema/annotations
+      const tools = await ctx.getTools();
+      const serialised = (Array.isArray(tools) ? tools : []).map(tool => ({
+        name: tool.name,
+        description: tool.description || '',
+        inputSchema: tool.inputSchema || null,
+        annotations: tool.annotations || {}
+      }));
+      return { available: true, tools: serialised, count: serialised.length, url: location.href, title: document.title };
+    } catch (e) {
+      return { available: true, tools: [], error: `getTools() threw: ${e.message}`, url: location.href, title: document.title };
+    }
+  };
+
+  const webmcpExecuteTool = async (toolName, input) => {
+    const ctx = getModelContext();
+    if (!ctx || typeof ctx.getTools !== 'function') {
+      return { success: false, error: 'WebMCP is not available on this page' };
+    }
+    if (typeof toolName !== 'string' || !toolName.trim()) {
+      return { success: false, error: 'toolName is required' };
+    }
+    try {
+      const tools = await ctx.getTools();
+      const tool = (Array.isArray(tools) ? tools : []).find(t => t.name === toolName);
+      if (!tool) {
+        const available = (Array.isArray(tools) ? tools : []).map(t => t.name);
+        return { success: false, error: `Tool "${toolName}" not found`, availableTools: available };
+      }
+      if (typeof tool.execute !== 'function') {
+        return { success: false, error: `Tool "${toolName}" has no execute function` };
+      }
+      const startedAt = performance.now();
+      const result = await tool.execute(input || {});
+      return {
+        success: true,
+        tool: toolName,
+        result,
+        durationMs: Math.round(performance.now() - startedAt),
+        url: location.href,
+        title: document.title
+      };
+    } catch (e) {
+      return { success: false, error: `Tool "${toolName}" execution failed: ${e.message}`, tool: toolName };
+    }
+  };
+
+  // ===== 多维度页面能力探测 =====
+  const probeCapabilities = async (options = {}) => {
+    const startedAt = performance.now();
+    const result = {
+      url: location.href,
+      title: document.title,
+      readyState: document.readyState,
+      webmcp: null,
+      declarativeForms: [],
+      structuredData: [],
+      domPatterns: [],
+      apiEndpoints: []
+    };
+
+    // --- 维度 1: WebMCP 命令式工具 ---
+    const ctx = getModelContext();
+    if (ctx && typeof ctx.getTools === 'function') {
+      try {
+        const tools = await ctx.getTools();
+        const list = (Array.isArray(tools) ? tools : []).map(t => ({
+          name: t.name,
+          description: t.description || '',
+          inputSchema: t.inputSchema || null,
+          annotations: t.annotations || {}
+        }));
+        result.webmcp = {
+          available: true,
+          api: document.modelContext ? 'document.modelContext' : 'navigator.modelContext',
+          tools: list,
+          count: list.length
+        };
+      } catch (e) {
+        result.webmcp = { available: true, error: e.message, tools: [], count: 0 };
+      }
+    } else {
+      result.webmcp = { available: false, tools: [], count: 0 };
+    }
+
+    // --- 维度 2: 声明式 WebMCP 表单 ---
+    // 扫描带有 toolname / webmcp-tool / tooldescription 属性的 <form>
+    const DECL_ATTRS = ['toolname', 'webmcp-tool'];
+    const declarativeForms = [];
+    for (const form of document.querySelectorAll('form')) {
+      let toolName = null;
+      for (const attr of DECL_ATTRS) {
+        const val = form.getAttribute(attr);
+        if (val) { toolName = val; break; }
+      }
+      if (!toolName) continue;
+      const toolDesc = form.getAttribute('tooldescription') || form.getAttribute('webmcp-description') || '';
+      const autoSubmit = form.hasAttribute('toolautosubmit') || form.hasAttribute('webmcp-autosubmit');
+      const fields = [];
+      for (const input of form.querySelectorAll('input, select, textarea')) {
+        if (!input.name) continue;
+        const field = { name: input.name, type: input.type || input.tagName.toLowerCase() };
+        if (input.required) field.required = true;
+        if (input.placeholder) field.placeholder = input.placeholder;
+        const label = input.getAttribute('toolparamtitle') || input.labels?.[0]?.innerText || input.getAttribute('aria-label');
+        if (label) field.label = normalise(label).slice(0, 120);
+        if (input.tagName === 'SELECT') {
+          field.options = Array.from(input.querySelectorAll('option')).map(o => ({ value: o.value, label: normalise(o.textContent) })).filter(o => o.value);
+        }
+        fields.push(field);
+      }
+      declarativeForms.push({ toolName, description: toolDesc.slice(0, 300), autoSubmit, fields, action: form.action || undefined, method: (form.method || 'get').toLowerCase() });
+    }
+    result.declarativeForms = declarativeForms;
+
+    // --- 维度 3: Schema.org / JSON-LD 结构化数据 ---
+    const jsonLdScripts = document.querySelectorAll('script[type="application/ld+json"]');
+    for (const script of jsonLdScripts) {
+      try {
+        const data = JSON.parse(script.textContent);
+        const extractActions = (node) => {
+          const items = [];
+          if (!node || typeof node !== 'object') return items;
+          const arr = Array.isArray(node) ? node : [node];
+          for (const item of arr) {
+            const type = item['@type'];
+            if (typeof type === 'string' && /(Action|Form|Product|ItemList|FAQPage|HowTo|Recipe|Event|JobPosting|Offer)/i.test(type)) {
+              items.push({ type, name: item.name || item['@name'] || '', target: typeof item.target === 'string' ? item.target : (item.target?.url || ''), description: (item.description || '').slice(0, 200) });
+            }
+            // 递归搜索嵌套结构
+            for (const key of ['potentialAction', 'action', 'result', 'itemListElement', 'offers']) {
+              if (item[key]) items.push(...extractActions(item[key]));
+            }
+          }
+          return items;
+        };
+        result.structuredData.push(...extractActions(data));
+      } catch { /* 非法 JSON 跳过 */ }
+    }
+    // 去重
+    const seen = new Set();
+    result.structuredData = result.structuredData.filter(item => {
+      const key = `${item.type}|${item.name}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    // --- 维度 4: DOM 语义模式推断 ---
+    const domPatterns = [];
+
+    // 4a. 搜索表单/搜索框
+    const searchInputs = document.querySelectorAll('input[type="search"], input[name*="search" i], input[name*="query" i], input[name*="keyword" i], input[placeholder*="search" i], input[placeholder*="搜索" i], [role="search"] input, [role="searchbox"]');
+    if (searchInputs.length > 0) {
+      domPatterns.push({ pattern: 'search', count: searchInputs.length, elements: Array.from(searchInputs).slice(0, 3).map(el => ({ name: el.name, placeholder: el.placeholder || '', role: el.getAttribute('role') || '' })) });
+    }
+
+    // 4b. 登录/认证入口
+    const loginSignals = document.querySelectorAll('input[type="password"], input[name*="password" i], input[name*="passwd" i], [role="dialog"] form, form[action*="login" i], form[action*="auth" i], form[action*="signin" i]');
+    if (loginSignals.length > 0) {
+      domPatterns.push({ pattern: 'authentication', count: loginSignals.length });
+    }
+
+    // 4c. 数据表格
+    const tables = document.querySelectorAll('table, [role="table"], [role="grid"]');
+    if (tables.length > 0) {
+      domPatterns.push({ pattern: 'data_table', count: tables.length });
+    }
+
+    // 4d. 分页控件
+    const paginations = document.querySelectorAll('[class*="pagination" i], [class*="pager" i], [aria-label*="pagination" i], [aria-label*="page" i], nav[aria-label*="页"]');
+    if (paginations.length > 0) {
+      domPatterns.push({ pattern: 'pagination', count: paginations.length });
+    }
+
+    // 4e. 筛选/过滤器
+    const filters = document.querySelectorAll('select[name*="filter" i], select[name*="sort" i], select[name*="category" i], [class*="filter" i] select, [role="listbox"], [class*="facet" i]');
+    if (filters.length > 0) {
+      domPatterns.push({ pattern: 'filter_sort', count: filters.length });
+    }
+
+    // 4f. 弹窗/对话框
+    const dialogs = document.querySelectorAll('dialog, [role="dialog"], [role="alertdialog"]');
+    if (dialogs.length > 0) {
+      domPatterns.push({ pattern: 'dialog', count: dialogs.length });
+    }
+
+    // 4g. 文件上传
+    const uploads = document.querySelectorAll('input[type="file"], [class*="upload" i], [class*="dropzone" i]');
+    if (uploads.length > 0) {
+      domPatterns.push({ pattern: 'file_upload', count: uploads.length });
+    }
+
+    // 4h. 富文本编辑器
+    const editors = document.querySelectorAll('[contenteditable="true"], .ql-editor, .ProseMirror, .tox-edit-area, [class*="editor" i][contenteditable]');
+    if (editors.length > 0) {
+      domPatterns.push({ pattern: 'rich_text_editor', count: editors.length });
+    }
+
+    // 4i. 地图/嵌入式内容
+    const maps = document.querySelectorAll('[class*="map" i] iframe, [class*="google-map" i], [class*="leaflet" i], [class*="amap" i]');
+    if (maps.length > 0) {
+      domPatterns.push({ pattern: 'embedded_map', count: maps.length });
+    }
+
+    // 4j. 表单（通用，排除已扫描的声明式）
+    const allForms = document.querySelectorAll('form');
+    const declarativeNames = new Set(declarativeForms.map(f => f.toolName));
+    const genericForms = [];
+    for (const form of allForms) {
+      const fname = form.getAttribute('toolname') || form.getAttribute('webmcp-tool');
+      if (fname && declarativeNames.has(fname)) continue;
+      const inputs = form.querySelectorAll('input:not([type="hidden"]), select, textarea');
+      if (inputs.length === 0) continue;
+      const action = form.action || '';
+      const method = (form.method || 'get').toLowerCase();
+      genericForms.push({ action: action.slice(0, 200), method, fieldCount: inputs.length });
+    }
+    if (genericForms.length > 0) {
+      domPatterns.push({ pattern: 'generic_form', count: genericForms.length, samples: genericForms.slice(0, 5) });
+    }
+
+    result.domPatterns = domPatterns;
+
+    // --- 维度 5: 网络 API 端点嗅探 ---
+    const resourceEntries = performance.getEntriesByType('resource');
+    const apiEntries = resourceEntries
+      .filter(entry => {
+        if (entry.initiatorType !== 'xmlhttprequest' && entry.initiatorType !== 'fetch') return false;
+        try {
+          const u = new URL(entry.name);
+          return u.protocol === 'https:' || u.protocol === 'http:';
+        } catch { return false; }
+      })
+      .map(entry => {
+        let path = '';
+        try { path = new URL(entry.name).pathname + (new URL(entry.name).search || ''); } catch { path = entry.name; }
+        return {
+          method: entry.initiatorType === 'xmlhttprequest' ? 'XHR' : 'fetch',
+          url: entry.name.slice(0, 300),
+          path: path.slice(0, 200),
+          duration: Math.round(entry.duration),
+          transferSize: entry.transferSize || 0
+        };
+      });
+    // 按 path 前缀聚合，避免返回几百条
+    const pathPrefixes = {};
+    for (const entry of apiEntries) {
+      const prefix = entry.path.split('/').slice(0, 3).join('/') || '/';
+      if (!pathPrefixes[prefix]) pathPrefixes[prefix] = { prefix, count: 0, methods: new Set(), sampleUrl: entry.url, avgDuration: 0, totalDuration: 0 };
+      pathPrefixes[prefix].count++;
+      pathPrefixes[prefix].methods.add(entry.method);
+      pathPrefixes[prefix].totalDuration += entry.duration;
+    }
+    result.apiEndpoints = Object.values(pathPrefixes)
+      .map(g => ({ prefix: g.prefix, count: g.count, methods: [...g.methods], sampleUrl: g.sampleUrl, avgDurationMs: Math.round(g.totalDuration / g.count) }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 20);
+
+    result.durationMs = Math.round(performance.now() - startedAt);
+    return result;
+  };
+
   globalThis.__webpilot = {
     page,
     pageTree,
@@ -793,6 +1079,10 @@
     waitForDynamic,
     iframeAction,
     shadowDomAction,
+    webmcpHealth,
+    webmcpGetTools,
+    webmcpExecuteTool,
+    probeCapabilities,
     async waitFor(selector, state = 'visible', timeoutMs = 10000, stableMs = 150) {
       const startedAt = performance.now();
       const deadline = startedAt + timeoutMs;

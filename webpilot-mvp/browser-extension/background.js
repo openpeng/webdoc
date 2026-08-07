@@ -44,7 +44,9 @@ const TAB_SCOPED_COMMANDS = new Set([
   'reload', 'goBackForward', 'getURL', 'fullPageScreenshot', 'elementScreenshot',
   'getConsoleLogs', 'shadowDomAction', 'setViewport', 'setUserAgent',
   'savePDF', 'setGeolocation', 'setNetworkThrottle', 'setTimezone',
-  'getCookies', 'setCookie', 'deleteCookie', 'getAllCookies'
+  'getCookies', 'setCookie', 'deleteCookie', 'getAllCookies',
+  'webmcpGetTools', 'webmcpExecuteTool', 'webmcpHealth',
+  'probeCapabilities'
 ]);
 
 function normalizeAllowedDomains(value) {
@@ -466,6 +468,18 @@ async function dispatchCommand(msg, sessionId) {
     case 'deleteCookie':
       await cmdDeleteCookie(msg.details, msg.tabId, msg.requestId);
       break;
+    case 'webmcpGetTools':
+      await cmdWebmcpGetTools(msg.tabId, msg.requestId);
+      break;
+    case 'webmcpExecuteTool':
+      await cmdWebmcpExecuteTool(msg.toolName, msg.input, msg.tabId, msg.requestId);
+      break;
+    case 'webmcpHealth':
+      await cmdWebmcpHealth(msg.tabId, msg.requestId);
+      break;
+    case 'probeCapabilities':
+      await cmdProbeCapabilities(msg.tabId, msg.requestId);
+      break;
     case 'screenshot':
       await cmdScreenshot(msg.tabId, msg.requestId);
       break;
@@ -683,6 +697,50 @@ async function callPageTool(tabId, method, args = []) {
     args: [method, args]
   });
   return result.result;
+}
+
+// ===== WebMCP 桥接命令 =====
+async function cmdWebmcpHealth(tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  try {
+    const result = await callPageTool(target, 'webmcpHealth');
+    sendToDaemon({ type: 'webmcpHealthResult', requestId, success: true, ...result });
+  } catch (e) {
+    sendToDaemon({ type: 'webmcpHealthResult', requestId, success: false, error: e.message });
+  }
+}
+
+async function cmdWebmcpGetTools(tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  try {
+    const result = await callPageTool(target, 'webmcpGetTools');
+    logOperation({ action: 'webmcpGetTools', tabId: target, success: true, toolCount: result.count || 0 });
+    sendToDaemon({ type: 'webmcpGetToolsResult', requestId, success: true, ...result });
+  } catch (e) {
+    sendToDaemon({ type: 'webmcpGetToolsResult', requestId, success: false, error: e.message });
+  }
+}
+
+async function cmdWebmcpExecuteTool(toolName, input, tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  try {
+    const result = await callPageTool(target, 'webmcpExecuteTool', [toolName, input || {}]);
+    logOperation({ action: 'webmcpExecuteTool', tabId: target, tool: toolName, success: result.success !== false });
+    sendToDaemon({ type: 'webmcpExecuteToolResult', requestId, success: true, ...result });
+  } catch (e) {
+    sendToDaemon({ type: 'webmcpExecuteToolResult', requestId, success: false, error: e.message });
+  }
+}
+
+async function cmdProbeCapabilities(tabId, requestId) {
+  const target = await getTargetTabId(tabId);
+  try {
+    const result = await callPageTool(target, 'probeCapabilities');
+    logOperation({ action: 'probeCapabilities', tabId: target, success: true, durationMs: result.durationMs });
+    sendToDaemon({ type: 'probeCapabilitiesResult', requestId, success: true, ...result });
+  } catch (e) {
+    sendToDaemon({ type: 'probeCapabilitiesResult', requestId, success: false, error: e.message });
+  }
 }
 
 async function cmdNavigate(url, tabId, requestId, sessionId) {

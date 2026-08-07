@@ -93,7 +93,7 @@ async function performWithSelectorCache(
 const server = new Server(
   {
     name: "webpilot-mcp-server",
-    version: "0.1.0",
+    version: "0.2.0",
   },
   {
     capabilities: { tools: {} },
@@ -857,6 +857,53 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         description: "以参数实例化已保存工作流，创建新任务并加载其计划。",
         inputSchema: { type: "object" as const, properties: { workflowId: { type: "string" }, parameters: { type: "object" }, tabId: { type: "number" }, maxSteps: { type: "number" } }, required: ["workflowId"] }
       },
+      // ===== WebMCP 双通道：发现并调用页面原生注册的工具 =====
+      {
+        name: "get_webmcp_health",
+        description: "检测当前页面是否支持 WebMCP 协议（document.modelContext 是否可用）。返回 available 指示是否可走 WebMCP 原生通道。当 available=true 时可进一步用 list_webmcp_tools 发现页面能力。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+          },
+          required: [],
+        },
+      },
+      {
+        name: "list_webmcp_tools",
+        description: "列出当前页面通过 WebMCP（document.modelContext.registerTool）注册的所有工具。每个工具包含 name、description、inputSchema 和 annotations。页面需已集成 WebMCP polyfill 或原生支持。返回空列表表示页面未注册任何工具。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+          },
+          required: [],
+        },
+      },
+      {
+        name: "execute_webmcp_tool",
+        description: "执行当前页面通过 WebMCP 注册的指定工具。工具名须为 list_webmcp_tools 返回的 name 之一。输入参数须符合工具的 inputSchema。这是 WebMCP 原生通道：直接调用页面 JS 注册函数，比浏览器自动化更快、更准、更稳定。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            toolName: { type: "string", description: "要执行的 WebMCP 工具名称（来自 list_webmcp_tools 返回的 name）" },
+            input: { type: "object", description: "传给工具的参数，须符合该工具的 inputSchema" },
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+          },
+          required: ["toolName"],
+        },
+      },
+      {
+        name: "probe_page_capabilities",
+        description: "多维度主动探测当前页面的能力，返回结构化报告。探测 5 个维度：① WebMCP 命令式工具（document.modelContext.getTools）② 声明式 WebMCP 表单（带 toolname 属性的 <form>）③ Schema.org/JSON-LD 结构化数据（SearchAction/LoginAction 等）④ DOM 语义模式推断（搜索框/登录表单/数据表格/分页/筛选器/弹窗/文件上传/富文本编辑器/地图等）⑤ 网络 API 端点嗅探（从 Performance API 聚合 XHR/fetch 请求）。Agent 可用此报告决定最优执行策略：有 WebMCP 工具时走原生通道，否则降级浏览器自动化。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+          },
+          required: [],
+        },
+      },
     ],
   };
 });
@@ -1420,6 +1467,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       case "start_workflow":
         result = await taskRuntime.startWorkflow(String(args.workflowId), args.parameters && typeof args.parameters === "object" ? args.parameters as Record<string, unknown> : {}, { tabId: typeof args.tabId === "number" ? args.tabId : undefined, maxSteps: typeof args.maxSteps === "number" ? args.maxSteps : undefined });
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+
+      // ===== WebMCP 双通道 =====
+      case "get_webmcp_health":
+        result = await sendToExtension("webmcpHealth", { tabId: args.tabId });
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+
+      case "list_webmcp_tools":
+        result = await sendToExtension("webmcpGetTools", { tabId: args.tabId });
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+
+      case "execute_webmcp_tool":
+        result = await sendToExtension("webmcpExecuteTool", { toolName: String(args.toolName), input: args.input && typeof args.input === "object" ? args.input : {}, tabId: args.tabId });
+        return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+
+      case "probe_page_capabilities":
+        result = await sendToExtension("probeCapabilities", { tabId: args.tabId });
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
 
       default:
