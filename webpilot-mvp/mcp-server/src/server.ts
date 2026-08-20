@@ -24,6 +24,85 @@ function normalizeTimeout(value: unknown): number {
   return Math.max(100, Math.min(Math.floor(value), 30000));
 }
 
+// 极简 HTML→纯文本：去 script/style、br/块级标签换行、合并空白、去缩进。
+// 用于跨域 iframe 降级时把 replay 回的 HTML 正文转成可读文本（不依赖外部依赖）。
+function htmlToText(html: string): string {
+  let s = html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ")
+    .replace(/<head[\s\S]*?<\/head>/gi, " ");
+  s = s
+    .replace(/<\s*br\s*\/?>/gi, "\n")
+    .replace(/<\s*\/(p|div|h[1-6]|li|tr|table|section|article|header|footer)\s*>/gi, "\n")
+    .replace(/<[^>]+>/g, " ");
+  s = s
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, "\"")
+    .replace(/&#39;/gi, "'");
+  s = s
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n[ \t]+/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  return s;
+}
+
+// 提取页面中 iframe 的正文文本。同源走 DOM 读取；跨域自动降级到网络层
+// （capture → reload 触发 iframe Document 请求 → getNetworkResources 匹配 → replay_api_request 取回 HTML）。
+// 返回 { source, url, text, truncated, error }；error 非空表示失败。
+async function extractIframeText(opts: {
+  tabId?: number;
+  iframeSelector?: string;
+  iframeIndex?: number;
+  urlContains?: string;
+  maxChars?: number;
+  maxBodyChars?: number;
+}): Promise<{ source: "same-origin" | "cross-origin" | "none"; url?: string; text: string; truncated: boolean; error?: string }> {
+  const maxChars = typeof opts.maxChars === "number" ? Math.max(1, Math.min(opts.maxChars, 200000)) : 50000;
+  const maxBodyChars = typeof opts.maxBodyChars === "number" ? Math.max(1, Math.min(opts.maxBodyChars, 500000)) : 50000;
+  const iframeSelector = opts.iframeSelector && opts.iframeSelector.trim() ? opts.iframeSelector.trim() : "iframe";
+  const urlContains = opts.urlContains && opts.urlContains.trim() ? opts.urlContains.trim() : "iframe";
+
+  // 1) 同源 DOM 读取
+  const direct = await sendToExtension("iframeAction", {
+    tabId: opts.tabId,
+    options: { action: "getText", iframeSelector, iframeIndex: opts.iframeIndex },
+  });
+  if (direct.success && typeof direct.text === "string" && direct.text.trim().length > 0) {
+    const text = direct.text.length > maxChars ? direct.text.slice(0, maxChars) : direct.text;
+    return { source: "same-origin", url: direct.iframeSrc, text, truncated: direct.text.length > maxChars };
+  }
+
+  // 2) 跨域降级：网络层
+  if (!direct.success && /same-origin|cross-origin|No same-origin/i.test(direct.error || "")) {
+    const capture = await sendToExtension("startNetworkCapture", { tabId: opts.tabId, filter: { type: "all" } });
+    if (!capture.success) return { source: "none", text: "", truncated: false, error: `无法启动网络捕获 (${capture.error})` };
+    await sendToExtension("reload", { tabId: opts.tabId });
+    let docReq: any = undefined;
+    for (let i = 0; i < 10 && !docReq; i++) {
+      const net = await sendToExtension("getNetworkResources", {
+        tabId: opts.tabId,
+        options: { type: "Document", urlContains, limit: 20 },
+      });
+      docReq = (net.resources || []).find((r: any) => (r.url || "").includes(urlContains) && /html/i.test(r.mimeType || ""));
+      if (!docReq) await new Promise((res) => setTimeout(res, 500));
+    }
+    await sendToExtension("stopNetworkCapture", { tabId: opts.tabId });
+    if (!docReq) return { source: "none", text: "", truncated: false, error: `未捕获到 iframe 的 Document 请求（urlContains='${urlContains}'）` };
+    const replay = await sendToExtension("replayApiRequest", { tabId: opts.tabId, options: { urlContains, url: docReq.url, maxBodyChars } });
+    if (!replay.success) return { source: "none", text: "", truncated: false, error: `重放 iframe 文档失败 (${replay.error})` };
+    const html = typeof replay.body === "string" ? replay.body : JSON.stringify(replay.body);
+    const text = htmlToText(html);
+    const truncated = text.length > maxChars;
+    return { source: "cross-origin", url: docReq.url, text: truncated ? text.slice(0, maxChars) : text, truncated };
+  }
+
+  return { source: "none", url: direct.iframeSrc, text: "", truncated: false, error: direct.error || "无文本内容" };
+}
+
 // 本进程抢到 8765 则直连扩展（Leader），否则经 8766 转发给 Leader（Follower）。
 const bridge = new BrowserBridge();
 const sendToExtension = (type: string, params: Record<string, any>): Promise<any> => bridge.send(type, params);
@@ -130,12 +209,13 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "get_page_text",
-        description: "读取页面正文纯文本，不执行任意页面 JavaScript",
+        description: "读取页面正文纯文本，不执行任意页面 JavaScript。若主页面含 iframe 且正文几乎为空（如 workbuddy 文档：iframe 来自跨域 codebuddy.work），会自动穿透 iframe 取回其正文（同源走 DOM，跨域走网络层 replay），合并到输出末尾。",
         inputSchema: {
           type: "object" as const,
           properties: {
             tabId: { type: "number", description: "目标标签页 ID（可选）" },
             maxChars: { type: "number", description: "返回的最大字符数，默认 50000，最大 200000" },
+            iframeUrlContains: { type: "string", description: "跨域 iframe 降级时按 URL 子串匹配其 Document 请求，默认 'iframe'；workbuddy 文档可传 'workbuddy-space-static'" },
           },
           required: [],
         },
@@ -401,6 +481,21 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             selector: { type: "string", description: "iframe 内的目标元素选择器（query/click 时使用）" },
           },
           required: ["action"],
+        },
+      },
+      {
+        name: "extract_iframe_text",
+        description: "提取页面中 iframe 的正文文本。同源 iframe 直接走 DOM 读取；跨域 iframe（如 workbuddy 文档：iframe 来自 codebuddy.work 而主站是 workbuddy.cn）自动降级到网络层——start_network_capture → 捕获 iframe 的 Document 请求 → replay_api_request（携带原站 cookie/origin）取回完整 HTML，再用 page-format 解析为纯文本。对调用方透明：跨域时不再返回空壳。",
+        inputSchema: {
+          type: "object" as const,
+          properties: {
+            tabId: { type: "number", description: "目标标签页 ID（可选）" },
+            iframeSelector: { type: "string", description: "iframe 的 CSS 选择器（可选，默认匹配第一个 iframe）" },
+            iframeUrlContains: { type: "string", description: "跨域降级时，按 URL 子串匹配 iframe 的 Document 请求，默认 'iframe'；workbuddy 文档可传 'workbuddy-space-static'" },
+            maxChars: { type: "number", description: "返回的最大字符数，默认 50000，最大 200000" },
+            maxBodyChars: { type: "number", description: "跨域降级时 replay 响应体最大字符数，默认 50000，最大 500000" },
+          },
+          required: [],
         },
       },
       {
@@ -985,14 +1080,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           isError: !result.success,
         };
 
-      case "get_page_text":
+      case "get_page_text": {
         result = await sendToExtension("getPageText", {
           tabId: args.tabId,
           maxChars: typeof args.maxChars === "number" ? Math.max(1_000, Math.min(Math.floor(args.maxChars), 200_000)) : 50_000,
         });
-        return {
-          content: [{ type: "text", text: `页面: ${result.title}\nURL: ${result.url}\n字符数: ${result.characterCount}${result.truncated ? "（已截断）" : ""}\n\n${result.text}` }],
-        };
+        const maxChars = typeof args.maxChars === "number" ? Math.max(1_000, Math.min(Math.floor(args.maxChars), 200_000)) : 50_000;
+        let text = `页面: ${result.title}\nURL: ${result.url}\n字符数: ${result.characterCount}${result.truncated ? "（已截断）" : ""}\n\n${result.text}`;
+
+        // 若主页面包含 iframe（正文可能全在 iframe 内，如 workbuddy 文档），自动穿透取回 iframe 正文
+        const probe = await sendToExtension("probeSelector", { tabId: args.tabId, selector: "iframe" });
+        if (probe?.matched && !/iframe/i.test(result.text || "")) {
+          const iframeText = await extractIframeText({
+            tabId: typeof args.tabId === "number" ? args.tabId : undefined,
+            maxChars,
+            urlContains: typeof args.iframeUrlContains === "string" ? args.iframeUrlContains : undefined,
+          });
+          if (!iframeText.error && iframeText.text.trim()) {
+            text += `\n\n--- iframe 正文（${iframeText.source === "same-origin" ? "同源" : "跨域降级"}, ${iframeText.url}）---\n${iframeText.text}`;
+          }
+        }
+        return { content: [{ type: "text", text }] };
+      }
 
       case "click": {
         const { result: clickResult, notes: clickNotes, cacheError: clickCacheError } = await performWithSelectorCache("click", args);
@@ -1206,6 +1315,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           return { content: [{ type: "text", text: `iframe (${result.iframeSrc})\n字符数: ${result.characterCount}\n\n${result.text}` }] };
         }
         return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+
+      case "extract_iframe_text": {
+        const out = await extractIframeText({
+          tabId: typeof args.tabId === "number" ? args.tabId : undefined,
+          iframeSelector: typeof args.iframeSelector === "string" ? args.iframeSelector : undefined,
+          iframeIndex: typeof args.iframeIndex === "number" ? args.iframeIndex : undefined,
+          urlContains: typeof args.iframeUrlContains === "string" ? args.iframeUrlContains : undefined,
+          maxChars: typeof args.maxChars === "number" ? args.maxChars : undefined,
+          maxBodyChars: typeof args.maxBodyChars === "number" ? args.maxBodyChars : undefined,
+        });
+        if (out.error) {
+          return { content: [{ type: "text", text: `iframe 正文提取失败：${out.error}${out.url ? `\niframeSrc: ${out.url}` : ""}` }], isError: true };
+        }
+        const tag = out.source === "same-origin" ? "同源" : "跨域降级";
+        return {
+          content: [{ type: "text", text: `iframe (${tag}, ${out.url})\n截断: ${out.truncated}\n\n${out.text}` }],
+        };
+      }
 
       case "upload_file":
         result = await sendToExtension("uploadFile", { selector: args.selector, filePath: args.filePath, tabId: args.tabId });
