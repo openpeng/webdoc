@@ -16,6 +16,7 @@ import { AdapterRegistry } from "./adapters.js";
 import { BrowserBridge } from "./bridge.js";
 import { SelectorCache, isCacheableSelector, isValidIntent } from "./selector-cache.js";
 import { formatElementLine, formatPageTree } from "./page-format.js";
+import { htmlToMarkdown, type HtmlToMarkdownOptions } from "./html-to-markdown.js";
 
 const MAX_ACTION_LOG_ENTRIES = 100;
 
@@ -48,6 +49,38 @@ function htmlToText(html: string): string {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
   return s;
+}
+
+// 从工具入参抽取 markdown 转换选项（与现有参数守卫风格一致：typeof 收窄 + 枚举 clamp）。
+function buildMdOpts(args: any, defaultBaseUrl?: string): HtmlToMarkdownOptions {
+  return {
+    gfm: args.gfm !== false,
+    headingStyle: args.headingStyle === "setext" ? "setext" : "atx",
+    bulletListMarker: args.bulletListMarker === "+" || args.bulletListMarker === "*" ? args.bulletListMarker : "-",
+    codeBlockStyle: args.codeBlockStyle === "indented" ? "indented" : "fenced",
+    emDelimiter: args.emDelimiter === "_" ? "_" : "*",
+    strongDelimiter: args.strongDelimiter === "__" ? "__" : "**",
+    linkStyle: args.linkStyle === "referenced" ? "referenced" : "inlined",
+    baseUrl: typeof args.baseUrl === "string" ? args.baseUrl : defaultBaseUrl,
+    remove:
+      typeof args.remove === "string" && args.remove.trim()
+        ? (args.remove as string).split(",").map((s: string) => s.trim()).filter(Boolean)
+        : undefined,
+    keep:
+      typeof args.keep === "string" && args.keep.trim()
+        ? (args.keep as string).split(",").map((s: string) => s.trim()).filter(Boolean)
+        : undefined,
+  };
+}
+
+// 把 HTML 转成 Markdown 并按 returnFormat 决定最终返回文本（md 直接返回，json 返回元信息）。
+function renderMarkdown(html: string, args: any, defaultBaseUrl: string | undefined, maxChars: number): string {
+  let md = htmlToMarkdown(html ?? "", buildMdOpts(args, defaultBaseUrl));
+  if (maxChars > 0 && md.length > maxChars) md = md.slice(0, maxChars);
+  if (args.returnFormat === "json") {
+    return JSON.stringify({ markdown: md, length: md.length, gfm: buildMdOpts(args, defaultBaseUrl).gfm !== false }, null, 2);
+  }
+  return md;
 }
 
 // 提取页面中 iframe 的正文文本。同源走 DOM 读取；跨域自动降级到网络层
@@ -209,13 +242,26 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "get_page_text",
-        description: "读取页面正文纯文本，不执行任意页面 JavaScript。若主页面含 iframe 且正文几乎为空（如 workbuddy 文档：iframe 来自跨域 codebuddy.work），会自动穿透 iframe 取回其正文（同源走 DOM，跨域走网络层 replay），合并到输出末尾。",
+        description: "读取页面正文。format=text 返回纯文本（默认）；format=markdown 用开源库 turndown 把页面 HTML 直接转成 Markdown，省去让大模型转 MD 的 token 开销。也可直接传 html 字符串转换（不依赖浏览器）。markdown 模式支持 gfm（表格/删除线/任务列表）、标题样式、列表标记、代码块样式、链接样式等格式参数，并可用 baseUrl 把相对链接解析为绝对地址；returnFormat=md 直接返回 Markdown 文档，=json 返回 { markdown, length } 元信息。若主页面含 iframe 且正文几乎为空，会自动穿透 iframe 取回其正文。",
         inputSchema: {
           type: "object" as const,
           properties: {
             tabId: { type: "number", description: "目标标签页 ID（可选）" },
             maxChars: { type: "number", description: "返回的最大字符数，默认 50000，最大 200000" },
             iframeUrlContains: { type: "string", description: "跨域 iframe 降级时按 URL 子串匹配其 Document 请求，默认 'iframe'；workbuddy 文档可传 'workbuddy-space-static'" },
+            format: { type: "string", enum: ["text", "markdown"], description: "输出格式，默认 text（纯文本）；markdown 用代码转成 Markdown" },
+            html: { type: "string", description: "直接传入的 HTML 字符串；提供后优先于当前标签页，纯服务端转换（不依赖浏览器）" },
+            gfm: { type: "boolean", description: "markdown 模式：是否启用 GitHub Flavored Markdown（表格/删除线/任务列表），默认 true" },
+            headingStyle: { type: "string", enum: ["atx", "setext"], description: "markdown 模式：标题样式，默认 atx（# 形式）" },
+            bulletListMarker: { type: "string", enum: ["-", "+", "*"], description: "markdown 模式：无序列表标记，默认 -" },
+            codeBlockStyle: { type: "string", enum: ["fenced", "indented"], description: "markdown 模式：代码块样式，默认 fenced（``` 围栏）" },
+            emDelimiter: { type: "string", enum: ["*", "_"], description: "markdown 模式：斜体定界符，默认 *" },
+            strongDelimiter: { type: "string", enum: ["**", "__"], description: "markdown 模式：粗体定界符，默认 **" },
+            linkStyle: { type: "string", enum: ["inlined", "referenced"], description: "markdown 模式：链接样式，默认 inlined" },
+            baseUrl: { type: "string", description: "markdown 模式：基址，把相对链接/图片解析为绝对地址；走标签页时不传则默认用当前页 URL" },
+            remove: { type: "string", description: "markdown 模式：需整段剔除的标签名，逗号分隔，如 'nav,footer,script'" },
+            keep: { type: "string", description: "markdown 模式：需原样保留为 HTML 的标签名，逗号分隔" },
+            returnFormat: { type: "string", enum: ["md", "json"], description: "markdown 模式返回格式：md=直接返回 Markdown 文档（默认），json=返回 { markdown, length }" },
           },
           required: [],
         },
@@ -1081,28 +1127,57 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
 
       case "get_page_text": {
+        const wantMarkdown = args.format === "markdown";
+        const maxChars = typeof args.maxChars === "number" ? Math.max(1_000, Math.min(Math.floor(args.maxChars), 200_000)) : 50_000;
+
+        // 直接传 html：纯服务端转换，不依赖浏览器
+        if (typeof args.html === "string" && args.html.length > 0) {
+          return { content: [{ type: "text", text: renderMarkdown(args.html, args, undefined, maxChars) }] };
+        }
+
+        // 走浏览器取当前页
         result = await sendToExtension("getPageText", {
           tabId: args.tabId,
-          maxChars: typeof args.maxChars === "number" ? Math.max(1_000, Math.min(Math.floor(args.maxChars), 200_000)) : 50_000,
+          maxChars,
+          returnHtml: wantMarkdown,
         });
-        const maxChars = typeof args.maxChars === "number" ? Math.max(1_000, Math.min(Math.floor(args.maxChars), 200_000)) : 50_000;
-        let text = `页面: ${result.title}\nURL: ${result.url}\n字符数: ${result.characterCount}${result.truncated ? "（已截断）" : ""}\n\n${result.text}`;
 
-        // 若主页面包含 iframe（正文可能全在 iframe 内，如 workbuddy 文档），自动穿透取回 iframe 正文
+        // 纯文本模式：保持原行为
+        if (!wantMarkdown) {
+          let text = `页面: ${result.title}\nURL: ${result.url}\n字符数: ${result.characterCount}${result.truncated ? "（已截断）" : ""}\n\n${result.text}`;
+
+          // 若主页面包含 iframe（正文可能全在 iframe 内，如 workbuddy 文档），自动穿透 iframe 取回其正文
+          const probe = await sendToExtension("probeSelector", { tabId: args.tabId, selector: "iframe" });
+          if (probe?.matched && !/iframe/i.test(result.text || "")) {
+            const iframeText = await extractIframeText({
+              tabId: typeof args.tabId === "number" ? args.tabId : undefined,
+              maxChars,
+              urlContains: typeof args.iframeUrlContains === "string" ? args.iframeUrlContains : undefined,
+            });
+            if (!iframeText.error && iframeText.text.trim()) {
+              text += `\n\n--- iframe 正文（${iframeText.source === "same-origin" ? "同源" : "跨域降级"}, ${iframeText.url}）---\n${iframeText.text}`;
+            }
+          }
+          return { content: [{ type: "text", text }] };
+        }
+
+        // markdown 模式：把页面 HTML 转成 Markdown（开源库 turndown，省 token）
+        let md = htmlToMarkdown(result.html ?? "", buildMdOpts(args, result.url));
+
+        // 正文几乎为空时（如内容在 iframe 内），穿透取回 iframe 正文追加
         const probe = await sendToExtension("probeSelector", { tabId: args.tabId, selector: "iframe" });
-        if (probe?.matched && !/iframe/i.test(result.text || "")) {
+        if (probe?.matched && md.trim().length < 200) {
           const iframeText = await extractIframeText({
             tabId: typeof args.tabId === "number" ? args.tabId : undefined,
             maxChars,
             urlContains: typeof args.iframeUrlContains === "string" ? args.iframeUrlContains : undefined,
           });
           if (!iframeText.error && iframeText.text.trim()) {
-            text += `\n\n--- iframe 正文（${iframeText.source === "same-origin" ? "同源" : "跨域降级"}, ${iframeText.url}）---\n${iframeText.text}`;
+            md += `\n\n--- iframe 正文（${iframeText.source === "same-origin" ? "同源" : "跨域降级"}, ${iframeText.url}）---\n\n${iframeText.text}`;
           }
         }
-        return { content: [{ type: "text", text }] };
+        return { content: [{ type: "text", text: renderMarkdown(md, args, result.url, maxChars) }] };
       }
-
       case "click": {
         const { result: clickResult, notes: clickNotes, cacheError: clickCacheError } = await performWithSelectorCache("click", args);
         if (clickCacheError) return { content: [{ type: "text", text: [`点击失败: ${clickCacheError}`, ...clickNotes].join("\n") }], isError: true };

@@ -127,6 +127,19 @@ Restart or reconnect the AI client after saving its configuration.
 
 The extension normally reconnects after installation, Chrome startup, and unexpected disconnects. Selecting **Disconnect** disables automatic reconnection; select **Connect** to enable it again.
 
+## Read pages as Markdown
+
+`get_page_text` can return the page as Markdown instead of plain text. The conversion runs on the server with the open-source `turndown` + `turndown-plugin-gfm` libraries, so the model does not spend tokens re-formatting HTML into Markdown, and the output is stable and reproducible.
+
+- Pass `format: "markdown"` to get a Markdown document of the page body. The browser extension detects the main content container and strips navigation, sidebars, and toolbars automatically, so the Markdown starts at the real article. This is verified on Confluence, GitLab, and antd-style admin consoles.
+- GitHub Flavored Markdown is on by default (`gfm: true`): tables, strikethrough, and task lists are converted. antd's split header/body tables are merged into a single Markdown table.
+- Inline `data:` images (logos, base64 or `svg+xml` data URIs) are replaced with a placeholder (`![图片]` or `![alt](data:image/placeholder)`) so the Markdown stays compact.
+- Use `baseUrl` to resolve relative links and images to absolute URLs; when reading a live tab it defaults to the current page URL.
+- Extra formatting knobs: `headingStyle` (atx/setext), `bulletListMarker`, `codeBlockStyle`, `emDelimiter`, `strongDelimiter`, `linkStyle` (inlined/referenced), and `remove`/`keep` tag lists.
+- Set `returnFormat: "json"` to receive `{ markdown, length }` metadata instead of the raw document.
+- Convert raw HTML without a browser: pass the `html` string together with `format: "markdown"` and the conversion runs entirely server side.
+- Cross-origin iframe penetration (see above) also applies in Markdown mode: when the main page body is empty, the iframe body is extracted and converted to Markdown.
+
 ## Security controls
 
 The extension enforces these controls locally, including for MCP clients:

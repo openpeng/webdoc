@@ -282,17 +282,54 @@
     };
   };
   const snapshot = () => ({ url: location.href, title: document.title, readyState: document.readyState, timestamp: new Date().toISOString() });
-  const readText = (maxChars = 50_000) => {
+  // 通用正文容器识别：优先语义化选择器，回退到「排除导航/侧栏后文本量最大的块」。
+  const MAIN_SELECTORS = 'main,[role="main"],#main,#main-content,#content,.content,.main-content,.wiki-content,.markdown-body,.doc-content,.page-content,.article,article,.post,.container,.app-main,.app-content,.app-container,.layout-content,.content-wrapper,.ant-layout-content,.ant-pro-page-container';
+  const EXCLUDE_SELECTORS = 'header,nav,aside,footer,[role="navigation"],[role="banner"],[role="contentinfo"],.sidebar,.sider,.menu,.nav,.header,.footer,.layout-sider,.ant-layout-sider,.ant-pro-sider-menu';
+  const LEAF_TAGS = /^(SPAN|A|B|I|EM|STRONG|CODE|LABEL|LI|TD|TH|SMALL|SUB|SUP|U|MARK|P|H1|H2|H3|H4|H5|H6)$/i;
+  const pickMainContainer = () => {
+    // 收集所有命中语义选择器的容器，去掉「包裹更具体内容区」的外层壳
+    // （如 Confluence 的 #main-content 内含 .wiki-content），保留最具体的叶子容器，再取文本量最大者。
+    const candidates = Array.from(document.querySelectorAll(MAIN_SELECTORS))
+      .filter(el => !(el.matches(EXCLUDE_SELECTORS) || el.closest(EXCLUDE_SELECTORS)))
+      .filter(el => (el.textContent || "").trim().length > 200);
+    if (candidates.length) {
+      const isAncestor = (a, b) => a !== b && a.contains(b);
+      const leaves = candidates.filter(c => !candidates.some(o => o !== c && isAncestor(c, o)));
+      const pool = leaves.length ? leaves : candidates;
+      pool.sort((a, b) => (b.textContent || "").length - (a.textContent || "").length);
+      return pool[0];
+    }
+    // 回退：排除导航/侧栏后，选文本量最大的块级容器（其 textContent 累加全部后代，故最长者即内容根）
+    let best = null, bestLen = 0;
+    const nodes = document.querySelectorAll("body *");
+    for (const el of nodes) {
+      const tag = el.tagName || "";
+      if (LEAF_TAGS.test(tag)) continue;
+      if (el.matches(EXCLUDE_SELECTORS) || el.closest(EXCLUDE_SELECTORS)) continue;
+      // 跳过内部含导航/侧栏的祖先容器（如 #app），否则会选到整页壳而非内容区
+      if (el.querySelector(EXCLUDE_SELECTORS)) continue;
+      const len = (el.textContent || "").length;
+      if (len > bestLen) { bestLen = len; best = el; }
+    }
+    return best && bestLen > 200 ? best : (document.body || document.documentElement);
+  };
+
+  const readText = (maxChars = 50_000, returnHtml = false) => {
     const limit = Math.max(1_000, Math.min(Number(maxChars) || 50_000, 200_000));
-    const root = document.querySelector('#main-content, .wiki-content, [role="main"], article') || document.body;
+    const root = pickMainContainer();
     const fullText = (root?.innerText || '').replace(/\n{3,}/g, '\n\n').trim();
-    return {
+    const out = {
       url: location.href,
       title: document.title,
       text: fullText.slice(0, limit),
       characterCount: fullText.length,
       truncated: fullText.length > limit
     };
+    // markdown 转换需要渲染后的 HTML：优先正文容器，回退 body / documentElement
+    if (returnHtml) {
+      out.html = (root && root.outerHTML) || document.body?.outerHTML || document.documentElement?.outerHTML || '';
+    }
+    return out;
   };
   const verify = assertion => {
     const kind = assertion?.kind;

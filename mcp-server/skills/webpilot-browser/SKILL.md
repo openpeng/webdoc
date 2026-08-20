@@ -20,7 +20,7 @@ Use WebPilot to operate the user's locally connected Chrome extension. Prefer ob
 Use the smallest reliable tool path:
 
 - **Check page capabilities first on an unknown site:** Call `probe_page_capabilities` to get a structured report of what the page supports. If WebMCP tools are available (`webmcp.count > 0`), prefer the native channel below.
-- **Read or research one page:** Call `get_page_text`; it auto-penetrates cross-origin iframes (see below) so doc-style pages return full body text. Use `get_page_info` when interactive controls or the current URL/title matter. For a supported site, call `extract_with_best_adapter` first; it returns compact structured data and transparently falls back when needed.
+- **Read or research one page:** Call `get_page_text`. By default it returns plain text and auto-penetrates cross-origin iframes (see below) so doc-style pages return full body text. Pass `format: "markdown"` to get clean Markdown instead — the extension detects the main content container and strips nav/sidebars/toolbars, GFM tables/strikethrough/task-lists are converted (antd split tables merge into one), and inline `data:` images become placeholders; all of this runs through the open-source `turndown` library so you avoid spending tokens re-formatting HTML yourself. Use `get_page_info` when interactive controls or the current URL/title matter. For a supported site, call `extract_with_best_adapter` first; it returns compact structured data and transparently falls back when needed.
 - **Explore an unlabelled control:** Call `inspect` with `scope: "focused"` or `scope: "composer"`; reuse its `@wpN` reference. Call `probe_selector` for a one-shot CSS check instead of retrying a failing click. Use `click_at` only with coordinates from a fresh inspection or screenshot.
 - **One interaction:** Call `get_page_info`, choose a locator, act with `click` or `type`, then call `wait_for` or `get_page_info` to confirm the resulting state.
 - **Multi-step work:** Use the task loop below instead of chaining raw actions.
@@ -84,6 +84,18 @@ Read a cross-origin doc:   get_page_text (auto iframe)  OR  extract_iframe_text 
 Manual downgrade:           start_network_capture -> reload -> get_network_resources(type:"Document") -> replay_api_request -> htmlToText
 ```
 
+## Markdown reading mode
+
+`get_page_text` can return Markdown instead of plain text. The conversion uses `turndown` + `turndown-plugin-gfm` on the server (no model tokens spent re-formatting HTML), and the result is stable and reproducible.
+
+- `format: "markdown"` → Markdown of the page body. The browser extension first isolates the main content container and drops navigation, sidebars, and toolbars, so the document starts at the real article (verified on Confluence, GitLab, and antd admin consoles).
+- GFM is enabled by default (`gfm: true`): tables, strikethrough, task lists. antd's split header/body tables are merged into one Markdown table. Inline `data:` images (logos, base64/SVG) are replaced with a placeholder to keep the output compact.
+- `baseUrl` resolves relative links/images to absolute URLs (defaults to the live page URL when reading a tab).
+- Formatting knobs: `headingStyle` (atx/setext), `bulletListMarker`, `codeBlockStyle`, `emDelimiter`, `strongDelimiter`, `linkStyle` (inlined/referenced), plus `remove`/`keep` tag lists.
+- `returnFormat: "json"` returns `{ markdown, length }` metadata instead of the raw document — handy when you need the size before deciding how to use it.
+- `html` lets you convert a raw HTML string entirely server side, with no browser/tab involved.
+- Cross-origin iframe penetration applies here too: if the main page body is empty, the iframe body is extracted and converted to Markdown.
+
 ## Locate and interact
 
 - Prefer a fresh `@eN` reference from `get_page_info` for the immediate next action. It becomes invalid after the page changes. For unnamed controls returned by `inspect`, use its `@wpN` reference; it remains valid until the page navigates or the node is removed.
@@ -114,7 +126,8 @@ The runtime automatically detects repeated action/page pairs and unchanged state
 ## Common patterns
 
 ```text
-Read a page:       get_page_text (auto iframe) -> summarize with URL/title context
+Read a page (text): get_page_text (auto iframe) -> summarize with URL/title context
+Read a page (MD):   get_page_text format:"markdown" -> clean Markdown, nav/toolbar stripped
 Search a site:     get_page_info -> type -> click -> wait_for -> verify_task_step
 Structured page:   extract_with_best_adapter -> inspect fallback/evidence if any
 New task:          start_task -> observe -> run_task_step -> verify -> repeat

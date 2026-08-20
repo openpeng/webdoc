@@ -367,7 +367,7 @@ async function dispatchCommand(msg, sessionId) {
       await cmdProbeSelector(msg.selector, msg.tabId, msg.requestId);
       break;
     case 'getPageText':
-      await cmdGetPageText(msg.tabId, msg.maxChars, msg.requestId);
+      await cmdGetPageText(msg.tabId, msg.maxChars, msg.returnHtml, msg.requestId);
       break;
     case 'getResources':
       await cmdGetResources(msg.options, msg.tabId, msg.requestId);
@@ -893,10 +893,10 @@ async function cmdProbeSelector(selector, tabId, requestId) {
   }
 }
 
-async function cmdGetPageText(tabId, maxChars, requestId) {
+async function cmdGetPageText(tabId, maxChars, returnHtml, requestId) {
   const target = await getTargetTabId(tabId);
   try {
-    const result = await callPageTool(target, 'readText', [maxChars]);
+    const result = await callPageTool(target, 'readText', [maxChars, !!returnHtml]);
     sendToDaemon({ type: 'pageTextResult', requestId, success: true, ...result });
   } catch (e) {
     sendToDaemon({ type: 'pageTextResult', requestId, success: false, error: e.message });
