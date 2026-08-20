@@ -15,3 +15,5 @@ dist/
 cpa-courses-*.*
 course_list_export.csv
 review_diff.txt
+.npmrc
+.webpilot-task-logs
