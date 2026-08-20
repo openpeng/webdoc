@@ -1,0 +1,37 @@
+[
+  {
+    "id": "github-repository",
+    "name": "GitHub 仓库",
+    "description": "读取 GitHub 仓库的名称、描述、Star、Fork、主要语言、主题和 README 标题。只读。",
+    "domains": ["github.com"],
+    "pathPattern": "^/[^/]+/[^/]+/?$",
+    "spec": {
+      "fields": {
+        "repository": { "selector": "meta[property=\"og:title\"]", "attribute": "content" },
+        "description": { "selector": "meta[name=\"description\"]", "attribute": "content" },
+        "stars": { "selector": "a[href$=\"/stargazers\"]" },
+        "forks": { "selector": "a[href$=\"/forks\"]" },
+        "primaryLanguage": { "selector": "[itemprop=\"programmingLanguage\"]" },
+        "topics": { "selector": "a[data-ga-click*=\"topic\"]", "multiple": true, "limit": 20 },
+        "readmeHeadings": { "selector": "article.markdown-body h1, article.markdown-body h2", "multiple": true, "limit": 30 }
+      }
+    }
+  },
+  {
+    "id": "github-issues",
+    "name": "GitHub Issues",
+    "description": "将当前 GitHub 仓库的 Issues 列表提取成标题和链接数组。只读。",
+    "domains": ["github.com"],
+    "pathPattern": "^/[^/]+/[^/]+/issues/?$",
+    "spec": {
+      "list": {
+        "selector": "a.Link--primary[href*=\"/issues/\"]",
+        "limit": 50,
+        "fields": {
+          "title": { "selector": "$self" },
+          "url": { "selector": "$self", "attribute": "href" }
+        }
+      }
+    }
+  }
+]

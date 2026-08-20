@@ -1,0 +1,15 @@
+{
+  "id": "generic-page-summary",
+  "name": "通用页面摘要",
+  "description": "提取标题、描述、规范链接、标题层级和前 20 个链接；适用于任何 HTTPS 页面。",
+  "domains": ["*"],
+  "spec": {
+    "fields": {
+      "title": { "selector": "title" },
+      "description": { "selector": "meta[name=\"description\"]", "attribute": "content" },
+      "canonicalUrl": { "selector": "link[rel=\"canonical\"]", "attribute": "href" },
+      "headings": { "selector": "h1, h2", "multiple": true, "limit": 20 },
+      "links": { "selector": "a[href]", "attribute": "href", "multiple": true, "limit": 20 }
+    }
+  }
+}

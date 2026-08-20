@@ -1,0 +1,34 @@
+[
+  {
+    "id": "juejin-article",
+    "name": "掘金文章",
+    "description": "读取掘金文章的标题、作者、描述和正文标题层级。只读。",
+    "domains": ["juejin.cn"],
+    "pathPattern": "^/post/\\d+",
+    "spec": {
+      "fields": {
+        "title": { "selector": "h1.article-title" },
+        "author": { "selector": ".author-name .name, .author-info-block .username" },
+        "description": { "selector": "meta[name=\"description\"]", "attribute": "content" },
+        "headings": { "selector": ".markdown-body h1, .markdown-body h2", "multiple": true, "limit": 30 }
+      }
+    }
+  },
+  {
+    "id": "juejin-feed",
+    "name": "掘金信息流",
+    "description": "将掘金首页或搜索结果的文章列表提取成标题和链接数组。只读。",
+    "domains": ["juejin.cn"],
+    "pathPattern": "^/($|recommended|search|frontend|backend|ai)",
+    "spec": {
+      "list": {
+        "selector": ".entry-list a.title, a[href*=\"/post/\"].title",
+        "limit": 20,
+        "fields": {
+          "title": { "selector": "$self" },
+          "url": { "selector": "$self", "attribute": "href" }
+        }
+      }
+    }
+  }
+]

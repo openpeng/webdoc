@@ -1,0 +1,308 @@
+# WebPilot MVP
+
+WebPilot lets an MCP-compatible AI client control Chrome through a locally installed extension.
+
+## Architecture
+
+```
+AI client -- stdio --> MCP Server (also WebSocket bridge) <-- ws://localhost:8765 --> Chrome extension
+```
+
+The MCP Server now includes the WebSocket bridge. Do not start the legacy `daemon/` package: one MCP process is the only required local service.
+
+Component responsibilities, data flow, and design rationale are documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
+Multiple MCP processes can run at once. The first to bind `8765` becomes the **leader** and owns the extension connection; later processes become **followers** and forward commands through the leader over the internal proxy port `8766`. See `INSTALL.md` for the full leader-follower and session model.
+
+## Setup
+
+1. Install the extension from `browser-extension/` through `chrome://extensions/` in developer mode.
+2. Install the MCP Server. The recommended way is from npm (ships the compiled server, `definitions/`, `skills/`, and `browser-extension/`):
+
+   ```bash
+   npm install -g webpilot-mcp-server
+   # 或临时使用：npx webpilot-mcp-server
+   ```
+
+   Alternatively, build from source:
+
+   ```bash
+   cd mcp-server
+   npm install
+   npm run build
+   ```
+
+3. Register the server with your AI client. If installed from npm, only the command name is needed:
+
+   ```json
+   {
+     "mcpServers": {
+       "webpilot": {
+         "command": "webpilot-mcp"
+       }
+     }
+   }
+   ```
+
+   If built from source, point `args` at the compiled server (replace with the absolute path on your computer):
+
+   ```json
+   {
+     "mcpServers": {
+       "webpilot": {
+         "command": "node",
+         "args": ["/absolute/path/to/webdoc/mcp-server/dist/server.js"]
+       }
+     }
+   }
+   ```
+
+4. Start or reconnect the MCP client. The extension connects to the bridge built into the MCP process at `ws://localhost:8765` automatically.
+
+The extension attempts a connection after installation, Chrome startup, and an
+unexpected disconnect. It keeps an established connection alive with a 20-second
+heartbeat. If the MCP process starts later, it retries every minute.
+Clicking **Disconnect** intentionally disables automatic reconnection; use
+**Connect** once to enable it again.
+
+## Environment variables
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `WEBPILOT_PORT` | `8765` | Port used by the MCP Server's built-in WebSocket bridge. |
+| `WEBPILOT_PROXY_PORT` | `WEBPILOT_PORT + 1` (`8766`) | Internal `127.0.0.1` proxy port used by followers to reach the leader. |
+| `WEBPILOT_GROUP_TTL_MIN` | `30` | Minutes an idle session tab group is kept before it is garbage-collected (leader process). |
+| `WEBPILOT_MAX_GROUPS` | `5` | Maximum number of session tab groups; the oldest idle groups are closed first. |
+
+## Tools
+
+| Tool | Description |
+| --- | --- |
+| `navigate` | Open a URL in a browser tab. |
+| `get_page_info` | Read the page title, URL, and interactive elements. Default flat list; `structure: "tree"` groups elements by semantic containers (main/dialog/list items) for disambiguation. |
+| `inspect` | Explore page or focused-editor controls, including unnamed clickable containers; returns reusable `@wpN` references and viewport bounds. |
+| `probe_selector` | Test a locator once without the normal visibility wait. |
+| `get_page_text` | Read the main page text without arbitrary JavaScript or `eval`. |
+| `click` | Click a CSS selector. |
+| `click_at` | Click a visible actionable element at coordinates returned by `inspect` or a fresh screenshot. |
+| `type` | Type text into a CSS selector. |
+| `screenshot` | Capture the visible browser area. |
+| `execute_js` | Deprecated and disabled; use the restricted observation tools instead. |
+| `list_tabs` | List browser tabs. |
+| `wait_for` | Wait until a locator is visible, attached, or hidden. |
+| `get_action_log` | Read recent action durations and errors (without entered text or scripts). |
+| `cleanup_sessions` | Close WebPilot session tab groups; by default only idle groups (`onlyIdle`), or a specific `sessionId`. |
+| `list_adapters` / `extract_with_adapter` | Discover and use a specific read-only site adapter. |
+| `extract_with_best_adapter` | Select the most specific adapter and fall back to a generic summary with evidence. |
+| `get_adapter_health` | Inspect adapter success, latency, and recent DOM-extraction errors. |
+| `start_task` | Start a deterministic task session and capture the initial page state. |
+| `observe_task` | Refresh the task's page observation and fingerprint. |
+| `run_task_step` | Execute one action, then re-observe and run loop detection. |
+| `verify_task_step` | Evaluate a deterministic completion assertion. |
+| `get_task` / `get_task_log` / `cancel_task` | Inspect evidence or stop a task session. |
+| `resume_task` | Resume a paused task after human takeover (e.g., manual login). |
+| `create_task_checkpoint` / `restore_task_checkpoint` | Save or restore a soft URL/page-fingerprint checkpoint. |
+| `set_task_plan` / `run_planned_step` | Store an Agent plan and execute one verified plan step. |
+| `save_task_as_workflow` / `start_workflow` | Turn a completed plan into a parameterized, reusable workflow. |
+| `recommend_workflows` | Recommend completed workflows matching the current page's domain; it never executes one. |
+| `get_webmcp_health` | Check whether the current page supports WebMCP (`document.modelContext`). Returns `available` and the API variant in use. |
+| `list_webmcp_tools` | List all tools registered by the page via WebMCP. Each tool includes `name`, `description`, `inputSchema`, and `annotations`. |
+| `execute_webmcp_tool` | Execute a specific WebMCP-registered tool by name, passing structured input. This is the native channel — faster and more reliable than DOM automation. |
+| `probe_page_capabilities` | Multi-dimensional page capability scan: WebMCP tools, declarative forms, JSON-LD actions, DOM semantic patterns, and network API endpoints. Use to decide the best execution strategy. |
+
+## WebMCP dual-channel
+
+WebPilot supports the WebMCP standard protocol (`document.modelContext`), enabling a dual-channel architecture:
+
+1. **Native channel (preferred):** When a page registers tools via WebMCP, call them directly through `execute_webmcp_tool`. This invokes the page's own JavaScript — no DOM parsing, no screenshots, no click coordinates.
+2. **Browser automation (fallback):** When no WebMCP tools are available, use the traditional `get_page_info` → `click`/`type` workflow.
+
+Use `probe_page_capabilities` on an unknown page to get a structured capability report covering 5 dimensions: WebMCP tools, declarative `<form>` with `toolname` attributes, Schema.org/JSON-LD structured data, DOM semantic patterns (search, auth, tables, filters, dialogs, uploads, editors, maps), and API endpoint sniffing.
+
+The native channel is faster, more accurate, and more stable than pixel-based automation. Tools with `readOnlyHint: true` annotations are safe for read-only exploration; write tools should be confirmed with the user before execution.
+
+## Reliable interaction
+
+`click` and `type` wait for a visible, stable target before acting (10 seconds by
+default). In addition to CSS selectors, the following locator formats are
+supported:
+
+- `@e0`: a reference returned by `get_page_info`; use it before the page changes.
+- `@wp1`: a stable reference returned by `inspect`; valid until navigation or removal of the target node.
+- `text=Continue`: an exact visible interactive-element name.
+- `role=button[name="Continue"]`: an accessible role and name.
+
+Use `wait_for` between actions when the next UI state matters. On a timeout, it
+returns the latest page metadata and a small interactive-element snapshot to aid
+diagnosis. `get_action_log` provides a bounded, redacted operation timeline.
+
+For a control that is not exposed through accessibility metadata, call
+`inspect` with `scope: "focused"` or `scope: "composer"` before guessing CSS.
+It includes visible unnamed controls that appear actionable because of their
+native semantics, pointer cursor, or common test/action attributes. Use
+`probe_selector` for an immediate locator check; it never performs the normal
+10-second visibility retry. As a last resort, use `click_at` only with bounds
+from the latest `inspect` result or screenshot.
+
+## Agent task loop
+
+Use the task tools for multi-step work instead of issuing a long chain of raw
+actions. A task starts with `start_task`, then repeats `observe_task` → one
+`run_task_step` → `verify_task_step`. The server records URL/DOM fingerprints,
+automatically pauses after three identical action/page pairs or five unchanged
+steps, and writes redacted JSONL evidence to `.webpilot-task-logs/` (override
+with `WEBPILOT_TASK_LOG_DIR`). Task responses return a compact page view
+(url/title/fingerprint plus indexed element lines, same format as
+`get_page_info`); rich element fields stay server-side for fingerprinting and
+selector caching.
+
+When an action lands on a login page (login-style URL or a password field
+appears), the task pauses instead of retrying blindly: log in manually in the
+browser, then call `resume_task` to continue. Credentials are never stored —
+the design relies on the real browser's own sessions plus human takeover.
+
+On an action error or failed deterministic verification, the task runtime saves
+a failure screenshot in the same evidence directory when browser capture is
+available. Checkpoints are deliberately **soft**: they restore the URL and
+compare the page fingerprint, but never claim to restore form input, server
+state, or prior side effects.
+
+`verify_task_step` supports `url_includes`, `url_equals`, `title_includes`,
+`text_present`, `text_absent`, `locator_visible`, `locator_hidden`, and
+`interactive_count_at_least` assertions. Set `completeOnPass: true` only for
+the final completion check.
+
+## Reusable plans
+
+An Agent can call `set_task_plan` with steps of the following shape:
+
+```json
+{
+  "objective": "Search for the requested term",
+  "action": { "action": "type", "selector": "role=textbox[name=\"Search\"]", "text": "{{query}}" },
+  "verification": { "kind": "locator_visible", "selector": "role=button[name=\"Search\"]" }
+}
+```
+
+`run_planned_step` performs the action, re-observes, and verifies it; only a
+passing verification advances the plan. When every planned step passes, call
+`save_task_as_workflow`. Workflow storage rejects literal `type` text: use
+`{{parameter}}` placeholders and provide their values through `start_workflow`.
+This keeps reusable experience separate from task-specific or sensitive input.
+Saved workflows also retain the domains observed during their completed run.
+Use `recommend_workflows` on a page to retrieve only matching experience before
+choosing whether to instantiate a workflow.
+
+The server also ships **preset workflows** (ids prefixed with `preset-`,
+defined as JSON data files in `mcp-server/definitions/workflows/`) for common
+operations on frequently used sites: direct search on Baidu, Google, GitHub,
+Zhihu, Juejin, Xiaohongshu, and Goofish (`{{query}}`, URL-encoded by the
+caller), opening a WeChat article (`{{articleUrl}}`), and asking ChatGLM,
+Doubao, or Gemini (`{{prompt}}`). Presets appear in `list_workflows` /
+`recommend_workflows` with `preset: true`, are never written to
+`workflows.json`, and replay with the same observation and verification
+discipline as saved workflows.
+
+Both adapters and preset workflows load at runtime from JSON definition files
+(`mcp-server/definitions/adapters/` and `.../workflows/`), so adding, editing,
+or sharing a definition never requires code changes or a rebuild — just edit
+JSON. Set `WEBPILOT_ADAPTER_DIR` / `WEBPILOT_WORKFLOW_DEF_DIR` to an external
+directory to add or override definitions per user/team (same `id` overrides the
+built-in). Every definition is re-validated on load against a strict whitelist,
+so external JSON can never inject executable JavaScript or literal typed input.
+
+## Selector cache
+
+`click` and `type` accept an optional `intent` — a stable, lowercase operation
+label such as `search-input`. On the first successful action the server derives
+a durable locator (`#id`, `[data-testid=…]`, `role=…[name="…"]`, `text=…`, or a
+unique CSS path) and stores it under `(hostname, intent)`. Subsequent calls with
+the same intent on the same site hit the cache and run without re-observing the
+page, so repeated operations cost no extra snapshot tokens. When the cached
+locator fails, the call falls back to the explicit `selector` (when provided)
+and refreshes the cache; four consecutive failures disable the entry until a
+successful explicit run revives it. Ephemeral `@eN` / `@wpN` references are
+never cached, and typed text never enters the cache — only locators do. Entries
+persist in `selector-cache.json` under `WEBPILOT_SELECTOR_CACHE_DIR` (falling
+back to the task log directory) and are re-validated against the locator
+whitelist on load. Inspect hit rates, failures, and disabled entries with
+`get_selector_cache`.
+
+Cache entries are keyed by `(hostname, intent)` only — they are shared across
+all pages of a site. Choose intents that are unambiguous site-wide (a global
+search box, a persistent nav button); for page-specific controls, encode the
+page into the name (e.g. `settings.save-button`, `profile.nickname-input`).
+`text=` / `role=` locators refuse to act when they match multiple elements, so
+a mismatched page fails safely rather than clicking the wrong target.
+
+## Site adapters
+
+Adapters return compact, structured, read-only data for frequently visited pages;
+they do not expose arbitrary JavaScript. Coverage currently includes GitHub,
+Baidu and Google search results, Zhihu, Xiaohongshu, Juejin, WeChat articles,
+Goofish, and the ChatGLM/Doubao/Gemini conversation views, plus a generic
+summary for any HTTPS page. Start with `list_adapters`, or use
+`extract_with_best_adapter` to prefer the most specific matching adapter. If a
+site-specific extractor breaks after a DOM change, the tool falls back to the
+generic summary and returns the failed adapter list. `get_adapter_health` makes
+those failures and latency visible so an adapter can be repaired deliberately.
+See `docs/adapter-authoring.md` for the restricted declarative adapter contract,
+and `docs/task-sedimentation-guide.md` for choosing between adapters, workflows,
+and skill guidance when persisting page-specific tasks.
+
+## Security boundary
+
+The extension popup enforces these controls locally, so an MCP client cannot
+bypass them:
+
+- **Domain allowlist:** enter one domain per line (or separate by commas). It
+  applies to Agent-controlled tabs and blocks cross-domain redirects by taking
+  the tab to a blank page. An empty list means unrestricted domains.
+- **Read-only mode:** permits observation, screenshots, waits, and navigation;
+  blocks clicking and typing, including coordinate clicks.
+- **Emergency stop:** disconnects the bridge, disables automatic reconnection,
+  and rejects new remote commands. Select **Connect** to resume deliberately.
+
+## Session tab groups
+
+Each MCP process derives a stable session id from its MCP client name plus working
+directory, and the extension isolates that session into its own Chrome tab group
+named `WebPilot·{short-id}`:
+
+- A command without an explicit `tabId` operates on the most recently used tab
+  inside its own session group, creating one if the group is empty.
+- A command whose `tabId` belongs to another session's group is rejected, so
+  parallel agents cannot interfere with each other.
+- When a session's MCP process disconnects, its group is marked `·idle`, turns
+  grey, and collapses; a returning session with the same id reclaims it.
+- Idle groups are garbage-collected after `WEBPILOT_GROUP_TTL_MIN` (default 30
+  minutes) and the total is capped by `WEBPILOT_MAX_GROUPS` (default 5, oldest
+  idle groups closed first).
+- Clean up manually with the extension popup's **清理闲置组** button or the
+  `cleanup_sessions` tool (`onlyIdle` defaults to `true`; pass a `sessionId` to
+  close a specific group).
+
+## Development
+
+- `npm test` (in `mcp-server/`) builds and runs the node:test suite in `test/`.
+  Tests exercise the compiled `dist/` output: selector cache, definition
+  loading, adapter whitelist validation, and preset workflow safety gates.
+- `npm run doctor` checks the installation: Node version, build artifacts,
+  definition loading (skipped entries are listed), bridge port status, and
+  `WEBPILOT_*` environment variables. It exits non-zero on failures, so it can
+  gate CI or install scripts.
+- The package is publish-ready (`bin`, `files`, `engines`, `prepublishOnly`);
+  `npm pack --dry-run` shows the exact tarball contents. Actual publishing is a
+  manual decision.
+- Contribution paths, safety constraints for definition files, and the commit
+  message format are described in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## Notes
+
+- The extension source changed to include a request ID in every response. If it was already loaded in Chrome, click Reload on its card in `chrome://extensions/` before connecting.
+- Reload the extension after updating `page-tools.js`; it supplies the page-side
+  locator, wait, and diagnostics helpers.
+- `execute_js` is deliberately disabled. The extension uses a fixed set of
+  isolated-world page tools so page CSP and arbitrary-code execution do not
+  affect control exploration.
+- The `daemon/` directory is retained only as legacy source and should not be started with this version.

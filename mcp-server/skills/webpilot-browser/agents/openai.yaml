@@ -1,0 +1,4 @@
+interface:
+  display_name: "WebPilot Browser"
+  short_description: "Use WebPilot for safe, verifiable Chrome automation."
+  default_prompt: "Use $webpilot-browser to complete this browser task safely and verify the result."

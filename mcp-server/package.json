@@ -1,0 +1,49 @@
+{
+  "name": "webpilot-mcp-server",
+  "version": "0.6.0",
+  "description": "WebPilot MCP Server — 浏览器操作工具集",
+  "type": "module",
+  "main": "dist/server.js",
+  "bin": {
+    "webpilot-mcp": "dist/server.js"
+  },
+  "files": [
+    "dist",
+    "definitions",
+    "scripts",
+    "skills",
+    "browser-extension",
+    "README.md",
+    "INSTALL.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/openpeng/webdoc.git",
+    "directory": "mcp-server"
+  },
+  "homepage": "https://github.com/openpeng/webdoc/tree/main",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/server.js",
+    "test": "npm run build && node --test",
+    "doctor": "node dist/doctor.js",
+    "postinstall": "node scripts/postinstall.js",
+    "prepublishOnly": "node scripts/prepublish.js && npm run build && node --test"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/ws": "^8.5.13",
+    "typescript": "^5.7.0"
+  },
+  "keywords": ["mcp", "browser", "automation", "ai-agent"],
+  "license": "MIT"
+}

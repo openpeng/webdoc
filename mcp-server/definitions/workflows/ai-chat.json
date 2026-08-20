@@ -1,0 +1,113 @@
+[
+  {
+    "id": "preset-chatglm-ask",
+    "name": "智谱清言提问",
+    "goal": "向智谱清言提问 {{prompt}} 并等待回答",
+    "createdAt": "2026-07-29T00:00:00.000Z",
+    "domains": ["chatglm.cn"],
+    "plan": {
+      "name": "智谱清言提问",
+      "currentStep": 0,
+      "steps": [
+        {
+          "id": "open-chat",
+          "objective": "打开对话页面",
+          "action": { "action": "navigate", "url": "https://chatglm.cn/main/alltoolsdetail" },
+          "verification": { "kind": "locator_visible", "selector": "textarea" }
+        },
+        {
+          "id": "type-prompt",
+          "objective": "在输入框中填入提问",
+          "action": { "action": "type", "selector": "textarea", "text": "{{prompt}}" },
+          "verification": { "kind": "locator_visible", "selector": ".enter_icon, .input-box-inner .enter, button[type=\"submit\"]" }
+        },
+        {
+          "id": "send",
+          "objective": "点击发送",
+          "action": { "action": "click", "selector": ".enter_icon, .input-box-inner .enter, button[type=\"submit\"]" },
+          "verification": { "kind": "locator_visible", "selector": "textarea" }
+        },
+        {
+          "id": "wait-response",
+          "objective": "等待回答开始渲染",
+          "action": { "action": "wait", "selector": ".markdown-body, .answer-content-wrap", "state": "visible" },
+          "verification": { "kind": "locator_visible", "selector": ".markdown-body, .answer-content-wrap" }
+        }
+      ]
+    }
+  },
+  {
+    "id": "preset-doubao-ask",
+    "name": "豆包提问",
+    "goal": "向豆包提问 {{prompt}} 并等待回答",
+    "createdAt": "2026-07-29T00:00:00.000Z",
+    "domains": ["doubao.com"],
+    "plan": {
+      "name": "豆包提问",
+      "currentStep": 0,
+      "steps": [
+        {
+          "id": "open-chat",
+          "objective": "打开对话页面",
+          "action": { "action": "navigate", "url": "https://www.doubao.com/chat/" },
+          "verification": { "kind": "locator_visible", "selector": "[data-testid=\"chat_input_input\"]" }
+        },
+        {
+          "id": "type-prompt",
+          "objective": "在输入框中填入提问",
+          "action": { "action": "type", "selector": "[data-testid=\"chat_input_input\"]", "text": "{{prompt}}" },
+          "verification": { "kind": "locator_visible", "selector": "[data-testid=\"chat_input_send_button\"]" }
+        },
+        {
+          "id": "send",
+          "objective": "点击发送",
+          "action": { "action": "click", "selector": "[data-testid=\"chat_input_send_button\"]" },
+          "verification": { "kind": "locator_visible", "selector": "[data-testid=\"chat_input_input\"]" }
+        },
+        {
+          "id": "wait-response",
+          "objective": "等待回答开始渲染",
+          "action": { "action": "wait", "selector": "[data-testid=\"message_text_content\"]", "state": "visible" },
+          "verification": { "kind": "locator_visible", "selector": "[data-testid=\"message_text_content\"]" }
+        }
+      ]
+    }
+  },
+  {
+    "id": "preset-gemini-ask",
+    "name": "Gemini 提问",
+    "goal": "向 Gemini 提问 {{prompt}} 并等待回答",
+    "createdAt": "2026-07-29T00:00:00.000Z",
+    "domains": ["gemini.google.com"],
+    "plan": {
+      "name": "Gemini 提问",
+      "currentStep": 0,
+      "steps": [
+        {
+          "id": "open-chat",
+          "objective": "打开对话页面",
+          "action": { "action": "navigate", "url": "https://gemini.google.com/app" },
+          "verification": { "kind": "locator_visible", "selector": ".ql-editor[contenteditable=\"true\"]" }
+        },
+        {
+          "id": "type-prompt",
+          "objective": "在输入框中填入提问",
+          "action": { "action": "type", "selector": ".ql-editor[contenteditable=\"true\"]", "text": "{{prompt}}" },
+          "verification": { "kind": "locator_visible", "selector": "button.send-button, button[aria-label*=\"Send\"], button[aria-label*=\"发送\"]" }
+        },
+        {
+          "id": "send",
+          "objective": "点击发送",
+          "action": { "action": "click", "selector": "button.send-button, button[aria-label*=\"Send\"], button[aria-label*=\"发送\"]" },
+          "verification": { "kind": "locator_visible", "selector": ".ql-editor[contenteditable=\"true\"]" }
+        },
+        {
+          "id": "wait-response",
+          "objective": "等待回答开始渲染",
+          "action": { "action": "wait", "selector": "message-content", "state": "visible" },
+          "verification": { "kind": "locator_visible", "selector": "message-content" }
+        }
+      ]
+    }
+  }
+]

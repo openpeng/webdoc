@@ -1,0 +1,38 @@
+[
+  {
+    "id": "chatglm-conversation",
+    "name": "智谱清言对话",
+    "description": "提取智谱清言当前会话中助手的最近回答文本。只读。",
+    "domains": ["chatglm.cn"],
+    "spec": {
+      "fields": {
+        "title": { "selector": "title" },
+        "answers": { "selector": ".markdown-body, .answer-content-wrap", "multiple": true, "limit": 10 }
+      }
+    }
+  },
+  {
+    "id": "doubao-conversation",
+    "name": "豆包对话",
+    "description": "提取豆包当前会话中的消息文本（含提问与回答）。只读。",
+    "domains": ["doubao.com"],
+    "spec": {
+      "fields": {
+        "title": { "selector": "title" },
+        "messages": { "selector": "[data-testid=\"message_text_content\"]", "multiple": true, "limit": 20 }
+      }
+    }
+  },
+  {
+    "id": "gemini-conversation",
+    "name": "Gemini 对话",
+    "description": "提取 Gemini 当前会话的用户提问与模型回答文本。只读。",
+    "domains": ["gemini.google.com"],
+    "spec": {
+      "fields": {
+        "prompts": { "selector": "user-query", "multiple": true, "limit": 10 },
+        "responses": { "selector": "message-content", "multiple": true, "limit": 10 }
+      }
+    }
+  }
+]
