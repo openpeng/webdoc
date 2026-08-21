@@ -13,10 +13,22 @@ WebPilot connects an MCP-compatible AI client to Chrome through a local Chrome e
 1. Open `chrome://extensions/`.
 2. Enable **Developer mode**.
 3. Select **Load unpacked**.
-4. Choose this project's `browser-extension/` directory.
+4. Choose the `browser-extension/` directory (see *Where to find the extension* below).
 5. Open the WebPilot extension popup and keep the domain allowlist as narrow as practical. Enable read-only mode if the agent only needs to inspect pages.
 
 After changing any file in `browser-extension/`, return to `chrome://extensions/` and select **Reload** on the WebPilot extension card.
+
+#### Where to find the extension
+
+The extension is never auto-installed into Chrome — you must load it manually once. Its files ship alongside the MCP Server package, so where you point **Load unpacked** depends on how you installed:
+
+- **Installed from npm** (recommended): the `browser-extension/` folder is unpacked to the global package. Find it with `npm root -g`, then open the `webpilot-mcp-server/browser-extension/` subdirectory:
+  ```bash
+  npm root -g
+  # Windows:   %APPDATA%\npm\node_modules\webpilot-mcp-server\browser-extension\
+  # macOS/Linux: $(npm root -g)/webpilot-mcp-server/browser-extension/
+  ```
+- **Built from source**: use the project's own `browser-extension/` folder at the repository root (contains `manifest.json`, `background.js`, `page-tools.js`, `popup.html`, `popup.js`, and `icons/`).
 
 ## 2. Install the MCP Server (from npm, recommended)
 

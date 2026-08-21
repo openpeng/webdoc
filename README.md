@@ -16,7 +16,7 @@ Multiple MCP processes can run at once. The first to bind `8765` becomes the **l
 
 ## Setup
 
-1. Install the extension from `browser-extension/` through `chrome://extensions/` in developer mode.
+1. Install the extension from `browser-extension/` through `chrome://extensions/` in developer mode. The folder ships with the npm package: after `npm install -g webpilot-mcp-server`, find it at `$(npm root -g)/webpilot-mcp-server/browser-extension/` (Windows: `%APPDATA%\npm\node_modules\webpilot-mcp-server\browser-extension\`). When building from source, use the `browser-extension/` folder at this repository's root.
 2. Install the MCP Server. The recommended way is from npm (ships the compiled server, `definitions/`, `skills/`, and `browser-extension/`):
 
    ```bash

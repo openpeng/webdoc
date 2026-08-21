@@ -16,7 +16,7 @@ MCP Server 现已内置 WebSocket bridge。不要启动旧的 `daemon/` 包：�
 
 ## 安装
 
-1. 在 `chrome://extensions/` 开发者模式下，从 `browser-extension/` 加载扩展。
+1. 在 `chrome://extensions/` 开发者模式下，从 `browser-extension/` 加载扩展。该目录随 npm 包一起分发：执行 `npm install -g webpilot-mcp-server` 后，位于 `$(npm root -g)/webpilot-mcp-server/browser-extension/`（Windows：`%APPDATA%\npm\node_modules\webpilot-mcp-server\browser-extension\`）；若从源码构建，则使用本仓库根目录下的 `browser-extension/` 文件夹。
 2. 安装 MCP Server。推荐方式是从 npm 安装（已内含编译后的 server、`definitions/`、`skills/` 与 `browser-extension/`）：
 
    ```bash
