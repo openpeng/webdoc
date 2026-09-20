@@ -13,8 +13,9 @@ const stopBtn = document.getElementById('stopBtn');
 const sessionListEl = document.getElementById('sessionList');
 const sessionCountEl = document.getElementById('sessionCount');
 const cleanupBtn = document.getElementById('cleanupBtn');
+const wsUrlInput = document.getElementById('wsUrlInput');
 
-const WS_URL = 'ws://localhost:8765';
+const DEFAULT_WS_URL = 'ws://localhost:8765';
 
 function setStatus(state, detail) {
   statusCard.className = 'status-card';
@@ -27,7 +28,7 @@ function setStatus(state, detail) {
   } else if (state === 'connecting') {
     statusCard.classList.add('status-pending');
     statusText.textContent = '连接中...';
-    statusDetail.textContent = detail || '正在连接本地服务';
+    statusDetail.textContent = detail || '正在连接 MCP 服务';
     connectBtn.disabled = true;
     disconnectBtn.disabled = true;
   } else if (state === 'stopped') {
@@ -39,7 +40,7 @@ function setStatus(state, detail) {
   } else {
     statusCard.classList.add('status-disconnected');
     statusText.textContent = '未连接';
-    statusDetail.textContent = detail || '正在等待或重连本地 MCP 服务';
+    statusDetail.textContent = detail || '正在等待或重连 MCP 服务';
     connectBtn.disabled = false;
     disconnectBtn.disabled = true;
   }
@@ -76,15 +77,20 @@ function renderSessions(sessions) {
 }
 
 // 加载时查询后台的连接状态
+chrome.storage.local.get('wsUrl', ({ wsUrl }) => {
+  if (!wsUrlInput.value) wsUrlInput.value = wsUrl || DEFAULT_WS_URL;
+});
+
 chrome.runtime.sendMessage({ type: 'getStatus' }, (res) => {
   renderSessions(res?.sessions);
+  if (res?.wsUrl) wsUrlInput.value = res.wsUrl;
   if (res?.security?.emergencyStopped) {
     setStatus('stopped');
     tabCountEl.textContent = 0;
     return;
   }
   if (res && res.connected) {
-    setStatus('connected', `已连接 ${res.wsUrl || WS_URL}`);
+    setStatus('connected', `已连接 ${res.wsUrl || wsUrlInput.value || DEFAULT_WS_URL}`);
     tabCountEl.textContent = res.tabCount || 0;
   } else {
     setStatus('disconnected');
@@ -99,13 +105,15 @@ chrome.runtime.sendMessage({ type: 'getSecuritySettings' }, (settings) => {
 });
 
 connectBtn.addEventListener('click', () => {
-  setStatus('connecting');
-  chrome.runtime.sendMessage({ type: 'connect', wsUrl: WS_URL }, (res) => {
+  const target = (wsUrlInput.value || '').trim() || DEFAULT_WS_URL;
+  wsUrlInput.value = target;
+  setStatus('connecting', `正在连接 ${target}`);
+  chrome.runtime.sendMessage({ type: 'connect', wsUrl: target }, (res) => {
     if (res && res.success) {
-      setStatus('connected', `已连接 ${WS_URL}`);
+      setStatus('connected', `已连接 ${target}`);
       tabCountEl.textContent = res.tabCount || 0;
     } else {
-      setStatus('disconnected', res?.error || '连接失败，请检查本地服务是否启动');
+      setStatus('disconnected', res?.error || '连接失败，请检查 MCP 服务是否启动');
     }
   });
 });
@@ -154,7 +162,8 @@ cleanupBtn.addEventListener('click', () => {
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === 'statusChange') {
     if (msg.connected) {
-      setStatus('connected', `已连接 ${msg.wsUrl || WS_URL}`);
+      if (msg.wsUrl) wsUrlInput.value = msg.wsUrl;
+      setStatus('connected', `已连接 ${msg.wsUrl || wsUrlInput.value || DEFAULT_WS_URL}`);
       tabCountEl.textContent = msg.tabCount || 0;
     } else {
       setStatus('disconnected', msg.reason || '连接已断开');

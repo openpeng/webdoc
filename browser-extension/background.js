@@ -1,6 +1,6 @@
 // background.js — Service Worker，管理 WebSocket 连接和 CDP
 
-const WS_URL = 'ws://localhost:8765';
+const DEFAULT_WS_URL = 'ws://localhost:8765';
 const AUTO_CONNECT_ALARM = 'webpilot-auto-connect';
 const AUTO_CONNECT_RETRY_MINUTES = 1;
 const HEARTBEAT_INTERVAL_MS = 20_000;
@@ -19,6 +19,8 @@ let isConnected = false;
 let connectingPromise = null;
 let heartbeatTimer = null;
 let managedTabs = new Set();
+// 目标 MCP 服务地址，持久化到 storage.local；默认本机，可指向任意远程 MCP 服务。
+let currentWsUrl = DEFAULT_WS_URL;
 // sessionId -> { groupId, state: 'active'|'idle', lastActiveAt, color }，持久化到 storage.local
 let sessionGroups = null;
 let sessionGroupsLoading = null;
@@ -92,9 +94,53 @@ async function assertCommandAllowed(msg) {
 }
 
 // ===== WebSocket 客户端 =====
-function connectWebSocket(url = WS_URL) {
+
+// 校验并归一化地址：缺省协议自动补 ws://，http(s) 映射为 ws(s)://；
+// 非法值返回空串，由调用方回退到默认地址。
+function normalizeWsUrl(value) {
+  let candidate = String(value || '').trim();
+  if (!candidate) return '';
+  if (!candidate.includes('://')) candidate = `ws://${candidate}`;
+  try {
+    const parsed = new URL(candidate);
+    let protocol = parsed.protocol;
+    if (protocol === 'http:') protocol = 'ws:';
+    else if (protocol === 'https:') protocol = 'wss:';
+    if (protocol !== 'ws:' && protocol !== 'wss:') return '';
+    if (!parsed.hostname) return '';
+    const suffix = `${parsed.pathname}${parsed.search}`.replace(/\/+$/, '');
+    return `${protocol}//${parsed.host}${suffix}`;
+  } catch {
+    return '';
+  }
+}
+
+async function loadWsUrl() {
+  const { wsUrl } = await chrome.storage.local.get('wsUrl');
+  currentWsUrl = normalizeWsUrl(wsUrl) || DEFAULT_WS_URL;
+  return currentWsUrl;
+}
+
+async function saveWsUrl(value) {
+  const url = normalizeWsUrl(value) || DEFAULT_WS_URL;
+  currentWsUrl = url;
+  await chrome.storage.local.set({ wsUrl: url });
+  return url;
+}
+
+// 其他上下文（如 popup 保存）改动地址后同步到内存缓存
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.wsUrl) {
+    currentWsUrl = normalizeWsUrl(changes.wsUrl.newValue) || DEFAULT_WS_URL;
+  }
+});
+
+void loadWsUrl();
+
+async function connectWebSocket(url) {
+  const targetUrl = normalizeWsUrl(url) || await loadWsUrl();
   if (ws?.readyState === WebSocket.OPEN && isConnected) {
-    return Promise.resolve({ success: true, alreadyConnected: true });
+    return { success: true, alreadyConnected: true };
   }
   if (connectingPromise) return connectingPromise;
 
@@ -106,7 +152,7 @@ function connectWebSocket(url = WS_URL) {
     try { staleSocket.close(); } catch { /* already closed */ }
   }
 
-  const socket = new WebSocket(url);
+  const socket = new WebSocket(targetUrl);
   ws = socket;
   const attempt = new Promise((resolve, reject) => {
     let settled = false;
@@ -123,9 +169,10 @@ function connectWebSocket(url = WS_URL) {
         return;
       }
       isConnected = true;
+      currentWsUrl = targetUrl;
       startHeartbeat(socket);
-      broadcastStatus(true, url);
-      console.log('[WebPilot] WebSocket connected:', url);
+      broadcastStatus(true, targetUrl);
+      console.log('[WebPilot] WebSocket connected:', targetUrl);
       settle(resolve, { success: true });
     };
 
@@ -150,14 +197,14 @@ function connectWebSocket(url = WS_URL) {
 
     socket.onerror = (err) => {
       console.error('[WebPilot] WebSocket error:', err);
-      settle(reject, { success: false, error: `无法连接到 ${url}，请确认 MCP 服务已启动` });
+      settle(reject, { success: false, error: `无法连接到 ${targetUrl}，请确认 MCP 服务已启动` });
     };
 
     // 5秒超时
     setTimeout(() => {
       if (ws === socket && !isConnected) {
         try { socket.close(); } catch { /* already closed */ }
-        settle(reject, { success: false, error: '连接超时，请确认 MCP 服务已启动' });
+        settle(reject, { success: false, error: `连接 ${targetUrl} 超时，请确认 MCP 服务已启动` });
       }
     }, 5000);
   });
@@ -1965,8 +2012,8 @@ function sendToDaemon(data) {
 // ===== Message Router =====
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (msg.type === 'getStatus') {
-    Promise.all([getSecuritySettings(), getSessionSummaries()])
-      .then(([security, sessions]) => sendResponse({ connected: isConnected, wsUrl: WS_URL, tabCount: managedTabs.size, security, sessions }));
+    Promise.all([getSecuritySettings(), getSessionSummaries(), loadWsUrl()])
+      .then(([security, sessions, wsUrl]) => sendResponse({ connected: isConnected, wsUrl, tabCount: managedTabs.size, security, sessions }));
     return true;
   }
   if (msg.type === 'cleanupIdleGroups') {
@@ -1997,7 +2044,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
   if (msg.type === 'connect') {
     chrome.storage.local.set({ autoConnectEnabled: true, emergencyStopped: false })
-      .then(() => connectWebSocket(msg.wsUrl || WS_URL))
+      .then(() => saveWsUrl(msg.wsUrl))
+      .then(url => connectWebSocket(url))
       .then(r => sendResponse(r))
       .catch(e => sendResponse(e));
     return true; // async

@@ -1527,6 +1527,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
       }
 
+      case "list_tabs": {
+        const r = await sendToExtension("listTabs", {});
+        const tabs: any[] = r.tabs ?? [];
+        if (!tabs.length) return { content: [{ type: "text", text: "没有可见标签页" }] };
+        const lines = tabs.map((t: any) => `${t.active ? "*" : " "} [${t.id}] ${t.title || "(无标题)"} — ${t.url}`);
+        return { content: [{ type: "text", text: lines.join("\n") }] };
+      }
+
       // ===== 合并工具：webmcp =====
       case "webmcp": {
         const action = args.action as string;

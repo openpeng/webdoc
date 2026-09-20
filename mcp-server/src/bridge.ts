@@ -2,20 +2,46 @@
  * BrowserBridge — Leader-Follower 进程共享桥
  *
  * 第一个抢到 8765 端口的进程成为 Leader：持有 Chrome 扩展连接，并在 8766
- * （仅 127.0.0.1）接受其他 WebPilot 进程（Follower）的命令转发。
+ * （默认仅 127.0.0.1）接受其他 WebPilot 进程（Follower）的命令转发。
  * 绑定 8765 失败的进程成为 Follower：以 WS 客户端连 8766 转发命令；
  * 与 Leader 断开后随机退避重试「绑 8765 → 成则晋升 / 败则重连 8766」。
+ *
+ * 网络可配置（env）：WEBPILOT_HOST 决定扩展桥接监听网卡（默认 127.0.0.1，
+ * 设为 0.0.0.0 可让远程扩展连入）；WEBPILOT_LEADER_HOST 决定 follower 拨号的
+ * leader 主机（跨机共享 leader 时使用）；WEBPILOT_PROXY_HOST 决定转发代理监听网卡。
  *
  * 每条命令都携带 sessionId（由 MCP clientInfo.name + 进程工作目录哈希派生），
  * 扩展据此把不同 agent 的 tab 隔离到各自的标签组。
  */
 
 import WebSocket, { WebSocketServer } from "ws";
-import { createHash } from "crypto";
+import { createHash, timingSafeEqual } from "crypto";
 
 const EXTENSION_PORT = Number(process.env.WEBPILOT_PORT) || 8765;
 const PROXY_PORT = Number(process.env.WEBPILOT_PROXY_PORT) || EXTENSION_PORT + 1;
-const BIND_HOST = "127.0.0.1";
+// 扩展桥接监听网卡：默认仅本机 127.0.0.1；设为 0.0.0.0（或具体网卡 IP）即可让远程扩展连入。
+const BIND_HOST = process.env.WEBPILOT_HOST?.trim() || "127.0.0.1";
+// 进程间转发代理默认只绑回环（本机多进程共享）；跨机共享 leader 时用 WEBPILOT_PROXY_HOST 放开。
+const PROXY_HOST = process.env.WEBPILOT_PROXY_HOST?.trim() || "127.0.0.1";
+// follower 拨号 leader 的地址：默认回环；跨机时用 WEBPILOT_LEADER_HOST 指向 leader 主机。
+const LEADER_HOST = process.env.WEBPILOT_LEADER_HOST?.trim() || "127.0.0.1";
+// 远程桥接认证口令：仅在扩展端以非回环地址连入时校验。本机回环连入始终豁免，保持既有
+// 本地用法不变。扩展端把口令带在连接地址的 query 上（ws://<ip>:<port>/?token=<口令>）。
+const AUTH_TOKEN = process.env.WEBPILOT_AUTH_TOKEN?.trim() || "";
+// 判断 socket 来源是否本机回环：回环连接无需 token，等价于旧行为。
+function isLoopbackAddress(address: string | undefined): boolean {
+  if (!address) return false;
+  const v6Mapped = address.startsWith("::ffff:") ? address.slice(7) : address;
+  return v6Mapped === "127.0.0.1" || v6Mapped.startsWith("127.") || v6Mapped === "::1";
+}
+// 定长时间比较，避免通过响应时间或长度侧信道猜测口令。
+function tokenMatches(candidate: string | null): boolean {
+  if (!candidate || !AUTH_TOKEN) return false;
+  const a = Buffer.from(candidate);
+  const b = Buffer.from(AUTH_TOKEN);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
 const EXTENSION_TIMEOUT_MS = 30_000;
 // Forward timeout must exceed the leader's extension timeout so the follower
 // receives the leader's precise error instead of a generic timeout.
@@ -67,6 +93,7 @@ export class BrowserBridge {
   private roleValue: BridgeRole = "starting";
   private clientName = "agent";
   private sessionIdValue: string;
+  private warnedNoAuthRemote = false;
 
   // Leader state
   private extensionServer: WebSocketServer | null = null;
@@ -174,8 +201,17 @@ export class BrowserBridge {
       wss.once("listening", () => {
         this.extensionServer = wss;
         this.roleValue = "leader";
-        console.error(`[WebPilot MCP] Role: leader — browser bridge on ws://${BIND_HOST}:${EXTENSION_PORT}`);
-        wss.on("connection", socket => this.handleExtensionConnection(socket));
+        const wildcard = BIND_HOST === "0.0.0.0" || BIND_HOST === "::" || BIND_HOST === "[::]";
+        const hint = wildcard
+          ? `扩展端请连接 ws://<本机IP>:${EXTENSION_PORT}`
+          : `扩展端请连接 ws://${BIND_HOST}:${EXTENSION_PORT}`;
+        const authHint = AUTH_TOKEN
+          ? "auth: token required for non-loopback"
+          : wildcard
+            ? "auth: DISABLED (set WEBPILOT_AUTH_TOKEN to protect remote access)"
+            : "auth: loopback-only";
+        console.error(`[WebPilot MCP] Role: leader — browser bridge on ws://${BIND_HOST}:${EXTENSION_PORT} (${hint}; ${authHint})`);
+        wss.on("connection", (socket, req) => this.handleExtensionConnection(socket, req));
         this.startProxyServer();
         resolve();
       });
@@ -183,24 +219,48 @@ export class BrowserBridge {
   }
 
   private startProxyServer(): void {
-    const proxy = new WebSocketServer({ host: BIND_HOST, port: PROXY_PORT });
+    const proxy = new WebSocketServer({ host: PROXY_HOST, port: PROXY_PORT });
     proxy.once("error", error => {
       // 没有代理口时本进程仍可独立工作，只是其他进程无法共享。
       console.error(`[WebPilot MCP] Failed to bind follower proxy port ${PROXY_PORT}:`, (error as Error).message);
     });
     proxy.once("listening", () => {
       this.proxyServer = proxy;
-      console.error(`[WebPilot MCP] Follower proxy listening on ws://${BIND_HOST}:${PROXY_PORT}`);
+      console.error(`[WebPilot MCP] Follower proxy listening on ws://${PROXY_HOST}:${PROXY_PORT}`);
     });
     proxy.on("connection", socket => this.handleFollowerConnection(socket));
   }
 
-  private handleExtensionConnection(socket: WebSocket): void {
+  private handleExtensionConnection(
+    socket: WebSocket,
+    req: { url?: string; socket?: { remoteAddress?: string } },
+  ): void {
+    const remote = req.socket?.remoteAddress ?? (socket as any)._socket?.remoteAddress;
+    if (!isLoopbackAddress(remote)) {
+      if (AUTH_TOKEN) {
+        let token: string | null = null;
+        try {
+          token = new URL(req.url || "", "http://localhost").searchParams.get("token");
+        } catch {
+          token = null;
+        }
+        if (!tokenMatches(token)) {
+          console.error(`[WebPilot MCP] Rejected extension connection from ${remote}: missing/invalid token`);
+          socket.close(4001, "unauthorized");
+          return;
+        }
+      } else if (!this.warnedNoAuthRemote) {
+        this.warnedNoAuthRemote = true;
+        console.error(
+          `[WebPilot MCP] WARNING: remote extension from ${remote} connected but WEBPILOT_AUTH_TOKEN is unset — the bridge is unprotected.`,
+        );
+      }
+    }
     if (this.extensionClient && this.extensionClient.readyState === WebSocket.OPEN) {
       this.extensionClient.close(1000, "Replaced by a newer browser extension connection");
     }
     this.extensionClient = socket;
-    console.error("[WebPilot MCP] Browser extension connected");
+    console.error(`[WebPilot MCP] Browser extension connected${remote ? ` from ${remote}` : ""}`);
     this.pushSessionUpdate();
 
     socket.on("message", data => {
@@ -333,7 +393,7 @@ export class BrowserBridge {
 
   private becomeFollower(): Promise<void> {
     return new Promise((resolve, reject) => {
-      const socket = new WebSocket(`ws://${BIND_HOST}:${PROXY_PORT}`);
+      const socket = new WebSocket(`ws://${LEADER_HOST}:${PROXY_PORT}`);
       let opened = false;
 
       socket.on("open", () => {
@@ -341,7 +401,7 @@ export class BrowserBridge {
         this.proxySocket = socket;
         this.roleValue = "follower";
         socket.send(JSON.stringify({ kind: "hello", sessionId: this.sessionIdValue }));
-        console.error(`[WebPilot MCP] Role: follower — forwarding via ws://${BIND_HOST}:${PROXY_PORT}`);
+        console.error(`[WebPilot MCP] Role: follower — forwarding via ws://${LEADER_HOST}:${PROXY_PORT}`);
         resolve();
       });
 

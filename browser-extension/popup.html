@@ -64,6 +64,9 @@
     .sessions-empty { font-size: 11px; color: #7a8ba7; padding: 4px 0; }
     label { display: block; color: #aab7cf; font-size: 11px; margin: 8px 0 4px; }
     textarea { width: 100%; min-height: 52px; resize: vertical; padding: 7px; border-radius: 6px; border: 1px solid #253354; background: #0b0f19; color: #e2e8f0; font: inherit; font-size: 11px; }
+    input[type="text"] { width: 100%; padding: 7px; border-radius: 6px; border: 1px solid #253354; background: #0b0f19; color: #e2e8f0; font: inherit; font-size: 11px; }
+    input[type="text"]:focus { outline: none; border-color: #3b82f6; }
+    .hint { font-size: 10px; color: #7a8ba7; margin-top: 4px; }
     .toggle { display: flex; align-items: center; gap: 6px; margin: 9px 0; font-size: 11px; color: #e2e8f0; cursor: pointer; }
     .toggle input { accent-color: #3b82f6; }
     .security-actions { display: flex; gap: 6px; }
@@ -78,13 +81,17 @@
     <div class="title">WebPilot</div>
   </div>
 
-  <div id="statusCard" class="status-card status-disconnected">
+  <div class="status-card status-disconnected" id="statusCard">
     <div class="status-text">
       <span class="status-dot"></span>
       <span id="statusText">未连接</span>
     </div>
-    <div class="status-detail" id="statusDetail">请启动本地 MCP 服务</div>
+    <div class="status-detail" id="statusDetail">请启动 MCP 服务</div>
   </div>
+
+  <label for="wsUrlInput">MCP 服务地址（WebSocket）</label>
+  <input id="wsUrlInput" type="text" placeholder="ws://localhost:8765" spellcheck="false" autocomplete="off">
+  <div class="hint">默认本机；可填远程地址，如 ws://10.5.23.109:8765</div>
 
   <div class="actions">
     <button id="connectBtn" class="btn btn-primary">连接</button>
@@ -92,10 +99,6 @@
   </div>
 
   <div class="info">
-    <div class="info-row">
-      <span class="info-label">WS 地址</span>
-      <span class="info-value" id="wsUrl">ws://localhost:8765</span>
-    </div>
     <div class="info-row">
       <span class="info-label">已管理标签</span>
       <span class="info-value" id="tabCount">0</span>

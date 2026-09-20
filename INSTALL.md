@@ -72,7 +72,7 @@ Each MCP client (for example two different AI IDEs, or two windows of the same I
 - Later processes detect that `8765` is taken, connect to `8766`, and become **followers**. Their commands are forwarded through the leader transparently.
 - When the leader exits, followers re-elect after a short random backoff: one of them binds `8765` and is promoted; the extension reconnects to the new leader automatically.
 
-Both ports bind to `127.0.0.1` only. No extra configuration is needed for multi-agent use.
+Both ports bind to `127.0.0.1` by default (`WEBPILOT_HOST` overrides the bridge interface, `WEBPILOT_PROXY_HOST` the internal proxy). No extra configuration is needed for local multi-agent use. To let a browser extension on another machine connect, set `WEBPILOT_HOST=0.0.0.0` (or a specific interface IP) and enter `ws://<server-ip>:8765` in the extension popup; to share one leader across hosts, also set `WEBPILOT_PROXY_HOST=0.0.0.0` on the leader and `WEBPILOT_LEADER_HOST=<leader-ip>` on the followers.
 
 ### Tab-group session model
 
@@ -134,7 +134,7 @@ Restart or reconnect the AI client after saving its configuration.
 
 1. Start or reconnect the AI client so that it launches the MCP Server.
 2. Open the WebPilot extension popup in Chrome.
-3. Confirm that it reports a connection to `ws://localhost:8765`. If necessary, select **Connect**.
+3. Confirm that it reports a connection to the configured address (`ws://localhost:8765` by default). If the MCP server is remote, enter its `ws://<host>:<port>` in the popup's **MCP server address** field first. If necessary, select **Connect**.
 4. Ask the AI client to call `list_tabs` or `get_page_info`.
 
 The extension normally reconnects after installation, Chrome startup, and unexpected disconnects. Selecting **Disconnect** disables automatic reconnection; select **Connect** to enable it again.
@@ -160,21 +160,40 @@ The extension enforces these controls locally, including for MCP clients:
 - **Read-only mode:** Allows observation, screenshots, waits, and navigation, but blocks clicks, typing, and page JavaScript.
 - **Emergency stop:** Immediately disconnects the bridge, disables automatic reconnection, and rejects new remote commands. Select **Connect** to resume deliberately.
 
-## Port configuration
+## Port and address configuration
 
-The MCP Server reads `WEBPILOT_PORT` (extension bridge, default `8765`) and `WEBPILOT_PROXY_PORT` (internal leader-follower proxy, default `WEBPILOT_PORT + 1`, i.e. `8766`). The bundled extension currently connects to `ws://localhost:8765`, so do not change the server port unless you also update and reload `browser-extension/background.js` and `browser-extension/popup.js` to use the same port. Keep `8766` free for the internal proxy; only local processes on `127.0.0.1` can reach it.
+The MCP Server reads `WEBPILOT_PORT` (extension bridge, default `8765`), `WEBPILOT_HOST` (bridge interface, default `127.0.0.1`), `WEBPILOT_PROXY_PORT` (internal leader-follower proxy, default `WEBPILOT_PORT + 1`, i.e. `8766`), `WEBPILOT_PROXY_HOST` (proxy interface, default `127.0.0.1`), `WEBPILOT_LEADER_HOST` (leader host a follower dials, default `127.0.0.1`), and `WEBPILOT_AUTH_TOKEN` (remote bridge token, default empty — see below).
+
+The extension's target address is configurable in its popup (**MCP server address**) and persisted in `chrome.storage`; it defaults to `ws://localhost:8765`. Changing the server port only requires updating that field — no source edit or extension reload is needed.
+
+Keep the bridge bound to `127.0.0.1` unless a remote extension must connect. Exposing it as `0.0.0.0` lets any reachable host drive the browser, so restrict it with a firewall, a reverse proxy with auth, or a private network. The internal proxy is loopback-only by default for the same reason.
+
+### Remote bridge token (`WEBPILOT_AUTH_TOKEN`)
+
+Connections are authenticated by where they come from, so local and remote use different rules and you can switch freely by setting or unsetting one env var:
+
+- **Loopback connections** (`127.0.0.1` / `::1`) are always exempt — your existing local setup is unchanged and needs no token.
+- **Non-loopback connections** present the shared secret as a query parameter on the connection URL. If `WEBPILOT_AUTH_TOKEN` is set, a missing or mismatched token is rejected (socket closed with code `4001`); if it is unset, the connection is still allowed but the leader logs a one-time warning that the bridge is unprotected (legacy behavior).
 
 Example for a shell that supports environment variables:
 
 ```bash
-WEBPILOT_PORT=8765 webpilot-mcp
+WEBPILOT_PORT=8765 WEBPILOT_HOST=127.0.0.1 webpilot-mcp
 ```
+
+```bash
+# Remote extension: expose the bridge and require a token
+WEBPILOT_HOST=0.0.0.0 WEBPILOT_AUTH_TOKEN=<your-secret> webpilot-mcp
+# then set the extension popup address to ws://<server-ip>:8765/?token=<your-secret>
+```
+
+> The token travels in the URL query because the browser `WebSocket` API cannot set custom handshake headers. Treat it as a secret: use a long random value, and prefer combining it with a source-IP firewall rule or a private network. `wss://` (TLS) additionally hides it from on-path observers.
 
 ## Troubleshooting
 
 | Symptom | Check |
 | --- | --- |
-| Extension cannot connect | Ensure the AI client has started the MCP Server, then select **Connect** in the extension popup. Confirm that port `8765` is not in use by another application. |
+| Extension cannot connect | Ensure the AI client has started the MCP Server, then select **Connect** in the extension popup. Confirm the popup's **MCP server address** matches the server (`ws://localhost:8765` by default) and that the port is not in use. For a remote server, set `WEBPILOT_HOST=0.0.0.0` and use `ws://<server-ip>:<port>`. |
 | MCP client reports no browser connection | Open the extension popup, make sure emergency stop is off, and reconnect. Reload the extension if it was installed before the latest source changes. |
 | Navigation is blocked | Add the target domain to the allowlist, including any expected redirect domain. |
 | Click or type is blocked | Disable read-only mode only when interaction is intended. |

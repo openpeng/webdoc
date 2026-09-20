@@ -57,7 +57,7 @@ Multiple MCP processes can run at once. The first to bind `8765` becomes the **l
    }
    ```
 
-4. Start or reconnect the MCP client. The extension connects to the bridge built into the MCP process at `ws://localhost:8765` automatically.
+4. Start or reconnect the MCP client. The extension connects to `ws://localhost:8765` by default; if the MCP server runs elsewhere, set the **MCP server address** in the extension popup to `ws://<host>:<port>` (it is persisted and reused after restarts).
 
 The extension attempts a connection after installation, Chrome startup, and an
 unexpected disconnect. It keeps an established connection alive with a 20-second
@@ -70,7 +70,10 @@ Clicking **Disconnect** intentionally disables automatic reconnection; use
 | Variable | Default | Description |
 | --- | --- | --- |
 | `WEBPILOT_PORT` | `8765` | Port used by the MCP Server's built-in WebSocket bridge. |
-| `WEBPILOT_PROXY_PORT` | `WEBPILOT_PORT + 1` (`8766`) | Internal `127.0.0.1` proxy port used by followers to reach the leader. |
+| `WEBPILOT_HOST` | `127.0.0.1` | Interface the bridge binds to. Keep the default for local-only access; set to `0.0.0.0` (or a specific interface IP) to accept remote extensions, then point the extension at `ws://<server-ip>:8765`. |
+| `WEBPILOT_PROXY_PORT` | `WEBPILOT_PORT + 1` (`8766`) | Internal proxy port used by followers to reach the leader. |
+| `WEBPILOT_PROXY_HOST` | `127.0.0.1` | Interface the internal proxy binds to; only relax it when sharing one leader across hosts. |
+| `WEBPILOT_LEADER_HOST` | `127.0.0.1` | Host a follower dials to reach the leader; set it when the leader runs on another host. |
 | `WEBPILOT_GROUP_TTL_MIN` | `30` | Minutes an idle session tab group is kept before it is garbage-collected (leader process). |
 | `WEBPILOT_MAX_GROUPS` | `5` | Maximum number of session tab groups; the oldest idle groups are closed first. |
 
