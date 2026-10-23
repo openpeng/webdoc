@@ -57,7 +57,7 @@ MCP Server 现已内置 WebSocket bridge。不要启动旧的 `daemon/` 包：�
    }
    ```
 
-4. 启动或重连 MCP 客户端。扩展会自动连接到 MCP 进程内置的 bridge（`ws://localhost:8765`）。
+4. 启动或重连 MCP 客户端。扩展默认连接本机 `ws://localhost:8765`；若 MCP 服务在别处，可在扩展弹窗的“MCP 服务地址”里改成 `ws://<主机>:<端口>`（会持久化，重启后继续使用）。
 
 扩展会在安装后、Chrome 启动后、以及意外断开后尝试连接，并以 20 秒心跳维持已建立的连接。若 MCP 进程后启动，则每分钟重试一次。点击 **Disconnect（断开）** 会主动关闭自动重连；再次点击 **Connect（连接）** 即可恢复。
 
@@ -66,7 +66,10 @@ MCP Server 现已内置 WebSocket bridge。不要启动旧的 `daemon/` 包：�
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `WEBPILOT_PORT` | `8765` | MCP Server 内置 WebSocket bridge 使用的端口。 |
-| `WEBPILOT_PROXY_PORT` | `WEBPILOT_PORT + 1`（`8766`） | follower 连接 leader 用的内部 `127.0.0.1` 代理端口。 |
+| `WEBPILOT_HOST` | `127.0.0.1` | bridge 监听的网卡。保持默认仅本机可连；设为 `0.0.0.0`（或具体网卡 IP）可让远程扩展连入，此时扩展端填 `ws://<本机IP>:8765`。 |
+| `WEBPILOT_PROXY_PORT` | `WEBPILOT_PORT + 1`（`8766`） | follower 连接 leader 用的内部代理端口。 |
+| `WEBPILOT_PROXY_HOST` | `127.0.0.1` | 内部转发代理监听的网卡；仅跨机共享同一个 leader 时才需放开。 |
+| `WEBPILOT_LEADER_HOST` | `127.0.0.1` | follower 拨号 leader 的主机；跨机共享 leader 时指向 leader 所在主机。 |
 | `WEBPILOT_GROUP_TTL_MIN` | `30` | 空闲会话标签组在被垃圾回收前的保留分钟数（leader 进程）。 |
 | `WEBPILOT_MAX_GROUPS` | `5` | 会话标签组的最大数量；最旧的空闲组优先关闭。 |
 
