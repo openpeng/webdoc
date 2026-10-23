@@ -270,6 +270,15 @@ bypass them:
 - **Emergency stop:** disconnects the bridge, disables automatic reconnection,
   and rejects new remote commands. Select **Connect** to resume deliberately.
 
+## Dual-use disclosure
+
+This package is published under npm's Dual-Use Content Policy and declares
+`"contentPolicy": { "class": "dual-use" }` in its `package.json`, with a
+`DISCLOSURE` file at the root of the published tarball. Browser automation that
+reuses a logged-in browser and evaluates page scripts legitimately resembles
+malware to automated scanners, so the disclosure explains what the package does
+and how it is meant to be used. See [`DISCLOSURE`](DISCLOSURE) for the full text.
+
 ## Session tab groups
 
 Every MCP process derives **two** identity keys, because isolation and restart-reuse

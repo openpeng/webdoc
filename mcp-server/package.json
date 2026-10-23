@@ -1,6 +1,6 @@
 {
   "name": "webpilot-mcp-server",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "WebPilot MCP Server — 浏览器操作工具集",
   "type": "module",
   "main": "dist/server.js",
@@ -14,8 +14,12 @@
     "skills",
     "browser-extension",
     "README.md",
-    "INSTALL.md"
+    "INSTALL.md",
+    "DISCLOSURE"
   ],
+  "contentPolicy": {
+    "class": "dual-use"
+  },
   "engines": {
     "node": ">=18"
   },

@@ -13,6 +13,7 @@ const mvpRoot = resolve(pkgRoot, '..');
 // 要复制的文件/目录映射：[源路径（相对于 mvpRoot）, 目标路径（相对于 pkgRoot）]
 const targets = [
   ['INSTALL.md', 'INSTALL.md'],
+  ['DISCLOSURE', 'DISCLOSURE'],
   ['skills/webpilot-browser/SKILL.md', 'skill/SKILL.md'],
   ['browser-extension', 'browser-extension'],
 ];
