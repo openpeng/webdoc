@@ -67,12 +67,20 @@ async function checkDefinitions() {
 async function checkBridgePorts() {
   const extensionPort = Number(process.env.WEBPILOT_PORT) || 8765;
   const proxyPort = Number(process.env.WEBPILOT_PROXY_PORT) || extensionPort + 1;
+  const bindHost = process.env.WEBPILOT_HOST?.trim() || "127.0.0.1";
+  const proxyHost = process.env.WEBPILOT_PROXY_HOST?.trim() || "127.0.0.1";
+  const leaderHost = process.env.WEBPILOT_LEADER_HOST?.trim() || "127.0.0.1";
+  const wildcard = bindHost === "0.0.0.0" || bindHost === "::" || bindHost === "[::]";
   const extension = await probePort(extensionPort);
   const proxy = await probePort(proxyPort);
-  if (extension === "listening") report("INFO", `桥接端口 ${extensionPort}`, "已有进程监听——通常是运行中的 WebPilot Leader；新进程将自动以 Follower 模式接入");
-  else report("PASS", `桥接端口 ${extensionPort}`, "空闲，本进程启动时将成为 Leader 并等待扩展连接");
-  if (proxy === "listening") report("INFO", `转发端口 ${proxyPort}`, "已有 Leader 在接受 Follower 转发");
+  if (extension === "listening") report("INFO", `桥接端口 ${extensionPort}`, `已有进程监听——通常是运行中的 WebPilot Leader；新进程将自动以 Follower 模式接入`);
+  else report("PASS", `桥接端口 ${extensionPort}`, `空闲（监听 ${bindHost}），本进程启动时将成为 Leader 并等待扩展连接`);
+  if (proxy === "listening") report("INFO", `转发端口 ${proxyPort}`, `已有 Leader 在接受 Follower 转发（监听 ${proxyHost}）`);
   else report("PASS", `转发端口 ${proxyPort}`, "空闲");
+  if (wildcard) report("WARN", "扩展连接地址", `桥接监听 ${bindHost}，局域网/公网均可连入，扩展端请填 ws://<本机IP>:${extensionPort}`, "仅在需要远程扩展时使用；公网暴露需自行加防火墙或反向代理");
+  else if (bindHost !== "127.0.0.1") report("INFO", "扩展连接地址", `扩展端请连接 ws://${bindHost}:${extensionPort}`);
+  else report("PASS", "扩展连接地址", `仅本机可连，扩展端连接 ws://localhost:${extensionPort}`);
+  if (leaderHost !== "127.0.0.1") report("INFO", "Leader 地址", `本进程将作为 Follower 连接 ws://${leaderHost}:${proxyPort}`);
 }
 
 async function checkEnvironment() {

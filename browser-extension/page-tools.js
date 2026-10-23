@@ -433,35 +433,72 @@
     /\bimport\s*\(/,
   ];
 
-  const safeEvaluate = (expression, options = {}) => {
+  // 本地全权限模式（默认 true）：不做表达式护栏，直接用页面真实全局执行，
+  // 任意表达式与多语句代码都可以跑，fetch / document.cookie / window.open / eval 均不再拦截。
+  // 需要恢复旧的受控行为时改为 false：FORBIDDEN_PATTERNS 与沙箱全局白名单会重新生效。
+  const LOCAL_FULL_ACCESS = true;
+  const MAX_EXPRESSION_LENGTH_FULL_ACCESS = 200000;
+
+  const safeEvaluate = async (expression, options = {}) => {
     if (typeof expression !== 'string' || !expression.trim()) {
       return { error: 'A non-empty expression is required' };
     }
-    if (expression.length > 2000) {
-      return { error: `Expression too long (${expression.length} chars, max 2000)` };
+    const maxLength = LOCAL_FULL_ACCESS ? MAX_EXPRESSION_LENGTH_FULL_ACCESS : 2000;
+    if (expression.length > maxLength) {
+      return { error: `Expression too long (${expression.length} chars, max ${maxLength})` };
     }
-    for (const pattern of FORBIDDEN_PATTERNS) {
-      if (pattern.test(expression)) {
-        return { error: `Expression contains forbidden pattern: ${pattern.source}` };
+    if (!LOCAL_FULL_ACCESS) {
+      for (const pattern of FORBIDDEN_PATTERNS) {
+        if (pattern.test(expression)) {
+          return { error: `Expression contains forbidden pattern: ${pattern.source}` };
+        }
       }
     }
-    const allowedGlobals = options.globals || [];
-    const sandbox = {};
-    for (const g of allowedGlobals) {
-      if (g in globalThis) {
-        try { sandbox[g] = globalThis[g]; } catch { /* some globals throw on access */ }
-      }
-    }
-    sandbox.document = document;
-    sandbox.location = { href: location.href, hostname: location.hostname, pathname: location.pathname, title: document.title };
-    sandbox.window = sandbox;
-    sandbox.globalThis = sandbox;
-    const argNames = Object.keys(sandbox);
-    const argValues = Object.values(sandbox);
     try {
-      const fn = new Function(...argNames, `"use strict"; return (${expression});`);
-      const timeoutMs = Math.max(100, Math.min(Number(options.timeoutMs) || 3000, 10000));
-      const result = fn.apply(null, argValues);
+      let result;
+      if (LOCAL_FULL_ACCESS) {
+        // 1) 表达式优先：return (expr)，直接拿到值；
+        // 2) 多语句代码体：走间接 eval，返回最后一条语句的完成值（与 DevTools 控制台一致）；
+        // 3) eval 被页面 CSP 拒绝时，退回 new Function 代码体执行（无完成值）。
+        // 外层加换行，避免用户代码以 // 注释结尾时把收尾的 `);` 一起注释掉。
+        let fn = null;
+        try {
+          fn = new Function(`return (\n${expression}\n);`);
+        } catch (error) {
+          if (!(error instanceof SyntaxError)) throw error;
+        }
+        if (fn) {
+          result = await fn.call(window);
+        } else {
+          try {
+            result = await (0, eval)(expression);
+          } catch (error) {
+            const message = String(error?.message || '');
+            if (error instanceof EvalError || /Content Security Policy|unsafe-eval/i.test(message)) {
+              const fallback = new Function(`\n${expression}`);
+              result = await fallback.call(window);
+            } else {
+              throw error;
+            }
+          }
+        }
+      } else {
+        const allowedGlobals = options.globals || [];
+        const sandbox = {};
+        for (const g of allowedGlobals) {
+          if (g in globalThis) {
+            try { sandbox[g] = globalThis[g]; } catch { /* some globals throw on access */ }
+          }
+        }
+        sandbox.document = document;
+        sandbox.location = { href: location.href, hostname: location.hostname, pathname: location.pathname, title: document.title };
+        sandbox.window = sandbox;
+        sandbox.globalThis = sandbox;
+        const argNames = Object.keys(sandbox);
+        const argValues = Object.values(sandbox);
+        const fn = new Function(...argNames, `"use strict"; return (${expression});`);
+        result = fn.apply(null, argValues);
+      }
       const safe = value => {
         if (value === null || value === undefined) return value;
         const t = typeof value;
@@ -479,7 +516,8 @@
         return String(value).slice(0, 500);
       };
       const safeResult = safe(result);
-      return { result: safeResult, type: t === 'object' ? (Array.isArray(result) ? 'array' : 'object') : t, url: location.href, title: document.title };
+      const resultType = typeof result;
+      return { result: safeResult, type: resultType === 'object' ? (Array.isArray(result) ? 'array' : 'object') : resultType, url: location.href, title: document.title };
     } catch (e) {
       return { error: `Evaluation failed: ${e.message}`, expression: expression.slice(0, 200) };
     }
