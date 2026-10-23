@@ -10,12 +10,19 @@
  * 设为 0.0.0.0 可让远程扩展连入）；WEBPILOT_LEADER_HOST 决定 follower 拨号的
  * leader 主机（跨机共享 leader 时使用）；WEBPILOT_PROXY_HOST 决定转发代理监听网卡。
  *
- * 每条命令都携带 sessionId（由 MCP clientInfo.name + 进程工作目录哈希派生），
- * 扩展据此把不同 agent 的 tab 隔离到各自的标签组。
+ * 每条命令携带两个身份键，扩展据此隔离不同会话的 tab：
+ *   - agentKey    归属键（跨重启稳定）：WEBPILOT_SESSION_ID 优先，
+ *                 否则由 MCP clientInfo.name + 进程工作目录哈希派生。
+ *                 用于「重启后认领回自己的标签组」。
+ *   - instanceKey 隔离键（每个并发实例唯一）：agentKey + 进程实例后缀。
+ *                 用于「一个宿主下多个会话互不串页面」。
+ *
+ * 二者必须分开：只用一个键时，宿主在固定工作目录下开多个会话会派生出同一个 id，
+ * 扩展会把它们当成同一个会话，共享标签组与默认 tab（实测会互相劫持页面）。
  */
 
 import WebSocket, { WebSocketServer } from "ws";
-import { createHash, timingSafeEqual } from "crypto";
+import { createHash, randomBytes, timingSafeEqual } from "crypto";
 
 const EXTENSION_PORT = Number(process.env.WEBPILOT_PORT) || 8765;
 const PROXY_PORT = Number(process.env.WEBPILOT_PROXY_PORT) || EXTENSION_PORT + 1;
@@ -51,6 +58,52 @@ const RETRY_BACKOFF_MAX_MS = 1_000;
 const MAX_ACTION_LOG_ENTRIES = 100;
 const GROUP_TTL_MINUTES = Number(process.env.WEBPILOT_GROUP_TTL_MIN ?? 30);
 const MAX_GROUPS = Number(process.env.WEBPILOT_MAX_GROUPS ?? 5);
+// 宿主注入的会话唯一标识（可选）：注入后 agentKey 精确到会话，重启认领无歧义。
+const SESSION_ID_OVERRIDE = process.env.WEBPILOT_SESSION_ID?.trim() || "";
+// 是否允许认领「别的 agent」遗留的闲置组（默认关闭：会连带继承他人登录态）。
+const ALLOW_CROSS_AGENT_RECLAIM = /^(1|true|yes|on)$/i.test(
+  process.env.WEBPILOT_ALLOW_CROSS_AGENT_RECLAIM?.trim() || "",
+);
+
+/** 归属键粒度：session=宿主保证会话级唯一；host=仅宿主级（可能多会话共用）。 */
+export type SessionScope = "session" | "host";
+
+export interface SessionIdentity {
+  /** 归属键：跨重启稳定，决定「重启后认领回哪个组」。 */
+  agentKey: string;
+  /** 隔离键：每个并发实例唯一，决定「标签组归谁、默认 tab 指向谁」。 */
+  instanceKey: string;
+  /** agentKey 是否会话级唯一。 */
+  scope: SessionScope;
+}
+
+/** 进程实例后缀：pid + 启动秒 + 随机量，保证同一台机器上并发实例互不相同。 */
+const PROCESS_NONCE = createHash("sha256")
+  .update(`${process.pid}:${Math.floor(Date.now() / 1000)}:${randomBytes(6).toString("hex")}`)
+  .digest("hex")
+  .slice(0, 6);
+
+function slugify(value: string, fallback = "agent"): string {
+  return (
+    value
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 48) || fallback
+  );
+}
+
+/**
+ * 从线上消息（hello / cmd）还原身份。
+ * 旧版对端只带 sessionId：此时归属键退化为 sessionId 本身、scope=host，
+ * 扩展侧按「不可认领」处理，不会误继承他人标签组。
+ */
+function identityFromMessage(msg: any): SessionIdentity | undefined {
+  if (!msg || typeof msg.sessionId !== "string" || !msg.sessionId) return undefined;
+  const agentKey = typeof msg.agentKey === "string" && msg.agentKey ? msg.agentKey : msg.sessionId;
+  const scope: SessionScope = msg.agentScope === "session" ? "session" : "host";
+  return { agentKey, instanceKey: msg.sessionId, scope };
+}
 
 export class BrowserActionError extends Error {
   constructor(message: string, readonly diagnostics?: unknown) {
@@ -92,7 +145,7 @@ function delay(ms: number): Promise<void> {
 export class BrowserBridge {
   private roleValue: BridgeRole = "starting";
   private clientName = "agent";
-  private sessionIdValue: string;
+  private identity: SessionIdentity;
   private warnedNoAuthRemote = false;
 
   // Leader state
@@ -101,7 +154,7 @@ export class BrowserBridge {
   private extensionClient: WebSocket | null = null;
   private requestIdCounter = 0;
   private readonly pendingExtension = new Map<number, Pending>();
-  private readonly followerSessions = new Map<WebSocket, string>();
+  private readonly followerSessions = new Map<WebSocket, SessionIdentity>();
 
   // Follower state
   private proxySocket: WebSocket | null = null;
@@ -112,31 +165,64 @@ export class BrowserBridge {
   private electing = false;
 
   constructor() {
-    this.sessionIdValue = this.computeSessionId();
+    this.identity = this.computeIdentity();
   }
 
   get role(): BridgeRole {
     return this.roleValue;
   }
 
+  /** 隔离键：每个并发实例唯一，作为标签组键与默认 tab 的归属。 */
   get sessionId(): string {
-    return this.sessionIdValue;
+    return this.identity.instanceKey;
   }
 
-  /** MCP initialize 之后用 clientInfo.name 重新派生稳定 sessionId */
+  get agentKey(): string {
+    return this.identity.agentKey;
+  }
+
+  get instanceKey(): string {
+    return this.identity.instanceKey;
+  }
+
+  get scope(): SessionScope {
+    return this.identity.scope;
+  }
+
+  getIdentity(): SessionIdentity {
+    return { ...this.identity };
+  }
+
+  /** MCP initialize 之后用 clientInfo.name 重新派生归属键与隔离键 */
   setClientName(name: string): void {
     if (!name || name === this.clientName) return;
     this.clientName = name;
-    this.sessionIdValue = this.computeSessionId();
+    this.identity = this.computeIdentity();
     if (this.roleValue === "leader") {
       this.pushSessionUpdate();
     } else if (this.proxySocket?.readyState === WebSocket.OPEN) {
-      this.proxySocket.send(JSON.stringify({ kind: "hello", sessionId: this.sessionIdValue }));
+      this.proxySocket.send(JSON.stringify({ kind: "hello", ...this.identityPayload() }));
     }
   }
 
-  status(): { role: BridgeRole; sessionId: string; activeSessions: string[] } {
-    return { role: this.roleValue, sessionId: this.sessionIdValue, activeSessions: this.activeSessionList() };
+  status(): {
+    role: BridgeRole;
+    sessionId: string;
+    agentKey: string;
+    instanceKey: string;
+    scope: SessionScope;
+    activeSessions: string[];
+    sessions: SessionIdentity[];
+  } {
+    return {
+      role: this.roleValue,
+      sessionId: this.identity.instanceKey,
+      agentKey: this.identity.agentKey,
+      instanceKey: this.identity.instanceKey,
+      scope: this.identity.scope,
+      activeSessions: this.activeSessionList(),
+      sessions: this.sessionIdentities(),
+    };
   }
 
   actionLogEntries(limit: number): ActionLog[] {
@@ -151,7 +237,7 @@ export class BrowserBridge {
   /** 对外与旧 sendToExtension 同签名；自动附加本进程 sessionId */
   send(type: string, params: Record<string, any>): Promise<any> {
     if (this.roleValue === "leader") {
-      return this.sendViaExtension(type, params, this.sessionIdValue);
+      return this.sendViaExtension(type, params, this.identity);
     }
     if (this.roleValue === "follower") {
       return this.forwardToLeader(type, params);
@@ -161,10 +247,33 @@ export class BrowserBridge {
 
   // ===== 竞选 =====
 
-  private computeSessionId(): string {
-    const slug = this.clientName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "agent";
-    const cwdHash = createHash("sha256").update(process.cwd().toLowerCase()).digest("hex").slice(0, 6);
-    return `${slug}-${cwdHash}`;
+  /**
+   * 派生双键：
+   *   agentKey    = 宿主注入的会话 id（优先，scope=session）
+   *                 或 clientInfo.name + cwd 哈希（跨重启稳定，scope=host）
+   *   instanceKey = agentKey + 进程实例后缀（并发实例唯一）
+   */
+  private computeIdentity(): SessionIdentity {
+    let agentKey: string;
+    let scope: SessionScope;
+    if (SESSION_ID_OVERRIDE) {
+      agentKey = slugify(SESSION_ID_OVERRIDE);
+      scope = "session";
+    } else {
+      const cwdHash = createHash("sha256").update(process.cwd().toLowerCase()).digest("hex").slice(0, 6);
+      agentKey = `${slugify(this.clientName)}-${cwdHash}`;
+      scope = "host";
+    }
+    return { agentKey, instanceKey: `${agentKey}-${PROCESS_NONCE}`, scope };
+  }
+
+  /** 上线给扩展/其它进程的身份字段（sessionId 字段沿用为隔离键，保持旧扩展兼容）。 */
+  private identityPayload(): { sessionId: string; agentKey: string; agentScope: SessionScope } {
+    return {
+      sessionId: this.identity.instanceKey,
+      agentKey: this.identity.agentKey,
+      agentScope: this.identity.scope,
+    };
   }
 
   private async elect(): Promise<void> {
@@ -302,14 +411,16 @@ export class BrowserBridge {
         return;
       }
       if (msg.kind === "hello" && typeof msg.sessionId === "string") {
-        this.followerSessions.set(socket, msg.sessionId);
+        const identity = identityFromMessage(msg);
+        if (identity) this.followerSessions.set(socket, identity);
         console.error(`[WebPilot MCP] Follower joined: ${msg.sessionId.slice(0, 8)}`);
         this.pushSessionUpdate();
         return;
       }
       if (msg.kind === "cmd" && typeof msg.cmdId === "number") {
-        const sessionId = typeof msg.sessionId === "string" ? msg.sessionId : this.followerSessions.get(socket) || "unknown";
-        this.sendViaExtension(String(msg.type), msg.params || {}, sessionId)
+        const identity = identityFromMessage(msg) ?? this.followerSessions.get(socket);
+        const sessionId = identity?.instanceKey ?? "unknown";
+        this.sendViaExtension(String(msg.type), msg.params || {}, identity)
           .then(payload => {
             if (socket.readyState === WebSocket.OPEN) {
               socket.send(JSON.stringify({ kind: "result", cmdId: msg.cmdId, ok: true, payload }));
@@ -324,10 +435,10 @@ export class BrowserBridge {
     });
 
     socket.on("close", () => {
-      const sessionId = this.followerSessions.get(socket);
+      const identity = this.followerSessions.get(socket);
       this.followerSessions.delete(socket);
-      if (sessionId) {
-        console.error(`[WebPilot MCP] Follower left: ${sessionId.slice(0, 8)}`);
+      if (identity) {
+        console.error(`[WebPilot MCP] Follower left: ${identity.instanceKey.slice(0, 8)}`);
         this.pushSessionUpdate();
       }
     });
@@ -335,30 +446,48 @@ export class BrowserBridge {
     socket.on("error", () => { /* close 事件负责清理 */ });
   }
 
+  /** 活跃实例的隔离键列表（供扩展按实例标记 idle）。 */
   private activeSessionList(): string[] {
-    const sessions = new Set<string>([this.sessionIdValue]);
-    for (const sessionId of this.followerSessions.values()) sessions.add(sessionId);
+    const sessions = new Set<string>([this.identity.instanceKey]);
+    for (const identity of this.followerSessions.values()) sessions.add(identity.instanceKey);
     return [...sessions];
   }
 
-  /** 把「活跃 session 列表 + 组回收配置」下发扩展，驱动 idle 标记与 TTL 回收 */
+  /** 活跃实例的完整身份列表（供扩展判断归属键粒度、认领歧义）。 */
+  private sessionIdentities(): SessionIdentity[] {
+    const seen = new Map<string, SessionIdentity>();
+    const own = { ...this.identity };
+    seen.set(own.instanceKey, own);
+    for (const identity of this.followerSessions.values()) seen.set(identity.instanceKey, identity);
+    return [...seen.values()];
+  }
+
+  /** 把「活跃实例列表 + 组回收配置」下发扩展，驱动 idle 标记与 TTL 回收 */
   private pushSessionUpdate(): void {
     if (this.roleValue !== "leader" || !this.extensionClient || this.extensionClient.readyState !== WebSocket.OPEN) return;
     this.extensionClient.send(JSON.stringify({
       type: "sessionUpdate",
+      // activeSessions 沿用为隔离键列表，保持旧扩展兼容（旧扩展按它建组 = 实例级隔离）
       activeSessions: this.activeSessionList(),
-      config: { ttlMinutes: GROUP_TTL_MINUTES, maxGroups: MAX_GROUPS },
+      sessions: this.sessionIdentities(),
+      config: {
+        ttlMinutes: GROUP_TTL_MINUTES,
+        maxGroups: MAX_GROUPS,
+        // 允许认领「别的 agent」遗留的闲置组（默认关闭：会连带继承他人登录态）
+        allowCrossAgentReclaim: ALLOW_CROSS_AGENT_RECLAIM,
+      },
     }));
   }
 
   // ===== Leader：直连扩展 =====
 
-  private sendViaExtension(type: string, params: Record<string, any>, sessionId: string): Promise<any> {
+  private sendViaExtension(type: string, params: Record<string, any>, identity: SessionIdentity | undefined): Promise<any> {
     return new Promise((resolve, reject) => {
       if (!this.extensionClient || this.extensionClient.readyState !== WebSocket.OPEN) {
         reject(new Error("Browser extension is not connected. Open the WebPilot extension and click Connect."));
         return;
       }
+      const sessionId = identity?.instanceKey ?? "unknown";
       const requestId = ++this.requestIdCounter;
       const startedAt = Date.now();
       const entry: ActionLog = {
@@ -385,7 +514,15 @@ export class BrowserBridge {
           reject(error);
         },
       });
-      this.extensionClient.send(JSON.stringify({ type, requestId, sessionId, ...params }));
+      // 身份字段放在最后，避免被工具参数覆盖；sessionId 沿用为隔离键（兼容旧扩展）
+      this.extensionClient.send(JSON.stringify({
+        type,
+        requestId,
+        ...params,
+        sessionId,
+        agentKey: identity?.agentKey,
+        agentScope: identity?.scope,
+      }));
     });
   }
 
@@ -400,7 +537,7 @@ export class BrowserBridge {
         opened = true;
         this.proxySocket = socket;
         this.roleValue = "follower";
-        socket.send(JSON.stringify({ kind: "hello", sessionId: this.sessionIdValue }));
+        socket.send(JSON.stringify({ kind: "hello", ...this.identityPayload() }));
         console.error(`[WebPilot MCP] Role: follower — forwarding via ws://${LEADER_HOST}:${PROXY_PORT}`);
         resolve();
       });
@@ -447,7 +584,7 @@ export class BrowserBridge {
       const entry: ActionLog = {
         id: cmdId,
         action: type,
-        session: this.sessionIdValue.slice(0, 8),
+        session: this.identity.instanceKey.slice(0, 8),
         parameters: safeParameters(params),
         startedAt: new Date(startedAt).toISOString(),
       };
@@ -468,7 +605,7 @@ export class BrowserBridge {
           reject(error);
         },
       });
-      this.proxySocket.send(JSON.stringify({ kind: "cmd", cmdId, type, params, sessionId: this.sessionIdValue }));
+      this.proxySocket.send(JSON.stringify({ kind: "cmd", cmdId, type, params, ...this.identityPayload() }));
     });
   }
 

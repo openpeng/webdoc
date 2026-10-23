@@ -75,7 +75,9 @@ Clicking **Disconnect** intentionally disables automatic reconnection; use
 | `WEBPILOT_PROXY_HOST` | `127.0.0.1` | Interface the internal proxy binds to; only relax it when sharing one leader across hosts. |
 | `WEBPILOT_LEADER_HOST` | `127.0.0.1` | Host a follower dials to reach the leader; set it when the leader runs on another host. |
 | `WEBPILOT_GROUP_TTL_MIN` | `30` | Minutes an idle session tab group is kept before it is garbage-collected (leader process). |
-| `WEBPILOT_MAX_GROUPS` | `5` | Maximum number of session tab groups; the oldest idle groups are closed first. |
+| `WEBPILOT_MAX_GROUPS` | `5` | Maximum number of session tab groups (live instances); the oldest idle groups are closed first. |
+| `WEBPILOT_SESSION_ID` | unset | Per-session id injected by the host; becomes the ownership key so each conversation reclaims its own group exactly. |
+| `WEBPILOT_ALLOW_CROSS_AGENT_RECLAIM` | `0` | Allow adopting an idle group that belongs to another session (also inherits its logged-in pages). |
 
 ## Tools
 
@@ -95,6 +97,8 @@ Clicking **Disconnect** intentionally disables automatic reconnection; use
 | `wait_for` | Wait until a locator is visible, attached, or hidden. |
 | `get_action_log` | Read recent action durations and errors (without entered text or scripts). |
 | `cleanup_sessions` | Close WebPilot session tab groups; by default only idle groups (`onlyIdle`), or a specific `sessionId`. |
+| `claim_session` | Hand a specific idle tab group to the calling session (`groupId` or `agentKey`) when automatic reclaiming is ambiguous. |
+| `browser_status` | Report the bridge role, both session identity keys, the active instances and every session tab group. |
 | `list_adapters` / `extract_with_adapter` | Discover and use a specific read-only site adapter. |
 | `extract_with_best_adapter` | Select the most specific adapter and fall back to a generic summary with evidence. |
 | `get_adapter_health` | Inspect adapter success, latency, and recent DOM-extraction errors. |
@@ -268,22 +272,35 @@ bypass them:
 
 ## Session tab groups
 
-Each MCP process derives a stable session id from its MCP client name plus working
-directory, and the extension isolates that session into its own Chrome tab group
-named `WebPilot·{short-id}`:
+Every MCP process derives **two** identity keys, because isolation and restart-reuse
+need different properties:
+
+- `agentKey` — ownership: which logical session this is. `WEBPILOT_SESSION_ID` when the
+  host injects one, otherwise the MCP client name plus a hash of the working directory.
+- `instanceKey` — isolation: which live session instance this is. `agentKey` plus a
+  per-process suffix, so concurrent sessions of one host never collide.
+
+The extension gives every instance its own Chrome tab group named
+`WebPilot·{agent}-{instance}`:
 
 - A command without an explicit `tabId` operates on the most recently used tab
-  inside its own session group, creating one if the group is empty.
-- A command whose `tabId` belongs to another session's group is rejected, so
-  parallel agents cannot interfere with each other.
-- When a session's MCP process disconnects, its group is marked `·idle`, turns
-  grey, and collapses; a returning session with the same id reclaims it.
+  inside its own instance group, creating one if the group is empty.
+- A command whose `tabId` belongs to another instance's group is rejected — even when
+  that instance shares the same `agentKey` — so parallel agents cannot interfere.
+- `list_tabs` only returns the caller's own group plus the user's ungrouped tabs.
+- When a session's MCP process disconnects, its group is marked `·idle`, turns grey,
+  and collapses; a returning session **reclaims** it and lands on the same page.
+  Reclaiming is refused when the ownership key is ambiguous, so a session never
+  inherits another session's pages or login state — inject `WEBPILOT_SESSION_ID` to
+  make ownership exact, or claim explicitly with the `claim_session` tool.
 - Idle groups are garbage-collected after `WEBPILOT_GROUP_TTL_MIN` (default 30
   minutes) and the total is capped by `WEBPILOT_MAX_GROUPS` (default 5, oldest
   idle groups closed first).
 - Clean up manually with the extension popup's **清理闲置组** button or the
   `cleanup_sessions` tool (`onlyIdle` defaults to `true`; pass a `sessionId` to
   close a specific group).
+- `browser_status` reports the role, both identity keys, the scope and every group in
+  the browser — the quickest way to see which session owns what.
 
 ## Development
 

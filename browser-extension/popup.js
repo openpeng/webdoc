@@ -66,10 +66,11 @@ function renderSessions(sessions) {
     const name = document.createElement('span');
     name.className = 'session-name';
     name.textContent = s.title || s.sessionId;
-    name.title = s.sessionId;
+    name.title = `${s.agentKey || s.sessionId}${s.scope ? ` [${s.scope}]` : ''}`;
     const meta = document.createElement('span');
     meta.className = 'session-meta';
-    meta.textContent = `${s.tabCount} tab · ${s.state === 'active' ? '活跃' : '闲置'}`;
+    const scopeMark = s.scope === 'session' ? '' : s.scope === 'legacy' ? ' ·旧组' : ' ·宿主级';
+    meta.textContent = `${s.tabCount} tab · ${s.state === 'active' ? '活跃' : '闲置'}${scopeMark}`;
     row.appendChild(name);
     row.appendChild(meta);
     sessionListEl.appendChild(row);

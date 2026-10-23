@@ -21,13 +21,18 @@ let heartbeatTimer = null;
 let managedTabs = new Set();
 // 目标 MCP 服务地址，持久化到 storage.local；默认本机，可指向任意远程 MCP 服务。
 let currentWsUrl = DEFAULT_WS_URL;
-// sessionId -> { groupId, state: 'active'|'idle', lastActiveAt, color }，持久化到 storage.local
+// sessionId -> { groupId, agentKey, scope, state: 'active'|'idle', lastActiveAt, color }，持久化到 storage.local
+// 键为「实例键 instanceKey」：每个并发会话实例独占一个组，互不串页面。
 let sessionGroups = null;
 let sessionGroupsLoading = null;
 const sessionGroupQueues = new Map(); // sessionId -> promise 链，防止并发重复建组
 const sessionLastTab = new Map();     // sessionId -> 组内最近使用的 tabId
-let activeSessions = new Set();       // Leader 下发的活跃 sessionId 列表
-let gcConfig = { ttlMinutes: DEFAULT_GROUP_TTL_MINUTES, maxGroups: DEFAULT_MAX_GROUPS };
+let activeSessions = new Set();       // Leader 下发的活跃实例键列表
+// instanceKey -> { agentKey, scope }：归属键与粒度，用于判断能否安全认领闲置组
+const activeSessionInfo = new Map();
+// 最近一次认领尝试的诊断信息（便于排查「为什么没认领」）
+let lastReclaim = null;
+let gcConfig = { ttlMinutes: DEFAULT_GROUP_TTL_MINUTES, maxGroups: DEFAULT_MAX_GROUPS, allowCrossAgentReclaim: false };
 const tabQueues = new Map();          // tabId -> promise 链（同 tab 串行）
 let foregroundLock = Promise.resolve(); // 全局前台互斥锁
 let cdpSocket = null;
@@ -352,6 +357,13 @@ async function handleDaemonMessage(msg) {
   }
 
   const sessionId = typeof msg.sessionId === 'string' && msg.sessionId ? msg.sessionId : DEFAULT_SESSION_ID;
+  // 记录该实例的归属键与粒度（认领决策需要）
+  if (msg.agentKey) {
+    activeSessionInfo.set(sessionId, {
+      agentKey: String(msg.agentKey),
+      scope: msg.agentScope === 'session' ? 'session' : 'host'
+    });
+  }
   let targetTabId = null;
   try {
     if (TAB_SCOPED_COMMANDS.has(msg.type)) {
@@ -535,7 +547,13 @@ async function dispatchCommand(msg, sessionId) {
       await cmdScreenshot(msg.tabId, msg.requestId);
       break;
     case 'listTabs':
-      await cmdListTabs(msg.requestId);
+      await cmdListTabs(msg.requestId, sessionId);
+      break;
+    case 'claimSession':
+      await cmdClaimSession(msg.options, msg.requestId, sessionId);
+      break;
+    case 'getSessionStatus':
+      await cmdGetSessionStatus(msg.requestId);
       break;
     case 'getOperationLog':
       await cmdGetOperationLog(msg.requestId);
@@ -548,14 +566,22 @@ async function dispatchCommand(msg, sessionId) {
   }
 }
 
-// ===== 会话标签组：一个 agent = 一个标签组 =====
+// ===== 会话标签组：一个会话实例 = 一个标签组 =====
 async function getSessionGroups() {
   if (sessionGroups) return sessionGroups;
   if (!sessionGroupsLoading) {
     // service worker 休眠/浏览器重启后从 storage.local 恢复映射
     sessionGroupsLoading = chrome.storage.local.get(['sessionGroups', 'gcConfig']).then(stored => {
       if (!sessionGroups) sessionGroups = stored.sessionGroups || {};
-      if (stored.gcConfig) gcConfig = stored.gcConfig;
+      if (stored.gcConfig) gcConfig = { ...gcConfig, ...stored.gcConfig };
+      // 迁移：旧结构没有 agentKey/scope，归属键取原键（legacy 组，仅供认领兼容）
+      let migrated = false;
+      for (const [key, entry] of Object.entries(sessionGroups)) {
+        if (!entry || typeof entry !== 'object') { delete sessionGroups[key]; migrated = true; continue; }
+        if (!entry.agentKey) { entry.agentKey = key; entry.scope = 'legacy'; migrated = true; }
+        if (!entry.state) { entry.state = 'active'; migrated = true; }
+      }
+      if (migrated) saveSessionGroups();
       return sessionGroups;
     });
   }
@@ -570,8 +596,14 @@ function sessionShortId(sessionId) {
   return String(sessionId || DEFAULT_SESSION_ID).slice(0, 12);
 }
 
-function groupTitle(sessionId, idle) {
-  return `${SESSION_GROUP_PREFIX}·${sessionShortId(sessionId)}${idle ? '·idle' : ''}`;
+/** 标签组标题：归属键 + 实例后缀，肉眼可分辨是哪个会话实例。 */
+function groupTitle(sessionKey, idle, entry) {
+  const agent = (entry && entry.agentKey) || sessionKey;
+  const instance = entry && entry.agentKey && entry.agentKey !== sessionKey
+    ? String(sessionKey).slice(-6)
+    : '';
+  const label = `${String(agent).slice(0, 20)}${instance ? '-' + instance : ''}`;
+  return `${SESSION_GROUP_PREFIX}·${label}${idle ? '·idle' : ''}`;
 }
 
 function pickGroupColor(groups) {
@@ -599,8 +631,9 @@ async function assertTabUsableBySession(tabId, sessionId) {
   if (typeof tab.groupId !== 'number' || tab.groupId < 0) return; // 用户自己的散 tab，允许认领
   const groups = await getSessionGroups();
   const owner = Object.keys(groups).find(id => groups[id].groupId === tab.groupId);
+  // 组键是实例键：同归属键的另一个并发实例同样视为「别人的组」，一并拒绝
   if (owner && owner !== sessionId) {
-    throw new Error(`Tab ${tabId} belongs to another agent's group "${groupTitle(owner, groups[owner].state === 'idle')}". Use a tab in your own WebPilot group or omit tabId.`);
+    throw new Error(`Tab ${tabId} belongs to another session instance's group "${groupTitle(owner, groups[owner].state === 'idle', groups[owner])}". Use a tab in your own WebPilot group or omit tabId.`);
   }
 }
 
@@ -611,7 +644,11 @@ async function getTargetTabId(tabId, sessionId) {
     return tabId;
   }
   const session = sessionId || DEFAULT_SESSION_ID;
-  const groupId = await getSessionGroupId(session);
+  let groupId = await getSessionGroupId(session);
+  if (groupId === null) {
+    // 先认领闲置组（会话重启后回到自己的组），认领不到再新建
+    groupId = await claimIdleGroupFor(session);
+  }
   if (groupId !== null) {
     const tabs = await chrome.tabs.query({ groupId });
     if (tabs.length) {
@@ -627,24 +664,113 @@ async function getTargetTabId(tabId, sessionId) {
   return created.id;
 }
 
+// ===== 认领（接管闲置组）=====
+
+/** 统计同一归属键下当前存活的实例数（含当前实例）。 */
+function liveInstanceCount(agentKey, currentInstanceKey) {
+  let count = 0;
+  for (const [instanceKey, info] of activeSessionInfo.entries()) {
+    if (instanceKey !== currentInstanceKey && !activeSessions.has(instanceKey)) continue;
+    if (info.agentKey === agentKey) count++;
+  }
+  return count;
+}
+
+/**
+ * 自动认领决策：
+ *  规则1 同一归属键下有 ≥2 个存活实例 → 归属键区分不了会话 → 不认领（避免认错他人组）
+ *  规则2 归属键会话级(scope=session) → 认领最近活动的同归属键闲置组
+ *  规则3 归属键宿主级 + 仅 1 个候选 → 认领（候选唯一，歧义消失）
+ *  规则4 其余情况 → 不认领，另建新组
+ */
+function pickReclaimableGroup(groups, instanceKey) {
+  const info = activeSessionInfo.get(instanceKey) || { agentKey: instanceKey, scope: 'host' };
+  const liveCount = liveInstanceCount(info.agentKey, instanceKey);
+  const diag = { instanceKey, agentKey: info.agentKey, scope: info.scope, liveCount };
+  if (liveCount >= 2) { // 规则1
+    lastReclaim = { ...diag, rule: "r1-ambiguous", claimed: null };
+    return null;
+  }
+  const candidates = Object.keys(groups)
+    .filter(key => key !== instanceKey && groups[key] && groups[key].state === 'idle'
+      && (groups[key].agentKey || key) === info.agentKey)
+    .sort((a, b) => (groups[b].lastActiveAt || 0) - (groups[a].lastActiveAt || 0));
+  if (!candidates.length) {
+    lastReclaim = { ...diag, rule: "no-candidate", claimed: null };
+    return null;
+  }
+  if (info.scope === 'session') {
+    lastReclaim = { ...diag, rule: "r2-session-scope", claimed: candidates[0] };
+    return candidates[0];
+  }
+  if (candidates.length === 1) {
+    lastReclaim = { ...diag, rule: "r3-single-candidate", claimed: candidates[0] };
+    return candidates[0];
+  }
+  lastReclaim = { ...diag, rule: "r4-multi-candidate", claimed: null };
+  return null;
+}
+
+/** 跨归属键认领（默认关闭：会连带继承他人标签页与登录态）。 */
+function pickAnyIdleGroup(groups, instanceKey) {
+  const candidates = Object.keys(groups)
+    .filter(key => key !== instanceKey && groups[key] && groups[key].state === 'idle')
+    .sort((a, b) => (groups[a].lastActiveAt || 0) - (groups[b].lastActiveAt || 0));
+  return candidates[0] || null;
+}
+
+/**
+ * 认领一个闲置组给当前会话实例（幂等）：会话重启后回到自己的组，保留原 tab 与登录态。
+ * 认领顺序必须在「解析默认 tab」之前，否则会先建新 tab 再认领，认不回原来的页面。
+ */
+async function claimIdleGroupFor(session) {
+  const groups = await getSessionGroups();
+  if (groups[session]) return groups[session].groupId; // 已有组，无需认领
+  const reclaimKey = pickReclaimableGroup(groups, session)
+    || (gcConfig.allowCrossAgentReclaim ? pickAnyIdleGroup(groups, session) : null);
+  if (!reclaimKey) return null;
+  const reclaimed = groups[reclaimKey];
+  const info = activeSessionInfo.get(session) || { agentKey: session, scope: 'host' };
+  groups[session] = {
+    groupId: reclaimed.groupId,
+    agentKey: info.agentKey,
+    scope: info.scope,
+    state: 'active',
+    lastActiveAt: Date.now(),
+    color: reclaimed.color
+  };
+  delete groups[reclaimKey];
+  // 记住原会话最后使用的 tab：认领后默认落回同一个页面
+  const remembered = sessionLastTab.get(reclaimKey);
+  if (remembered) sessionLastTab.set(session, remembered);
+  sessionLastTab.delete(reclaimKey);
+  await saveSessionGroups();
+  logOperation({ action: 'reclaimGroup', success: true, sessionId: session, details: `reclaimed ${reclaimKey}` });
+  try {
+    await chrome.tabGroups.update(reclaimed.groupId, {
+      title: groupTitle(session, false, groups[session]),
+      color: reclaimed.color || pickGroupColor(groups),
+      collapsed: false
+    });
+  } catch { /* 组可能已被关闭 */ }
+  // 认领来的 tab 纳入受管集合（域名白名单跳转拦截需要）
+  try {
+    for (const tab of await chrome.tabs.query({ groupId: reclaimed.groupId })) managedTabs.add(tab.id);
+  } catch { /* 组已失效 */ }
+  return reclaimed.groupId;
+}
+
 async function addTabToSessionGroup(tabId, sessionId) {
   const groups = await getSessionGroups();
   const tab = await chrome.tabs.get(tabId);
-  let entry = groups[sessionId];
-  let groupId = await getSessionGroupId(sessionId);
+  const session = sessionId || DEFAULT_SESSION_ID;
+  let entry = groups[session];
+  let groupId = await getSessionGroupId(session);
 
   if (groupId === null) {
-    // 复用优先：认领任一 idle 组（保留其 tab 与登录态并重命名），再没有才新建
-    const idleId = Object.keys(groups).find(id => id !== sessionId && groups[id].state === 'idle');
-    if (idleId) {
-      try {
-        await chrome.tabGroups.get(groups[idleId].groupId);
-        groupId = groups[idleId].groupId;
-        entry = { ...groups[idleId] };
-      } catch { /* 映射已失效 */ }
-      delete groups[idleId];
-      sessionLastTab.delete(idleId);
-    }
+    // 会话还没有组：先认领同归属键的闲置组，认领不到才新建
+    groupId = await claimIdleGroupFor(session);
+    entry = groups[session];
   }
 
   if (groupId !== null) {
@@ -656,11 +782,19 @@ async function addTabToSessionGroup(tabId, sessionId) {
     groupId = await chrome.tabs.group({ tabIds: [tabId] });
   }
 
+  const info = activeSessionInfo.get(session) || { agentKey: session, scope: 'host' };
   const wasActive = entry && entry.groupId === groupId && entry.state === 'active';
   const color = entry?.color || pickGroupColor(groups);
-  groups[sessionId] = { groupId, state: 'active', lastActiveAt: Date.now(), color };
+  groups[session] = {
+    groupId,
+    agentKey: info.agentKey,
+    scope: info.scope,
+    state: 'active',
+    lastActiveAt: Date.now(),
+    color
+  };
   if (!wasActive) {
-    await chrome.tabGroups.update(groupId, { title: groupTitle(sessionId, false), color, collapsed: false });
+    await chrome.tabGroups.update(groupId, { title: groupTitle(session, false, groups[session]), color, collapsed: false });
   }
   await saveSessionGroups();
   return groupId;
@@ -740,20 +874,42 @@ function logOperation(entry) {
 // isolated world 读不到主世界的 JS 对象
 const MAIN_WORLD_METHODS = new Set(['webmcpHealth', 'webmcpGetTools', 'webmcpExecuteTool', 'probeCapabilities']);
 
+// 目标页不可注入时，给调用方一句能照着做的说明，而不是把 Chrome 的原文直接抛出去。
+// about:blank（会话组里还没有页面时新建的占位页）、chrome://、扩展商店页面都无法注入。
+// 注：chrome.scripting 的 InjectionTarget 不接受 matchAboutBlank（实测会被 Chrome 以
+// Unexpected property 拒绝），所以 about:blank 只能靠 CDP 通道或先 navigate 来覆盖。
+function describeInjectionFailure(error, tab) {
+  const message = String(error?.message || error || '');
+  const url = String(tab?.url || '');
+  if (!url || url === 'about:blank' || /^(about|chrome|edge|devtools|view-source):/i.test(url) || /chromewebstore\.google\.com/i.test(url)) {
+    return `目标标签页当前是 ${url || '(空白页)'}，扩展无法在其上执行页面操作：请先用 navigate 打开目标网址，或用 tabId 指定一个普通网页。`;
+  }
+  if (/must request permission|Cannot access contents/i.test(message)) {
+    return `扩展无权访问该页面（${url}）：chrome://、扩展商店等浏览器保留页面不允许注入，请改用普通 http(s) 页面。`;
+  }
+  return message;
+}
+
 async function callPageTool(tabId, method, args = []) {
   if (!tabId) throw new Error('No active tab');
   const world = MAIN_WORLD_METHODS.has(method) ? 'MAIN' : 'ISOLATED';
-  await chrome.scripting.executeScript({ target: { tabId }, world, files: ['page-tools.js'] });
-  const [result] = await chrome.scripting.executeScript({
-    target: { tabId },
-    world,
-    func: async (toolMethod, toolArgs) => {
-      if (!globalThis.__webpilot?.[toolMethod]) throw new Error(`Page tool is unavailable: ${toolMethod}`);
-      return await globalThis.__webpilot[toolMethod](...toolArgs);
-    },
-    args: [method, args]
-  });
-  return result.result;
+  let tab = null;
+  try { tab = await chrome.tabs.get(tabId); } catch { /* tab 已关闭，交给下面的注入报错 */ }
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, world, files: ['page-tools.js'] });
+    const [result] = await chrome.scripting.executeScript({
+      target: { tabId },
+      world,
+      func: async (toolMethod, toolArgs) => {
+        if (!globalThis.__webpilot?.[toolMethod]) throw new Error(`Page tool is unavailable: ${toolMethod}`);
+        return await globalThis.__webpilot[toolMethod](...toolArgs);
+      },
+      args: [method, args]
+    });
+    return result.result;
+  } catch (error) {
+    throw new Error(describeInjectionFailure(error, tab));
+  }
 }
 
 // ===== WebMCP 桥接命令 =====
@@ -963,12 +1119,50 @@ async function cmdGetResources(options, tabId, requestId) {
   }
 }
 
-// ===== 方案 2: 受控 evaluate =====
+// ===== 方案 2: 页面代码执行 =====
+// 目标页面的 CSP 常禁止 eval / new Function（'unsafe-eval' 不在 script-src 白名单），
+// 注入执行会直接失败：Evaluating a string as JavaScript violates ... Content Security Policy。
+// 因此优先走 CDP Runtime.evaluate —— 调试器通道不受页面 CSP 限制，任何页面都能执行代码；
+// 只有调试通道本身不可用时（DevTools 已占用、chrome:// 页面等）才退回注入执行。
+async function evaluateViaCdp(tabId, expression, timeoutMs) {
+  const target = { tabId };
+  await chrome.debugger.attach(target, '1.3');
+  try {
+    const response = await chrome.debugger.sendCommand(target, 'Runtime.evaluate', {
+      expression,
+      awaitPromise: true,
+      returnByValue: true,
+      userGesture: true,
+      ...(typeof timeoutMs === 'number' && timeoutMs > 0 ? { timeout: timeoutMs } : {})
+    });
+    if (response?.exceptionDetails) {
+      const detail = response.exceptionDetails.exception?.description || response.exceptionDetails.text || 'Evaluation failed';
+      return { error: `Evaluation failed: ${detail}` };
+    }
+    const remote = response?.result || {};
+    const value = 'value' in remote ? remote.value : remote.description;
+    const type = remote.type === 'object' ? (Array.isArray(value) ? 'array' : 'object') : remote.type;
+    return { result: value, type };
+  } finally {
+    try { await chrome.debugger.detach(target); } catch { /* already detached */ }
+  }
+}
+
 async function cmdEvaluate(expression, options, tabId, requestId) {
   const target = await getTargetTabId(tabId);
   const startedAt = Date.now();
   try {
-    const result = await callPageTool(target, 'safeEvaluate', [expression, options || {}]);
+    let result;
+    try {
+      result = await evaluateViaCdp(target, expression, options?.timeoutMs);
+    } catch (cdpError) {
+      logOperation({ action: 'evaluateCdp', tabId: target, success: false, error: cdpError.message });
+      try {
+        result = await callPageTool(target, 'safeEvaluate', [expression, options || {}]);
+      } catch (fallbackError) {
+        throw new Error(`${fallbackError.message}（CDP 通道不可用: ${cdpError.message}）`);
+      }
+    }
     logOperation({ action: 'evaluate', tabId: target, success: !result.error, error: result.error, durationMs: Date.now() - startedAt });
     sendToDaemon({ type: 'evaluateResult', requestId, success: !result.error, ...result });
   } catch (e) {
@@ -1856,16 +2050,104 @@ async function cmdScreenshot(tabId, requestId) {
   }
 }
 
-async function cmdListTabs(requestId) {
+async function cmdListTabs(requestId, sessionId) {
   const tabs = await chrome.tabs.query({});
   const { allowedDomains } = await getSecuritySettings();
-  const visibleTabs = allowedDomains.length ? tabs.filter(tab => isUrlAllowed(tab.url, allowedDomains)) : tabs;
+  let visibleTabs = allowedDomains.length ? tabs.filter(tab => isUrlAllowed(tab.url, allowedDomains)) : tabs;
+  // 会话内可见：过滤掉其它会话实例组里的 tab（避免泄露别的会话的页面与凭据）
+  const groups = await getSessionGroups();
+  const myGroupId = sessionId ? groups[sessionId]?.groupId : undefined;
+  visibleTabs = visibleTabs.filter(tab =>
+    typeof tab.groupId !== 'number' || tab.groupId < 0 || tab.groupId === myGroupId);
   sendToDaemon({
     type: 'listTabsResult',
     requestId,
     success: true,
     tabs: visibleTabs.map(t => ({ id: t.id, url: t.url, title: t.title, active: t.active }))
   });
+}
+
+// 显式认领：把指定的闲置组接管给当前会话实例（自动认领不可用时的兜底）
+async function cmdClaimSession(options, requestId, sessionId) {
+  try {
+    const groups = await getSessionGroups();
+    const session = sessionId || DEFAULT_SESSION_ID;
+    const ownGroupId = groups[session]?.groupId;
+    let targetKey = null;
+    if (options && typeof options.groupId === 'number') {
+      targetKey = Object.keys(groups).find(key => groups[key].groupId === options.groupId) || null;
+    } else if (options && typeof options.agentKey === 'string') {
+      targetKey = Object.keys(groups).find(key => (groups[key].agentKey || key) === options.agentKey) || null;
+    }
+    if (!targetKey) {
+      sendToDaemon({ type: 'claimSessionResult', requestId, success: false, error: '未找到可认领的标签组' });
+      return;
+    }
+    const entry = groups[targetKey];
+    if (entry.state !== 'idle') {
+      sendToDaemon({ type: 'claimSessionResult', requestId, success: false, error: '目标标签组正在被其他会话使用，无法认领' });
+      return;
+    }
+    if (ownGroupId && ownGroupId !== entry.groupId) {
+      sendToDaemon({ type: 'claimSessionResult', requestId, success: false, error: '当前会话已持有标签组，无法同时认领第二个' });
+      return;
+    }
+    const info = activeSessionInfo.get(session) || { agentKey: session, scope: 'host' };
+    groups[session] = {
+      groupId: entry.groupId,
+      agentKey: info.agentKey,
+      scope: info.scope,
+      state: 'active',
+      lastActiveAt: Date.now(),
+      color: entry.color
+    };
+    delete groups[targetKey];
+    sessionLastTab.delete(targetKey);
+    await saveSessionGroups();
+    const tabs = await chrome.tabs.query({ groupId: entry.groupId });
+    await chrome.tabGroups.update(entry.groupId, {
+      title: groupTitle(session, false, groups[session]),
+      color: entry.color || pickGroupColor(groups),
+      collapsed: false
+    });
+    logOperation({ action: 'claimSession', success: true, sessionId: session, details: `claimed ${targetKey}` });
+    sendToDaemon({
+      type: 'claimSessionResult',
+      requestId,
+      success: true,
+      groupId: entry.groupId,
+      tabCount: tabs.length,
+      agentKey: info.agentKey,
+      instanceKey: session
+    });
+  } catch (e) {
+    logOperation({ action: 'claimSession', success: false, error: e.message });
+    sendToDaemon({ type: 'claimSessionResult', requestId, success: false, error: e.message });
+  }
+}
+
+// 会话状态：实例列表 + 标签组 + 归属键粒度（便于排查隔离/认领行为）
+async function cmdGetSessionStatus(requestId) {
+  try {
+    const groups = await getSessionGroups();
+    const sessions = await getSessionSummaries();
+    const live = [];
+    for (const [instanceKey, info] of activeSessionInfo.entries()) {
+      live.push({ instanceKey, agentKey: info.agentKey, scope: info.scope, alive: activeSessions.has(instanceKey) });
+    }
+    sendToDaemon({
+      type: 'sessionStatusResult',
+      requestId,
+      success: true,
+      sessions,
+      live,
+      lastReclaim,
+      activeSessions: [...activeSessions],
+      config: gcConfig
+    });
+  } catch (e) {
+    sendToDaemon({ type: 'sessionStatusResult', requestId, success: false, error: e.message });
+  }
 }
 
 async function cmdGetOperationLog(requestId) {
@@ -1878,11 +2160,27 @@ function ensureGroupGcAlarm() {
 }
 
 async function handleSessionUpdate(msg) {
-  activeSessions = new Set(Array.isArray(msg.activeSessions) ? msg.activeSessions : []);
+  const ids = Array.isArray(msg.activeSessions) ? msg.activeSessions.filter(id => typeof id === 'string') : [];
+  activeSessions = new Set(ids);
+  // 新版服务端会下发完整身份列表；旧版只有实例键列表 → 归属键退化为实例键本身（不自动认领）
+  const sessions = Array.isArray(msg.sessions) ? msg.sessions : null;
+  activeSessionInfo.clear();
+  if (sessions && sessions.length) {
+    for (const s of sessions) {
+      if (!s || typeof s.instanceKey !== 'string') continue;
+      activeSessionInfo.set(s.instanceKey, {
+        agentKey: typeof s.agentKey === 'string' && s.agentKey ? s.agentKey : s.instanceKey,
+        scope: s.scope === 'session' ? 'session' : 'host'
+      });
+    }
+  } else {
+    for (const id of ids) activeSessionInfo.set(id, { agentKey: id, scope: 'host' });
+  }
   if (msg.config) {
     gcConfig = {
       ttlMinutes: Number.isFinite(msg.config.ttlMinutes) ? msg.config.ttlMinutes : DEFAULT_GROUP_TTL_MINUTES,
-      maxGroups: Number.isFinite(msg.config.maxGroups) && msg.config.maxGroups > 0 ? msg.config.maxGroups : DEFAULT_MAX_GROUPS
+      maxGroups: Number.isFinite(msg.config.maxGroups) && msg.config.maxGroups > 0 ? msg.config.maxGroups : DEFAULT_MAX_GROUPS,
+      allowCrossAgentReclaim: msg.config.allowCrossAgentReclaim === true
     };
     await chrome.storage.local.set({ gcConfig });
   }
@@ -1906,8 +2204,8 @@ async function setGroupIdleState(sessionId, idle) {
   entry.lastActiveAt = Date.now();
   try {
     await chrome.tabGroups.update(entry.groupId, idle
-      ? { title: groupTitle(sessionId, true), color: 'grey', collapsed: true }
-      : { title: groupTitle(sessionId, false), color: entry.color || pickGroupColor(groups), collapsed: false });
+      ? { title: groupTitle(sessionId, true, entry), color: 'grey', collapsed: true }
+      : { title: groupTitle(sessionId, false, entry), color: entry.color || pickGroupColor(groups), collapsed: false });
   } catch {
     delete groups[sessionId];
   }
@@ -1980,17 +2278,21 @@ async function getSessionSummaries() {
   const groups = await getSessionGroups();
   const sessions = [];
   for (const sessionId of Object.keys(groups)) {
+    const entry = groups[sessionId];
     let tabCount = 0;
     try {
-      tabCount = (await chrome.tabs.query({ groupId: groups[sessionId].groupId })).length;
+      tabCount = (await chrome.tabs.query({ groupId: entry.groupId })).length;
     } catch {
       continue;
     }
     sessions.push({
       sessionId,
-      state: groups[sessionId].state,
+      instanceKey: sessionId,
+      agentKey: entry.agentKey || sessionId,
+      scope: entry.scope || 'host',
+      state: entry.state,
       tabCount,
-      title: groupTitle(sessionId, groups[sessionId].state === 'idle'),
+      title: groupTitle(sessionId, entry.state === 'idle', entry),
       active: activeSessions.has(sessionId)
     });
   }

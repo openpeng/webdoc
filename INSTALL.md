@@ -76,17 +76,33 @@ Both ports bind to `127.0.0.1` by default (`WEBPILOT_HOST` overrides the bridge 
 
 ### Tab-group session model
 
-Every MCP process derives a stable session id from the MCP client name plus its working directory. The extension isolates each session into its own Chrome tab group named `WebPilot·{short-id}`:
+Every MCP process derives **two** identity keys. They are deliberately separate, because one key cannot satisfy both isolation and restart-reuse:
 
-- Commands without an explicit `tabId` operate on the most recently used tab **inside that session's group** (a new tab is created in the group if it has none).
-- Commands with an explicit `tabId` that belongs to another session's group are rejected, so parallel agents cannot interfere with each other.
+| Key | Meaning | Derivation |
+| --- | --- | --- |
+| `agentKey` | Ownership — which logical session this is; decides which group a restarting session reclaims | `WEBPILOT_SESSION_ID` when the host injects one, otherwise the MCP client name plus a hash of the working directory |
+| `instanceKey` | Isolation — which live session instance this is; decides the tab group and the default tab | `agentKey` plus a per-process suffix (pid + start time + random), so every concurrent process is unique |
+
+The extension gives every **instance** its own Chrome tab group named `WebPilot·{agent}-{instance}`:
+
+- Commands without an explicit `tabId` operate on the most recently used tab **inside that instance's group** (a new tab is created in the group if it has none).
+- Commands with an explicit `tabId` that belongs to another instance's group are rejected — including another instance that shares the same `agentKey` — so parallel agents cannot interfere with each other.
+- `list_tabs` only returns tabs from the caller's own group plus the user's ungrouped tabs; other sessions' pages are not exposed.
 - Different groups run in parallel; commands on the same tab run one at a time; screenshot/click-at briefly focus the tab under a global foreground lock.
 
-### Group lifecycle
+Because the `agentKey` fallback (client name + working directory) is only **host-level**, several sessions of the same host can share it. The isolation key still separates them, but restart-reuse can then be ambiguous — see below.
 
-- When a session's MCP process disconnects, its group is marked idle: the title gains an `·idle` suffix, the group turns grey and collapses. A returning session with the same id reclaims its group.
-- Idle groups are garbage-collected after a TTL (default 30 minutes, env `WEBPILOT_GROUP_TTL_MIN` on the leader process) and the total number of groups is capped (default 5, env `WEBPILOT_MAX_GROUPS`; the oldest idle groups are closed first).
+### Group lifecycle and reclaiming
+
+- When a session's MCP process disconnects, its group is marked idle: the title gains an `·idle` suffix, the group turns grey and collapses. The tabs and their login state are kept.
+- A restarting session **reclaims** its own idle group and lands on the same page it used before. Reclaiming follows a safety ladder:
+  1. `agentKey` is session-scoped (`WEBPILOT_SESSION_ID` injected) → the most recent idle group with that `agentKey` is reclaimed.
+  2. `agentKey` is host-scoped but exactly one idle group matches and no sibling instance shares the key → that group is reclaimed.
+  3. Otherwise nothing is reclaimed and a fresh group is created, so a session can never inherit another session's tabs or login state.
+- Manual reclaim: the `claim_session` tool (`groupId` or `agentKey`) hands a specific idle group to the calling session.
+- Idle groups are garbage-collected after a TTL (default 30 minutes, env `WEBPILOT_GROUP_TTL_MIN` on the leader process) and the total number of groups is capped (default 5, env `WEBPILOT_MAX_GROUPS`; the oldest idle groups are closed first). The cap counts **live instances**, so raise it when more agents run in parallel.
 - Manual cleanup: the extension popup has a **清理闲置组** button, and MCP clients can call the `cleanup_sessions` tool (`onlyIdle` defaults to `true`; pass a `sessionId` to close a specific group).
+- `browser_status` reports the current role, `agentKey`, `instanceKey`, scope and every group in the browser — the fastest way to see which session owns what.
 
 ## 3. Register the MCP Server
 
@@ -164,6 +180,15 @@ The extension enforces these controls locally, including for MCP clients:
 
 The MCP Server reads `WEBPILOT_PORT` (extension bridge, default `8765`), `WEBPILOT_HOST` (bridge interface, default `127.0.0.1`), `WEBPILOT_PROXY_PORT` (internal leader-follower proxy, default `WEBPILOT_PORT + 1`, i.e. `8766`), `WEBPILOT_PROXY_HOST` (proxy interface, default `127.0.0.1`), `WEBPILOT_LEADER_HOST` (leader host a follower dials, default `127.0.0.1`), and `WEBPILOT_AUTH_TOKEN` (remote bridge token, default empty — see below).
 
+Two further variables control session identity and group reuse:
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `WEBPILOT_SESSION_ID` | unset | The host injects a **per-session** unique id. It becomes the `agentKey`, which makes group reclaiming exact: a restarted session returns to its own group, and two sessions of the same host never share one. Inject it from the client that spawns the MCP server (one value per conversation). |
+| `WEBPILOT_ALLOW_CROSS_AGENT_RECLAIM` | `0` | Allows a session to adopt an idle group that belongs to a **different** `agentKey`. Off by default because that also inherits the other session's logged-in pages. |
+
+A host that starts several conversations of the same MCP client in one workspace should inject `WEBPILOT_SESSION_ID`; without it those conversations share one `agentKey` and therefore can only be isolated, not reclaimed precisely (the safety ladder above falls back to "create a fresh group").
+
 The extension's target address is configurable in its popup (**MCP server address**) and persisted in `chrome.storage`; it defaults to `ws://localhost:8765`. Changing the server port only requires updating that field — no source edit or extension reload is needed.
 
 Keep the bridge bound to `127.0.0.1` unless a remote extension must connect. Exposing it as `0.0.0.0` lets any reachable host drive the browser, so restrict it with a firewall, a reverse proxy with auth, or a private network. The internal proxy is loopback-only by default for the same reason.
@@ -198,7 +223,9 @@ WEBPILOT_HOST=0.0.0.0 WEBPILOT_AUTH_TOKEN=<your-secret> webpilot-mcp
 | Navigation is blocked | Add the target domain to the allowlist, including any expected redirect domain. |
 | Click or type is blocked | Disable read-only mode only when interaction is intended. |
 | Target element cannot be found | Ask the agent to call `get_page_info`, use a fresh `@eN` reference or accessible locator, and wait for the next page state with `wait_for`. |
-| A tab refuses commands ("belongs to another session") | The tab is inside another agent's `WebPilot·…` tab group. Omit `tabId` to work in your own group, or operate on tabs your session created. |
+| A tab refuses commands ("belongs to another session instance") | The tab is inside another session instance's `WebPilot·…` tab group. Omit `tabId` to work in your own group, or operate on tabs your session created. |
+| Two sessions of the same host interfere with each other | Both derived the same identity. The extension isolates them by instance key, but give each conversation its own `WEBPILOT_SESSION_ID` so ownership (and reclaiming) is unambiguous. Run `browser_status` to compare the reported `agentKey`/`instanceKey` values. |
+| A restarted session did not return to its previous page | Its `agentKey` is host-scoped and ambiguous, so the safety rules refused to reclaim. Inject `WEBPILOT_SESSION_ID`, or call `claim_session` with the target `groupId`. |
 | A `WebPilot·…` tab group disappeared | Idle groups are reclaimed by the TTL (`WEBPILOT_GROUP_TTL_MIN`, default 30 min) or the group cap (`WEBPILOT_MAX_GROUPS`, default 5). Just issue a new command — a fresh group is created automatically. |
 | Build fails | Verify the Node.js installation, delete only the project's generated dependency directory if appropriate, rerun `npm install`, then rerun `npm run build`. |
 

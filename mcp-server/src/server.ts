@@ -212,10 +212,18 @@ const server = new Server(
   }
 );
 
+// 工具名去重：严格客户端（如 @deepseek-ai/dsh-mcp-client）会把"同一工具名出现两次"的列表
+// 判定为无效并**整组拒绝**，导致该服务器所有工具都不可用。这里在返回前按名去重，
+// 既修掉当前 browser_task / task_workflow 的重复注册，也防止以后再次出现。
+function dedupeTools<T extends { name: string }>(tools: T[]): T[] {
+  const seen = new Set<string>();
+  return tools.filter((t) => (seen.has(t.name) ? false : (seen.add(t.name), true)));
+}
+
 // 工具列表
 server.setRequestHandler(ListToolsRequestSchema, async () => {
   return {
-    tools: [
+    tools: dedupeTools([
       {
         name: "navigate",
         description: "在浏览器中打开指定 URL。",
@@ -338,7 +346,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "evaluate",
-        description: "在页面上下文中安全执行 JS 表达式（有安全护栏）。",
+        description: "在页面上下文中执行 JavaScript（本地全权限模式：不做表达式护栏，支持多语句代码，可用 fetch、document.cookie、window.open 等页面真实全局）。",
         inputSchema: {
           type: "object" as const,
           properties: {
@@ -574,11 +582,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       },
       {
         name: "execute_js",
-        description: "Deprecated: arbitrary page JavaScript is disabled. Use inspect or probe_selector instead.",
+        description: "在页面中执行任意 JavaScript 代码（本地全权限模式；与 evaluate 等价，支持多语句代码体）。",
         inputSchema: {
           type: "object" as const,
           properties: {
-            script: { type: "string", description: "Deprecated and ignored." },
+            script: { type: "string", description: "要执行的 JavaScript：单个表达式或多语句代码体。" },
             tabId: { type: "number", description: "目标标签页 ID（可选）" },
           },
           required: ["script"],
@@ -643,6 +651,19 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           onlyIdle: { type: "boolean", description: "仅清理闲置组，默认 true" },
           sessionId: { type: "string" }
         }, required: [] }
+      },
+      {
+        name: "claim_session",
+        description: "认领一个闲置的 WebPilot 标签组到当前会话（自动认领不可用时的兜底）。",
+        inputSchema: { type: "object" as const, properties: {
+          groupId: { type: "number", description: "目标标签组 ID（浏览器标签组号）" },
+          agentKey: { type: "string", description: "目标归属键（与 groupId 二选一）" }
+        }, required: [] }
+      },
+      {
+        name: "browser_status",
+        description: "查看当前会话身份（归属键/实例键）、角色与浏览器侧会话标签组状态。",
+        inputSchema: { type: "object" as const, properties: {}, required: [] }
       },
       // ===== 合并工具：浏览器全局配置（合并 set_viewport/set_user_agent/set_timezone/set_geolocation/set_network_throttle） =====
       {
@@ -865,7 +886,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         required: ["action"],
       },
     },
-  ],
+  ]),
   };
 });
 
@@ -1041,9 +1062,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
 
       case "evaluate":
+      case "execute_js":
         result = await sendToExtension("evaluate", {
           tabId: args.tabId,
-          expression: args.expression,
+          expression: typeof args.expression === "string" ? args.expression : args.script,
           options: {
             globals: Array.isArray(args.globals) ? args.globals : [],
             timeoutMs: typeof args.timeoutMs === "number" ? args.timeoutMs : undefined,
@@ -1535,6 +1557,69 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: "text", text: lines.join("\n") }] };
       }
 
+      // ===== 会话运维 =====
+      case "get_action_log": {
+        const entries = bridge.actionLogEntries(typeof args.limit === "number" ? args.limit : 20);
+        const status = bridge.status();
+        const lines = entries.map((e: any) =>
+          `[${e.startedAt}] ${e.success ? "OK " : "ERR"} ${e.action} (${e.durationMs ?? "?"}ms) session=${e.session}` +
+          `${e.error ? ` — ${e.error}` : ""}`);
+        const header = [
+          `角色: ${status.role}`,
+          `归属键 agentKey: ${status.agentKey}`,
+          `实例键 instanceKey: ${status.instanceKey}`,
+          `归属粒度 scope: ${status.scope}`,
+          `活跃实例: ${status.activeSessions.length}`,
+          "---",
+        ].join("\n");
+        return { content: [{ type: "text", text: `${header}\n${lines.join("\n") || "(无操作记录)"}` }] };
+      }
+
+      case "cleanup_sessions": {
+        const r = await sendToExtension("cleanupSessions", {
+          options: {
+            onlyIdle: args.onlyIdle !== false,
+            sessionId: typeof args.sessionId === "string" ? args.sessionId : undefined,
+          },
+        });
+        return { content: [{ type: "text", text: `已清理 ${r.closed?.length ?? 0} 个组，剩余 ${r.remaining ?? "?"} 个` }] };
+      }
+
+      case "claim_session": {
+        const r = await sendToExtension("claimSession", {
+          options: {
+            groupId: typeof args.groupId === "number" ? args.groupId : undefined,
+            agentKey: typeof args.agentKey === "string" ? args.agentKey : undefined,
+          },
+        });
+        if (!r.success) return { content: [{ type: "text", text: `认领失败: ${r.error}` }], isError: true };
+        return { content: [{ type: "text", text: `认领成功: 标签组 ${r.groupId}（${r.tabCount} 个标签页）` }] };
+      }
+
+      case "browser_status": {
+        const status = bridge.status();
+        let browser: any = null;
+        try {
+          browser = await sendToExtension("getSessionStatus", {});
+        } catch (error: any) {
+          browser = { error: error.message };
+        }
+        return {
+          content: [{
+            type: "text",
+            text: JSON.stringify({
+              role: status.role,
+              agentKey: status.agentKey,
+              instanceKey: status.instanceKey,
+              scope: status.scope,
+              activeSessions: status.activeSessions,
+              sessions: status.sessions,
+              browser,
+            }, null, 2),
+          }],
+        };
+      }
+
       // ===== 合并工具：webmcp =====
       case "webmcp": {
         const action = args.action as string;
@@ -1572,11 +1657,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
   await bridge.start();
   const transport = new StdioServerTransport();
-  // initialize 完成后用 clientInfo.name 重新派生稳定 sessionId（同一窗口/项目重启不变）
+  // initialize 完成后用 clientInfo.name 重新派生归属键与实例键（同一窗口/项目重启归属键不变）
   server.oninitialized = () => {
     const clientInfo = server.getClientVersion();
     if (clientInfo?.name) bridge.setClientName(clientInfo.name);
-    console.error(`[WebPilot MCP] Session: ${bridge.sessionId} (role: ${bridge.role})`);
+    console.error(
+      `[WebPilot MCP] Session: agent=${bridge.agentKey} instance=${bridge.instanceKey} scope=${bridge.scope} (role: ${bridge.role})`,
+    );
   };
   await server.connect(transport);
   console.error(`[WebPilot MCP] Server running on stdio (role: ${bridge.role})`);
