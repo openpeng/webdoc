@@ -1,0 +1,91 @@
+WebPilot MCP Server — Dual-Use Disclosure
+==========================================
+
+This package is published under npm's Dual-Use Content Policy
+(https://docs.npmjs.com/policies/dual-use/) and is declared as
+`"contentPolicy": { "class": "dual-use" }` in package.json.
+
+The declaration is not an accusation. It is context for automated and human
+reviewers, because the capabilities below legitimately resemble the behaviour
+of malware to a scanner.
+
+
+1. What this package does
+-------------------------
+
+WebPilot is a Model Context Protocol (MCP) server that lets an AI coding agent
+drive a real, user-authenticated Chrome browser through a companion Chrome
+extension. It exposes browser automation primitives: navigation, clicking,
+typing, form filling, page snapshots, text/table extraction, page-script
+evaluation, and task/workflow automation.
+
+
+2. Why these capabilities may look malicious to an automated scanner
+--------------------------------------------------------------------
+
+- It executes caller-supplied JavaScript in the context of arbitrary web pages.
+- It drives a browser that already holds the user's logged-in sessions, so it
+  inherits whatever cookies and tokens that profile contains.
+- It installs a browser extension and runs a postinstall script on the
+  developer's machine.
+- It can navigate to any http(s) URL, extract page content, and issue
+  authenticated requests through the browser session.
+
+
+3. Legitimate use
+-----------------
+
+- Agent-driven web testing and regression testing of web applications.
+- Reading and extracting content from pages the operator can already reach,
+  including internal tools they are logged into.
+- Reproducing a bug report by driving the affected UI the way the reporter does.
+
+Every operation runs locally on the developer's own machine, against a browser
+the developer already controls. The package contains no obfuscation, does not
+fetch or execute code from a remote origin at runtime, and contains no
+fixtures with real account data.
+
+
+4. Network, filesystem, and process access
+------------------------------------------
+
+- Network: a local loopback WebSocket bridge between this server and the
+  Chrome extension, plus the web pages the operator explicitly navigates to.
+- Filesystem: reads only its own package files. The postinstall script prints
+  setup instructions and performs no file, network, or process mutation.
+- Processes: runs a local Node.js MCP server on stdio. It does not enumerate,
+  inject into, or spawn unrelated processes.
+
+
+5. Permissions required
+-----------------------
+
+- A Chrome/Chromium extension that the user loads in developer mode.
+- The user installs and runs the package themselves; it is not a transitive
+  dependency of other packages.
+- Browser access is limited to the tabs the user has open or that the agent
+  opens on their behalf.
+
+
+6. What users must not do with it
+---------------------------------
+
+- Do not point it at systems you are not authorized to access.
+- Do not use it to collect, exfiltrate, or share other people's credentials or
+  sessions.
+- Do not use the page-script evaluation facility outside the scope of the task
+  the user actually asked for.
+
+
+7. Review aids
+--------------
+
+- Source repository: https://github.com/openpeng/webdoc
+- The published tarball contains no generated binaries, no bundled
+  credentials, and no fixtures containing real account data.
+- The extension client is shipped unmodified under `browser-extension/`, so the
+  full client-side behaviour is reviewable alongside the server code.
+- The published tarball's shasum is recorded in the release commit for
+  `webpilot-mcp-server` v1.1.1.
+
+Maintainer contact: 578863660@qq.com

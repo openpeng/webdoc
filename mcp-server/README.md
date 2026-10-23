@@ -26,6 +26,13 @@ npx webpilot-mcp   # 或 npm install -g webpilot-mcp-server 后运行 webpilot-m
 npm run doctor   # 检查 Node 版本、构建产物、站点定义加载、桥接端口
 ```
 
+## 双用途声明
+
+本包依据 npm《Dual-Use Content Policy》发布，`package.json` 中声明了
+`"contentPolicy": { "class": "dual-use" }`，并随包提供根目录 `DISCLOSURE` 文件。
+浏览器自动化 + 复用登录态 + 页面脚本执行这类能力在自动化扫描眼中与恶意软件
+特征相近，因此在此说明包的能力范围与合规使用方式。完整内容见包内 `DISCLOSURE`。
+
 ## License
 
 MIT
