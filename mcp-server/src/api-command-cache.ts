@@ -13,7 +13,7 @@
  * 安全：加载侧与写入侧都做白名单重建；reason / errors[] / lastError / 日志字符串
  * 一律不含样本值、header 值或字面凭据（AC-17 / AC-20）。
  */
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import {
   SUPPORTED_SCHEMA_VERSION, CACHE_VERSION, CACHE_FILE_NAME,
@@ -26,6 +26,7 @@ import {
   API_PARAM_ALLOWED_KEYS, SCHEMA_FIELD_ALLOWED_KEYS, RESPONSE_SCHEMA_ALLOWED_KEYS,
   PARAM_RESERVED_NAMES, COMMAND_SOURCE_ORIGINS,
   ERROR_SAFE_MESSAGES, STALE_MANUAL_WARNING, NO_CACHE_LIST_WARNING,
+  CACHE_WRITE_SKIPPED_WARNING, CACHE_LOAD_FAILED_WARNING,
 } from "./api-command-types.js";
 import {
   normalizeHostname, isValidHostname, isSafeLiteral, isSensitiveFieldName,
@@ -63,6 +64,18 @@ export type InvalidateResult = { affected: number; remaining: number };
 type Rebuild<T> = { ok: true; value: T } | { ok: false };
 
 const EMPTY_DIFF: AnalysisDiff = { added: 0, updated: 0, removed: 0, skipped: 0, reviewRequired: 0 };
+
+/** tmp 文件名序号：pid + 时间戳之外再加序号，杜绝同毫秒并发写撞名。 */
+let tmpCounter = 0;
+
+/**
+ * 缓存 tmp 文件名：pid + 时间戳 + 序号。
+ *
+ * 多进程 / 同毫秒并发写时，各写各的 tmp，互不覆盖；随后 rename 到目标文件仍是原子的。
+ */
+export function buildCacheTmpName(file: string, seq: number, now: number, pid: number): string {
+  return `${file}.tmp-${pid}-${now}-${seq}`;
+}
 
 // ===========================================================================
 // 默认路径（doctor 与缓存管理器共用，避免重复解析环境变量）
@@ -574,9 +587,15 @@ export function rewriteCommandHost(raw: unknown, host: string): any {
 }
 
 export class ApiCommandCache {
-  private readonly domains = new Map<string, DomainBucket>();
+  private domains = new Map<string, DomainBucket>();
   private readonly file: string;
   private loaded = false;
+  /** 读盘失败（IO 错误 / 结构非法）：本进程没有可信的磁盘视图，写盘时只写自己改动的域名。 */
+  private loadFailed = false;
+  /** 本进程改动过的 hostname：写盘合并时以内存为准，其余域名以磁盘为准。 */
+  private readonly dirtyHosts = new Set<string>();
+  /** 写盘串行化：同进程内多个写请求排队，避免交错写同一个文件。 */
+  private writeChain: Promise<void> = Promise.resolve();
   private diag: CacheLoadDiagnostics = { skippedInvalid: [], errors: [] };
 
   constructor(file?: string) {
@@ -587,21 +606,18 @@ export class ApiCommandCache {
   async ensureLoaded(): Promise<void> {
     if (this.loaded) return;
     this.loaded = true;
-    let text: string;
-    try {
-      text = await readFile(this.file, "utf8");
-    } catch (error: any) {
-      if (error?.code !== "ENOENT") {
-        const detail = sanitizeErrorMessage(String(error?.message ?? "")) || ERROR_SAFE_MESSAGES.WRITE_FAILED;
-        this.diag.errors.push({ source: this.file, error: `读取缓存失败：${detail}` });
-        console.error(`${API_LOG_PREFIX} could not load cache file: ${detail}`);
-      }
+    const read = await this.readCacheText();
+    if (read.kind === "missing") return;
+    if (read.kind === "unreadable") {
+      this.loadFailed = true;
+      this.diag.errors.push({ source: this.file, error: `读取缓存失败：${read.reason}` });
+      console.error(`${API_LOG_PREFIX} could not load cache file: ${read.reason}`);
       return;
     }
 
     let parsed: any;
     try {
-      parsed = JSON.parse(text);
+      parsed = JSON.parse(read.text);
     } catch {
       const backup = `${this.file}.corrupt-${Date.now()}`;
       try {
@@ -618,6 +634,7 @@ export class ApiCommandCache {
 
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
       || !parsed.domains || typeof parsed.domains !== "object" || Array.isArray(parsed.domains)) {
+      this.loadFailed = true;
       this.diag.errors.push({ source: this.file, error: "缓存文件结构非法（缺少 domains 对象），已忽略" });
       return;
     }
@@ -628,50 +645,150 @@ export class ApiCommandCache {
         error: `缓存文件 version ${parsed.version} 高于支持版本 ${CACHE_VERSION}，仅按已知字段加载`,
       });
     }
+    this.domains = this.parseDomains(parsed, this.diag);
+  }
 
+  /** 读缓存文件原文：区分「不存在」「读失败」「读到内容」。 */
+  protected async readCacheText(): Promise<
+    { kind: "ok"; text: string }
+    | { kind: "missing" }
+    | { kind: "unreadable"; reason: string }
+  > {
+    try {
+      const text = await readFile(this.file, "utf8");
+      return { kind: "ok", text };
+    } catch (error: any) {
+      if (error?.code === "ENOENT") return { kind: "missing" };
+      const detail = sanitizeErrorMessage(String(error?.message ?? "")) || ERROR_SAFE_MESSAGES.WRITE_FAILED;
+      return { kind: "unreadable", reason: detail };
+    }
+  }
+
+  /** 解析 domains 分组；非法 hostname / 非法分组只跳过该条，其余照常加载。 */
+  private parseDomains(parsed: any, diag: CacheLoadDiagnostics): Map<string, DomainBucket> {
+    const domains = new Map<string, DomainBucket>();
     for (const [rawHost, rawBucket] of Object.entries(parsed.domains)) {
       const host = normalizeHostname(rawHost);
       if (!isValidHostname(host)) {
-        this.diag.errors.push({ source: String(rawHost), error: "hostname 非法，已跳过该域名分组" });
-        this.diag.skippedInvalid.push({ host: String(rawHost), reason: "hostname 非法（含协议/路径/端口/通配符）" });
+        diag.errors.push({ source: String(rawHost), error: "hostname 非法，已跳过该域名分组" });
+        diag.skippedInvalid.push({ host: String(rawHost), reason: "hostname 非法（含协议/路径/端口/通配符）" });
         continue;
       }
       const bucket = rawBucket as any;
       if (!bucket || typeof bucket !== "object" || !Array.isArray(bucket.commands)) {
-        this.diag.errors.push({ source: host, error: "域名分组结构非法，已跳过" });
-        this.diag.skippedInvalid.push({ host, reason: "commands 不是数组" });
+        diag.errors.push({ source: host, error: "域名分组结构非法，已跳过" });
+        diag.skippedInvalid.push({ host, reason: "commands 不是数组" });
         continue;
       }
       const commands: ApiCommand[] = [];
       for (const rawCommand of bucket.commands) {
-        const command = toCommand(rawCommand, host, this.diag);
+        const command = toCommand(rawCommand, host, diag);
         if (command) commands.push(command);
       }
-      this.domains.set(host, {
+      domains.set(host, {
         host,
         updatedAt: isoOr(bucket.updatedAt, EPOCH_ISO),
         commands,
       });
     }
+    return domains;
   }
 
-  /** 原子写：先写 .tmp 再 rename；写失败只告警，绝不阻断调用链路。 */
-  private async persist(): Promise<void> {
-    const domains: Record<string, DomainBucket> = {};
-    for (const [host, bucket] of this.domains) {
-      domains[host] = { host, updatedAt: bucket.updatedAt, commands: bucket.commands };
-    }
-    const payload: ApiCommandCacheFile = {
-      version: CACHE_VERSION,
-      generatedBy: GENERATED_BY,
-      updatedAt: new Date().toISOString(),
-      domains,
-    };
+  /**
+   * 写盘前重读磁盘，返回当前磁盘上的域名视图。
+   * - ok：可读且结构合法，磁盘内容可信；
+   * - unusable：读得到但内容不可用（JSON 非法 / 缺 domains）——旧数据本来就取不出来；
+   * - unreadable：IO 读失败，磁盘状态未知——宁可不写，也不拿内存快照覆盖它。
+   */
+  private async readDiskView(): Promise<
+    { kind: "ok"; domains: Map<string, DomainBucket> }
+    | { kind: "unusable"; reason: string }
+    | { kind: "unreadable"; reason: string }
+  > {
+    const read = await this.readCacheText();
+    if (read.kind === "missing") return { kind: "ok", domains: new Map() };
+    if (read.kind === "unreadable") return { kind: "unreadable", reason: read.reason };
+    let parsed: any;
     try {
-      await mkdir(dirname(this.file), { recursive: true });
-      const tmp = `${this.file}.tmp`;
-      await writeFile(tmp, JSON.stringify(payload, null, 2), "utf8");
-      await rename(tmp, this.file);
+      parsed = JSON.parse(read.text);
+    } catch {
+      return { kind: "unusable", reason: "缓存 JSON 解析失败" };
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
+      || !parsed.domains || typeof parsed.domains !== "object" || Array.isArray(parsed.domains)) {
+      return { kind: "unusable", reason: "缓存文件结构非法（缺少 domains 对象）" };
+    }
+    const localDiag: CacheLoadDiagnostics = { skippedInvalid: [], errors: [] };
+    return { kind: "ok", domains: this.parseDomains(parsed, localDiag) };
+  }
+
+  /** 标记本进程改动过的 hostname：写盘合并时该域名以内存为准。 */
+  private markDirty(host: string): void {
+    this.dirtyHosts.add(normalizeHostname(host));
+  }
+
+  /**
+   * 原子写：先写唯一 tmp 再 rename；写失败只告警，绝不阻断调用链路。
+   *
+   * 写盘前先重读磁盘并按 hostname 合并（AC-9）：
+   *  - 本进程改动过的域名 → 以内存为准；
+   *  - 未改动的域名 → 以磁盘为准（含磁盘上已删除的域名）；
+   *  - 磁盘读不出来（IO 失败）→ 整次写入跳过，不用内存快照覆盖磁盘上的既有数据。
+   */
+  private async persist(): Promise<void> {
+    const run = this.writeChain.then(() => this.persistNow());
+    this.writeChain = run.then(() => undefined, () => undefined);
+    await run;
+  }
+
+  private async persistNow(): Promise<void> {
+    try {
+      const dirty = new Set(this.dirtyHosts);
+      const disk = await this.readDiskView();
+      if (disk.kind === "unreadable") {
+        this.diag.errors.push({ source: this.file, error: CACHE_WRITE_SKIPPED_WARNING });
+        console.error(`${API_LOG_PREFIX} ${CACHE_WRITE_SKIPPED_WARNING}`);
+        return;
+      }
+      if (dirty.size === 0) return;
+
+      const merged = new Map<string, DomainBucket>();
+      if (disk.kind === "ok") {
+        for (const [host, bucket] of disk.domains) {
+          if (!dirty.has(host)) merged.set(host, bucket);
+        }
+      }
+      for (const [host, bucket] of this.domains) {
+        // 磁盘不可用时以内存为准；磁盘可用时只写本进程改动过的域名。
+        if (dirty.has(host) || disk.kind !== "ok") merged.set(host, bucket);
+      }
+
+      const domains: Record<string, DomainBucket> = {};
+      for (const [host, bucket] of merged) {
+        domains[host] = { host, updatedAt: bucket.updatedAt, commands: bucket.commands };
+      }
+      const payload: ApiCommandCacheFile = {
+        version: CACHE_VERSION,
+        generatedBy: GENERATED_BY,
+        updatedAt: new Date().toISOString(),
+        domains,
+      };
+      // tmp 名唯一：pid + 时间戳 + 序号，避免多进程 / 同毫秒并发写互相覆盖 tmp。
+      const tmp = buildCacheTmpName(this.file, tmpCounter++, Date.now(), process.pid);
+      try {
+        await mkdir(dirname(this.file), { recursive: true });
+        await writeFile(tmp, JSON.stringify(payload, null, 2), "utf8");
+        await rename(tmp, this.file);
+      } catch (error: any) {
+        const detail = sanitizeErrorMessage(String(error?.message ?? "")) || ERROR_SAFE_MESSAGES.WRITE_FAILED;
+        console.error(`${API_LOG_PREFIX} could not persist cache: ${detail}`);
+        try { await unlink(tmp); } catch { /* tmp 清理失败不影响主流程 */ }
+        return;
+      }
+      // 写成功：内存视图与磁盘对齐，脏标记清空（后续写入重新以磁盘为权威）。
+      this.domains.clear();
+      for (const [host, bucket] of merged) this.domains.set(host, bucket);
+      this.dirtyHosts.clear();
     } catch (error: any) {
       const detail = sanitizeErrorMessage(String(error?.message ?? "")) || ERROR_SAFE_MESSAGES.WRITE_FAILED;
       console.error(`${API_LOG_PREFIX} could not persist cache: ${detail}`);
@@ -688,6 +805,7 @@ export class ApiCommandCache {
     const host = normalizeHostname(domain);
     const warnings: string[] = [];
     for (const entry of this.diag.errors.slice(-5)) warnings.push(`缓存加载告警：${entry.error}`);
+    if (this.loadFailed) warnings.push(CACHE_LOAD_FAILED_WARNING);
     const bucket = this.bucket(host);
     if (!bucket) {
       warnings.push(NO_CACHE_LIST_WARNING);
@@ -844,6 +962,7 @@ export class ApiCommandCache {
 
     bucket.commands = next;
     bucket.updatedAt = now;
+    this.markDirty(host);
     await this.persist();
     return { diff, preservedManualEdits, stale, warnings };
   }
@@ -955,6 +1074,7 @@ export class ApiCommandCache {
     skipped += rawCommands.length - clean.length;
     bucket.updatedAt = now;
     this.domains.set(host, bucket);
+    this.markDirty(host);
     await this.persist();
     return { domain: host, imported, skipped, path: filePath, warnings };
   }
@@ -983,6 +1103,7 @@ export class ApiCommandCache {
     command.manuallyEdited = true;
     command.updatedAt = new Date().toISOString();
     bucket.updatedAt = command.updatedAt;
+    this.markDirty(host);
     await this.persist();
     return command;
   }
@@ -996,6 +1117,8 @@ export class ApiCommandCache {
     const now = new Date().toISOString();
     if (opts.action === "clear_domain") {
       const affected = bucket.commands.length;
+      // 先标脏再删：写盘合并时该域名以内存（已删除）为准，否则会被磁盘上的旧值复活。
+      this.markDirty(host);
       this.domains.delete(host);
       await this.persist();
       return { affected, remaining: 0 };
@@ -1015,7 +1138,10 @@ export class ApiCommandCache {
         }
       }
     }
-    if (affected > 0) bucket.updatedAt = now;
+    if (affected > 0) {
+      bucket.updatedAt = now;
+      this.markDirty(host);
+    }
     await this.persist();
     return { affected, remaining: bucket.commands.length };
   }
@@ -1037,6 +1163,7 @@ export class ApiCommandCache {
     command.health.totalDurationMs += Number.isFinite(durationMs) && durationMs > 0 ? durationMs : 0;
     command.updatedAt = now;
     bucket.updatedAt = now;
+    this.markDirty(bucket.host);
     await this.persist();
   }
 
@@ -1058,6 +1185,7 @@ export class ApiCommandCache {
       command.health.lastError = safeMessage;
       command.updatedAt = now;
       bucket.updatedAt = now;
+      this.markDirty(bucket.host);
       await this.persist();
       return;
     }
@@ -1068,6 +1196,7 @@ export class ApiCommandCache {
     command.updatedAt = now;
     if (command.health.consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) command.health.disabled = true;
     bucket.updatedAt = now;
+    this.markDirty(bucket.host);
     await this.persist();
   }
 
@@ -1081,6 +1210,7 @@ export class ApiCommandCache {
     command.health.drifted = true;
     command.updatedAt = new Date().toISOString();
     bucket.updatedAt = command.updatedAt;
+    this.markDirty(bucket.host);
     await this.persist();
   }
 
@@ -1143,6 +1273,7 @@ export class ApiCommandCache {
       skippedInvalid: [...this.diag.skippedInvalid],
       errors: [...this.diag.errors],
       ...(this.diag.backupFile ? { backupFile: this.diag.backupFile } : {}),
+      ...(this.loadFailed ? { loadFailed: true } : {}),
     };
   }
 }

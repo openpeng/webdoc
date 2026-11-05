@@ -3,15 +3,16 @@
 // （AC-11/13/14/15/16/17/18/19/20/27）。
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile, rm, access } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm, access, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  ApiCommandCache, toCommand, defaultApiCommandCacheFile,
+  ApiCommandCache, toCommand, defaultApiCommandCacheFile, buildCacheTmpName,
 } from "../dist/api-command-cache.js";
 import { generateCommands } from "../dist/api-command-generator.js";
 import {
   ERROR_SAFE_MESSAGES, STALE_MANUAL_WARNING, CACHE_FILE_NAME,
+  CACHE_WRITE_SKIPPED_WARNING, CACHE_LOAD_FAILED_WARNING,
 } from "../dist/api-command-types.js";
 
 const DOMAIN = "api.example.com";
@@ -56,6 +57,30 @@ const clone = (base, id, mutate = () => {}) => {
 const ownKey = (obj, key, value) => Object.defineProperty(obj, key, {
   value, enumerable: true, writable: true, configurable: true,
 });
+
+// 为任意域名生成一条合法命令（跨进程 / 跨域名一致性用例用）
+function makeCommandsFor(host) {
+  return generateCommands([
+    { method: "GET", pathTemplate: "/v1/users/{id}", pathParams: ["id"], host,
+      records: [baseRec({ host })] },
+  ], { domain: host, analysisId: "an_cache", generatedBy: "1.1.1",
+       schema: new Map(), now: NOW }).commands;
+}
+
+// 可控读失败的缓存实例：failures>0 时读盘一律失败（模拟 IO 错误 / 锁占用）
+class FlakyCache extends ApiCommandCache {
+  constructor(file, failures = 1) {
+    super(file);
+    this.failures = failures;
+  }
+  async readCacheText() {
+    if (this.failures > 0) {
+      this.failures -= 1;
+      return { kind: "unreadable", reason: "模拟读盘失败" };
+    }
+    return super.readCacheText();
+  }
+}
 
 test("落盘 JSON → 新实例加载仍命中（AC-11）", async (t) => {
   const { file } = await withTemp(t);
@@ -495,4 +520,84 @@ test("超长字段 / 凭据 note 被跳过，超长 responseFields 被丢弃，t
     if (prev === undefined) delete process.env.WEBPILOT_API_COMMAND_DIR;
     else process.env.WEBPILOT_API_COMMAND_DIR = prev;
   }
+});
+
+// ---------------------------------------------------------------------------
+// T6 缓存一致性：写盘前重读合并 + 唯一 tmp 名 + loadFailed 保护（AC-9）
+// ---------------------------------------------------------------------------
+
+test("T6：两个进程先后写不同域名，磁盘上两个域名的命令都存在（AC-9）", async (t) => {
+  const { file } = await withTemp(t);
+  const hostA = "a.example.com";
+  const hostB = "b.example.com";
+
+  // 进程 A 先加载（此刻磁盘为空）→ 进程 B 写 hostB → 进程 A 再写 hostA。
+  // 基线行为：进程 A 用自己的旧快照整片覆盖磁盘，hostB 被抹除。
+  const cacheA = new ApiCommandCache(file);
+  await cacheA.ensureLoaded();
+  const cacheB = new ApiCommandCache(file);
+  await cacheB.merge(hostB, makeCommandsFor(hostB), { mode: "full", overwriteManual: false });
+  await cacheA.merge(hostA, makeCommandsFor(hostA), { mode: "full", overwriteManual: false });
+
+  const raw = JSON.parse(await readFile(file, "utf8"));
+  assert.ok(raw.domains[hostA], "先写者的域名必须仍在磁盘上");
+  assert.ok(raw.domains[hostB], "后写者不得抹掉先写者的域名");
+  assert.equal(raw.domains[hostA].commands.length, 1);
+  assert.equal(raw.domains[hostB].commands.length, 1);
+
+  // 两个域名各自重新加载都能命中
+  assert.equal((await new ApiCommandCache(file).list(hostA)).total, 1);
+  assert.equal((await new ApiCommandCache(file).list(hostB)).total, 1);
+});
+
+test("T6：tmp 文件名唯一（含 pid + 时间戳 + 序号），写盘不残留 tmp 文件", async (t) => {
+  const { dir, file } = await withTemp(t);
+  const name = buildCacheTmpName(file, 0, 1767225600000, 4321);
+  assert.match(name, /\.tmp-4321-1767225600000-0$/, "tmp 名必须含 pid 与时间戳");
+  assert.notEqual(
+    buildCacheTmpName(file, 0, 1767225600000, 4321),
+    buildCacheTmpName(file, 1, 1767225600000, 4321),
+    "同毫秒同 pid 下序号不同，tmp 名不得撞名",
+  );
+
+  const cache = new ApiCommandCache(file);
+  await cache.merge(DOMAIN, makeCommands(), { mode: "full", overwriteManual: false });
+  const left = (await readdir(dir)).filter((name) => name.includes(".tmp"));
+  assert.deepEqual(left, [], "写盘完成后不得残留 tmp 文件");
+});
+
+test("T6：读盘失败（结构非法）时只写本次新增的域名，其余域名以磁盘为准", async (t) => {
+  const { file } = await withTemp(t);
+  const hostA = "a.example.com";
+  const hostX = "x.example.com";
+  // 磁盘上已有 hostA 的合法命令
+  await writeRaw(file, bucket(makeCommandsFor(hostA), hostA));
+
+  // 首次读盘失败（结构非法 → loadFailed），第二次读盘恢复正常
+  const flaky = new FlakyCache(file, 1);
+  await flaky.ensureLoaded();
+  assert.equal(flaky.diagnostics().loadFailed, true, "读盘失败必须被标记");
+
+  await flaky.merge(hostX, makeCommandsFor(hostX), { mode: "full", overwriteManual: false });
+  const raw = JSON.parse(await readFile(file, "utf8"));
+  assert.ok(raw.domains[hostA], "读盘失败状态下也不得抹掉磁盘上已有的域名");
+  assert.ok(raw.domains[hostX], "本次新增的域名必须落盘");
+});
+
+test("T6：磁盘读不出来时整次写盘跳过，不用内存快照覆盖磁盘既有数据", async (t) => {
+  const { file } = await withTemp(t);
+  const hostA = "a.example.com";
+  const hostX = "x.example.com";
+  await writeRaw(file, bucket(makeCommandsFor(hostA), hostA));
+  const before = await readFile(file, "utf8");
+
+  const broken = new FlakyCache(file, Number.POSITIVE_INFINITY);
+  await broken.merge(hostX, makeCommandsFor(hostX), { mode: "full", overwriteManual: false });
+
+  assert.equal(await readFile(file, "utf8"), before, "磁盘状态未知时磁盘内容必须原样保留");
+  const diag = broken.diagnostics();
+  assert.equal(diag.loadFailed, true);
+  assert.ok(diag.errors.some((e) => e.error === CACHE_WRITE_SKIPPED_WARNING), "必须记录跳过写盘告警");
+  const listed = await broken.list(hostX);
+  assert.ok(listed.warnings.includes(CACHE_LOAD_FAILED_WARNING), "读盘失败必须在 list 里告警");
 });
