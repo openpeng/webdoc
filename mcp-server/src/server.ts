@@ -1084,7 +1084,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     },
     {
       name: "invalidate_api_commands",
-      description: "使缓存失效：action=disable / delete（单命令）/ clear_domain（整域名）。",
+      description: "使缓存失效：action=disable / delete（单命令）/ clear_domain（整域名）。action 必须是这三个字面量之一，缺失或非法一律 INVALID_PARAMS（不会兜底成整域删除）。",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -1980,7 +1980,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return apiToolCall(async () => apiCommandService.invalidate({
           domain: await resolveDomainArg(args),
           commandId: typeof args.commandId === "string" ? args.commandId : undefined,
-          action: args.action === "disable" || args.action === "delete" ? args.action : "clear_domain",
+          // action 原样透传：缺失或非法由服务层判 INVALID_PARAMS，不兜底成 clear_domain（AC-10）。
+          action: typeof args.action === "string" ? args.action : "",
         }));
 
       case "get_api_command_cache":
