@@ -61,7 +61,7 @@ import {
   BAIDU_AI_SEARCH_ORIGIN, BAIDU_AI_SEARCH_PATH,
   BAIDU_BAIKAN_SSE_ORIGIN, BAIDU_BAIKAN_SSE_PATH,
   buildBaiduAiSearchUrl, buildBaiduBaikanRequestBody, buildBaiduBaikanSseUrl,
-  extractBaiduAiAnswer, parseBaiduBaikanSse,
+  extractBaiduAiAnswer, parseBaiduBaikanSse, baikanSseEnded,
 } from "./baidu-ai-search.js";
 import type { BaiduAiAnswer } from "./baidu-ai-search.js";
 
@@ -484,10 +484,14 @@ export class ApiCommandService {
 
     const startedAt = Date.now();
     const timeout = clampInt(args.timeoutMs, 3000, AI_SEARCH_SSE_TIMEOUT_MS, AI_SEARCH_SSE_TIMEOUT_MS);
+    // timeoutMs 是**跨通道总预算**：主通道 + 兜底通道共用一个 deadline。
+    // 基线是每条通道各拿一整份 timeout，最坏总耗时翻倍（调用方以为 25s，实际可能 50s+）。
+    const deadline = startedAt + timeout;
+    const remaining = (): number => Math.max(0, deadline - Date.now());
     const warnings: string[] = [];
 
     // ① 主通道：SSE 生成流。
-    const sse = await this.fetchBaikanSse(query, timeout);
+    const sse = await this.fetchBaikanSse(query, remaining());
     if (sse.ok) {
       const parsed = parseBaiduBaikanSse(sse.text, {
         maxChars: args.maxChars,
@@ -502,8 +506,11 @@ export class ApiCommandService {
       warnings.push(`主通道未连通（${sse.reason}），已尝试兜底通道`);
     }
 
-    // ② 兜底：移动站 SSR data block。
-    const fallback = await this.fetchMobileSearchHtml(query, timeout);
+    // ② 兜底：移动站 SSR data block（剩余预算为 0 时直接放弃，不再空转）。
+    if (remaining() <= 0) {
+      throw new ServiceError("NETWORK_ERROR", `未能取到 AI 答案：总超时预算已耗尽（${timeout}ms）`);
+    }
+    const fallback = await this.fetchMobileSearchHtml(query, remaining());
     if (!fallback.html) {
       throw new ServiceError("NETWORK_ERROR", `未能取到 AI 答案：${fallback.reason || "两条通道均失败"}`);
     }
@@ -542,7 +549,10 @@ export class ApiCommandService {
   }
 
   /**
-   * 主通道取流：POST 固定 body，把整段 SSE 读成字符串。
+   * 主通道取流：POST 固定 body，**流式**读 SSE。
+   *
+   * 逐段读取（ReadableStream reader），收到结束标记（state=generate-complete / endTurn=true）
+   * 立刻收尾返回 —— 不必等服务端把连接关掉。
    *
    * 只读、无凭据、无 cookie；超时或网络错误返回 ok:false 且带原因，由调用方决定是否兜底。
    */
@@ -568,9 +578,48 @@ export class ApiCommandService {
         signal: controller.signal,
       });
       if (!response.ok) return { ok: false, text: "", reason: `HTTP ${response.status}` };
-      const text = await response.text();
-      if (text.length > AI_SEARCH_MAX_SSE_BYTES) {
-        return { ok: false, text: "", reason: "SSE 响应超过体积上限" };
+
+      const stream = (response as any).body as ReadableStream<Uint8Array> | null | undefined;
+      if (!stream || typeof stream.getReader !== "function") {
+        // 环境不支持流式读取（老 Node / mock）：退回整段读文本。
+        const text = await response.text();
+        if (text.length > AI_SEARCH_MAX_SSE_BYTES) {
+          return { ok: false, text: "", reason: "SSE 响应超过体积上限" };
+        }
+        return { ok: true, text, reason: "" };
+      }
+
+      const reader = stream.getReader();
+      const decoder = new TextDecoder();
+      let text = "";
+      let bytes = 0;
+      try {
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) {
+            bytes += value.byteLength ?? 0;
+            if (bytes > AI_SEARCH_MAX_SSE_BYTES) {
+              try { await reader.cancel(); } catch { /* 取消失败不影响返回 */ }
+              return { ok: false, text: "", reason: "SSE 响应超过体积上限" };
+            }
+            text += decoder.decode(value, { stream: true });
+          }
+          // 收到结束标记就收尾：不等服务端关连接。
+          if (baikanSseEnded(text)) {
+            try { await reader.cancel(); } catch { /* 取消失败不影响返回 */ }
+            break;
+          }
+        }
+        text += decoder.decode();
+      } catch (error) {
+        // 读流中途失败：已收到的片段照样返回（半截答案优于报错）。
+        if (text.length === 0) {
+          const reason = error instanceof Error && error.name === "AbortError" ? "生成超时" : "网络请求失败";
+          return { ok: false, text: "", reason };
+        }
+      } finally {
+        try { reader.releaseLock?.(); } catch { /* 解锁失败不影响返回 */ }
       }
       return { ok: true, text, reason: "" };
     } catch (error) {
@@ -586,6 +635,9 @@ export class ApiCommandService {
    *
    * 顺序：扩展（浏览器指纹，绕开 Node 侧 IP 风控）→ Node 直读（带退避重试）。
    * 两条都失败时返回空 html + 原因，不抛错（由调用方决定错误文案）。
+   *
+   * timeoutMs 是**这一层的总预算**：扩展 + 全部重试 + 退避等待共用一个 deadline，
+   * 不会因为重试次数把调用方的超时预期翻好几倍。
    */
   private async fetchMobileSearchHtml(
     query: string,
@@ -594,16 +646,24 @@ export class ApiCommandService {
     const url = buildBaiduAiSearchUrl(query);
     if (!url) return { html: "", via: "", reason: "query 无法构造搜索地址" };
 
+    const deadline = Date.now() + Math.max(1, timeoutMs);
+    const remaining = (): number => Math.max(0, deadline - Date.now());
+
     const host = new URL(url).hostname;
-    const fromExtension = await this.fetchSearchHtmlViaExtension(url, host, timeoutMs);
+    const fromExtension = await this.fetchSearchHtmlViaExtension(url, host, remaining());
     if (fromExtension.ok) {
       return { html: fromExtension.text, via: `extension:${fromExtension.via || "unknown"}`, reason: "" };
     }
 
     let lastReason = "";
     for (let attempt = 1; attempt <= AI_SEARCH_MAX_ATTEMPTS; attempt += 1) {
+      const budget = remaining();
+      if (budget <= 0) {
+        lastReason = lastReason || "总超时预算已耗尽";
+        break;
+      }
       const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const timer = setTimeout(() => controller.abort(), budget);
       try {
         const response = await fetch(url, {
           method: "GET",
@@ -635,7 +695,13 @@ export class ApiCommandService {
         clearTimeout(timer);
       }
       if (attempt < AI_SEARCH_MAX_ATTEMPTS) {
-        await new Promise((resolve) => setTimeout(resolve, AI_SEARCH_RETRY_BACKOFF_MS[attempt - 1] ?? 2200));
+        const backoff = AI_SEARCH_RETRY_BACKOFF_MS[attempt - 1] ?? 2200;
+        // 退避等待也受总预算约束：预算不够睡到下一次重试就直接放弃。
+        if (remaining() <= backoff) {
+          lastReason = `${lastReason || "读取失败"}（总超时预算已耗尽，未继续重试）`;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, backoff));
       }
     }
     const hint = lastReason === "被搜索风控拦截" ? "（百度风控拦截，稍等几十秒重试通常可恢复）" : "";
