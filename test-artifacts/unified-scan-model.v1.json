@@ -1,0 +1,87 @@
+{
+  "schemaVersion": "unified-scan-model/v1",
+  "generatedAt": "2026-11-05T09:50:45.596Z",
+  "scanSource": "code-query-mcp",
+  "project": {
+    "name": "webdoc",
+    "rootPath": "F:/mycode/mcp-servers/webdoc"
+  },
+  "inputs": {
+    "spec": {
+      "path": "specs/spec.md",
+      "sha256": "8edbb98c8613ba6c503ff1b3288aa0cbf752f2c2560ef9b62940e272b7a8c289"
+    },
+    "design": null,
+    "endpointPaths": []
+  },
+  "layers": {
+    "contract": {
+      "endpoints": []
+    },
+    "codeStructure": {
+      "symbols": [],
+      "branchFacts": [],
+      "flows": []
+    },
+    "businessLogic": {
+      "acceptanceCriteria": [
+        {"id":"AC-1","summary":"Given 一个仅有 JS bundle 的现代站点，When 调用 `analyze_page_apis` 且 `action=scan_site`、不传 `loosePaths`，Then 产出端点数 ≥ 1（基线为 0） | `analyze_page_apis` | P0 |","source":{"path":"specs/spec.md","line":32}},
+        {"id":"AC-2","summary":"Given 静态推导产出含 GET 端点，When 查看命令 `risk` 字段，Then GET/HEAD/OPTIONS 为 `read`、其余为 `write`（基线全部为 `write`） | `analyze_page_apis` | P0 |","source":{"path":"specs/spec.md","line":33}},
+        {"id":"AC-3","summary":"Given 命令声明了必填参数，When 调用 `call_api_command` 缺该参数，Then 返回 `MISSING_PARAMS` 且**不发出任何请求** | `call_api_command` | P0 |","source":{"path":"specs/spec.md","line":34}},
+        {"id":"AC-4","summary":"Given 命令 `risk=write`，When 调用 `call_api_command` 不传 `confirm=true`，Then 返回 `CONFIRMATION_REQUIRED` 且**不发出任何请求** | `call_api_command` | P0 |","source":{"path":"specs/spec.md","line":35}},
+        {"id":"AC-5","summary":"Given 命令参数 `nickname` 在分析时被观测为恒定值，When 调用 `call_api_command` 传 `params.nickname=\"lisi\"`，Then 实际请求体为 `lisi`（基线被静默忽略、发出分析时的旧值） | `call_api_command` | P0 |","source":{"path":"specs/spec.md","line":36}},
+        {"id":"AC-6","summary":"Given 调用方传 `headers={\"X-Requested-With\":\"XMLHttpRequest\",\"Cookie\":\"a=b\",\"Authorization\":\"Bearer x\"}`，When 调用 `call_api_command`，Then 实际请求含 `X-Requested-With`、**不含** `Cookie` 与 `Authorization` | `call_api_command` | P0 |","source":{"path":"specs/spec.md","line":37}},
+        {"id":"AC-7","summary":"Given 某域名已沉淀命令集，When `export_api_commands` 导出后清空缓存再 `import_api_commands` 导入，Then 导入后命令条数、名称、参数、响应裁剪规则与导出前一致且可直接调用 | `export_api_commands` / `import_api_commands` | P0 |","source":{"path":"specs/spec.md","line":38}},
+        {"id":"AC-8","summary":"Given 一个成品格式命令包（含 `request.urlTemplate` / `risk` / `responseFields` / `manuallyEdited`），When 调用 `analyze_page_apis` 且 `action=scan_site`、`sources.kind=commands`，Then 产出 ≥ 1 条命令且上述字段被保留（基线产出 0 条） | `analyze_page_apis` | P0 |","source":{"path":"specs/spec.md","line":39}},
+        {"id":"AC-9","summary":"Given 两个 MCP 进程先后写不同域名的命令集，When 后者写盘，Then 磁盘上两个域名的命令都存在（基线先写者被整片抹除） | `get_api_command_cache` | P0 |","source":{"path":"specs/spec.md","line":40}},
+        {"id":"AC-10","summary":"Given 某域名已有命令集，When 调用 `invalidate_api_commands` 且 `action` 缺失或为非法值，Then 返回 `INVALID_PARAMS` 且该域名命令**不被删除**（基线：兜底成全域删除） | `invalidate_api_commands` | P0 |","source":{"path":"specs/spec.md","line":41}},
+        {"id":"AC-11","summary":"Given 扩展弹窗配置了域名白名单且不含目标域，When 调用 `call_api_command` 命中该域，Then 被扩展侧拒绝且**不发出请求** | `call_api_command` | P0 |","source":{"path":"specs/spec.md","line":42}},
+        {"id":"AC-12","summary":"Given 扩展处于只读模式，When 对端声明 `risk=read` 但 `method=POST`，Then 扩展侧按 method 判定为写操作并拒绝（基线：只读模式被绕过） | `call_api_command` | P0 |","source":{"path":"specs/spec.md","line":43}},
+        {"id":"AC-13","summary":"Given 某站点 OpenAPI 规格声明 19 个端点，When 调用 `analyze_page_apis` 且 `sources.kind=openapi`，Then 产出 19 条命令且路径模板 19/19 命中规格路径 | `analyze_page_apis` | P1 |","source":{"path":"specs/spec.md","line":44}},
+        {"id":"AC-14","summary":"Given `ai_search` 的 SSE 流收到多个增量片段且含重复相邻字符，When 解析，Then 答案完整拼接不丢字（基线：三个连续「哈」得到「哈」） | `ai_search` | P1 |","source":{"path":"specs/spec.md","line":45}}
+      ],
+      "businessRules": [
+        {"id":"BR-1","summary":"静态推导来源非权威规格（js / har） | 按真实 method 判定 risk；命令标注来源 `scan`；`needsReview` 只保留 1 条来源标注 | — |","source":{"path":"specs/spec.md","line":51}},
+        {"id":"BR-2","summary":"路径参数取值含 `/` `?` `#`（原始或 URL 解码后） | 拒绝渲染，零网络请求 | `UNSAFE_PATH_PARAM` |","source":{"path":"specs/spec.md","line":52}},
+        {"id":"BR-3","summary":"渲染后 URL 的 hostname 与命令所属域名不一致 | 拒绝渲染，零网络请求 | `HOST_MISMATCH_AFTER_RENDER` |","source":{"path":"specs/spec.md","line":53}},
+        {"id":"BR-4","summary":"请求头名命中 `cookie` / `authorization` / `proxy-authorization` / `set-cookie` | 静默剔除，不报错、不落盘 | — |","source":{"path":"specs/spec.md","line":54}},
+        {"id":"BR-5","summary":"`invalidate_api_commands` 的 `action` 非 `disable` / `delete` / `clear_domain` 字面量 | 拒绝执行，不修改任何缓存 | `INVALID_PARAMS` |","source":{"path":"specs/spec.md","line":55}},
+        {"id":"BR-6","summary":"命令 `risk=write` 且未传 `confirm=true` | 拒绝执行，零网络请求 | `CONFIRMATION_REQUIRED` |","source":{"path":"specs/spec.md","line":56}},
+        {"id":"BR-7","summary":"上游返回 401 / 403 | 标记 `authRequired`，不计连续失败、不禁用命令、不重试 | `AUTH_REQUIRED` |","source":{"path":"specs/spec.md","line":57}},
+        {"id":"BR-8","summary":"目标 URL 在域名白名单外 / 非 http(s) / 跨 host | 扩展侧拒绝，零网络请求 | `DOMAIN_NOT_ALLOWED` / `HOST_MISMATCH` / `INVALID_URL` |","source":{"path":"specs/spec.md","line":58}},
+        {"id":"BR-9","summary":"缓存写盘前发现磁盘上有本进程未加载的域名 | 写前重读并按 hostname 合并后再落盘 | — |","source":{"path":"specs/spec.md","line":59}},
+        {"id":"BR-10","summary":"缓存文件读取失败 | 标记 `loadFailed`，后续写盘只写本次新增域名，不覆盖既有内容 | — |","source":{"path":"specs/spec.md","line":60}}
+      ]
+    },
+    "traceability": {
+      "mappings": [
+        {"acceptanceCriterionId":"AC-1","contractIds":[],"codeAnchors":[],"branchRefs":[],"status":"unmapped","reason":"NO_DETERMINISTIC_ANCHOR"},
+        {"acceptanceCriterionId":"AC-2","contractIds":[],"codeAnchors":[],"branchRefs":[],"status":"unmapped","reason":"NO_DETERMINISTIC_ANCHOR"},
+        {"acceptanceCriterionId":"AC-3","contractIds":[],"codeAnchors":[],"branchRefs":[],"status":"unmapped","reason":"NO_DETERMINISTIC_ANCHOR"},
+        {"acceptanceCriterionId":"AC-4","contractIds":[],"codeAnchors":[],"branchRefs":[],"status":"unmapped","reason":"NO_DETERMINISTIC_ANCHOR"},
+        {"acceptanceCriterionId":"AC-5","contractIds":[],"codeAnchors":[],"branchRefs":[],"status":"unmapped","reason":"NO_DETERMINISTIC_ANCHOR"},
+        {"acceptanceCriterionId":"AC-6","contractIds":[],"codeAnchors":[],"branchRefs":[],"status":"unmapped","reason":"NO_DETERMINISTIC_ANCHOR"},
+        {"acceptanceCriterionId":"AC-7","contractIds":[],"codeAnchors":[],"branchRefs":[],"status":"unmapped","reason":"NO_DETERMINISTIC_ANCHOR"},
+        {"acceptanceCriterionId":"AC-8","contractIds":[],"codeAnchors":[],"branchRefs":[],"status":"unmapped","reason":"NO_DETERMINISTIC_ANCHOR"},
+        {"acceptanceCriterionId":"AC-9","contractIds":[],"codeAnchors":[],"branchRefs":[],"status":"unmapped","reason":"NO_DETERMINISTIC_ANCHOR"},
+        {"acceptanceCriterionId":"AC-10","contractIds":[],"codeAnchors":[],"branchRefs":[],"status":"unmapped","reason":"NO_DETERMINISTIC_ANCHOR"},
+        {"acceptanceCriterionId":"AC-11","contractIds":[],"codeAnchors":[],"branchRefs":[],"status":"unmapped","reason":"NO_DETERMINISTIC_ANCHOR"},
+        {"acceptanceCriterionId":"AC-12","contractIds":[],"codeAnchors":[],"branchRefs":[],"status":"unmapped","reason":"NO_DETERMINISTIC_ANCHOR"},
+        {"acceptanceCriterionId":"AC-13","contractIds":[],"codeAnchors":[],"branchRefs":[],"status":"unmapped","reason":"NO_DETERMINISTIC_ANCHOR"},
+        {"acceptanceCriterionId":"AC-14","contractIds":[],"codeAnchors":[],"branchRefs":[],"status":"unmapped","reason":"NO_DETERMINISTIC_ANCHOR"}
+      ],
+      "coverage": {
+        "total": 14,
+        "mapped": 0,
+        "unmapped": 14
+      }
+    }
+  },
+  "qualityGate": {
+    "status": "conditional_pass",
+    "gaps": [
+      {"code":"NO_ENDPOINT_DISCOVERED","message":"No indexed API endpoint matched the requested scope. Batch/event-only changes need a later adapter or explicit code anchors.","severity":"warning"},
+      {"code":"UNMAPPED_ACCEPTANCE_CRITERIA","message":"14 acceptance criteria have no deterministic code mapping.","severity":"warning"}
+    ]
+  }
+}

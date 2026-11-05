@@ -1,0 +1,15 @@
+{
+  "schemaVersion": "api-test-plan/v1",
+  "generatedAt": "2026-11-05T09:50:50.514Z",
+  "scan": {
+    "modelPath": "test-artifacts/unified-scan-model.v1.json",
+    "sha256": "80bbba77147f87fe353b2c5728fee10074618f400965319c53e7c08d55c103d6",
+    "project": "webdoc",
+    "generatedAt": "2026-11-05T09:50:45.596Z"
+  },
+  "cases": [],
+  "coverageGaps": [
+    {"code":"NO_ENDPOINT_DISCOVERED","message":"No indexed API endpoint matched the requested scope. Batch/event-only changes need a later adapter or explicit code anchors.","severity":"warning"},
+    {"code":"UNMAPPED_ACCEPTANCE_CRITERIA","message":"14 acceptance criteria have no deterministic code mapping.","severity":"warning"}
+  ]
+}
