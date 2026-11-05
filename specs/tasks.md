@@ -78,15 +78,21 @@
   - 落点：`test-artifacts/test-coverage-result.v1.json`（由 `orbit_test_artifacts mode=record` 写入）
   - 验收：14 条 AC 均有对应执行用例编号与证据引用；基线 gap `UNMAPPED_ACCEPTANCE_CRITERIA` 显式登记处置（不伪造自动映射）
 
+- [x] **2.12** T12 传输层布尔强转缺陷修复：未传的开关被压成 false，摧毁 scan_site 三项文档默认值（负责人：xiaopeng.lei）
+  - **完成**：`171d327` — 在 `deploy_to_test` 的真实 MCP 调用复测中暴露：`server.ts` 对可选布尔开关一律用 `args.X === true` 归一化，把「未传（undefined）」压成「显式 false」，而服务层为 `loosePaths` / `trustSpec` / `discoverBundles` 定义了「undefined → 默认值（true）」语义，被传输层摧毁。真实调用 `analyze_page_apis action=scan_site` 对真实现代站点返回 `endpointCount=0 / commandCount=0`（裸路径识别、method 判定、bundle 自动发现三项默认值全失效），而直调解析层 `scanJsText` 对同一份 JS 有 1 条候选 → 定位为传输层与服务层行为不一致。修复：新增纯函数层 `mcp-server/src/api-command-args.ts`（`AnalyzeAction`/`AnalyzeArgs` 契约 + `toBooleanArg` 三态/二态 + `toAnalyzeArgs` 归一化入口），`server.ts` 只剩一行 `apiCommandService.analyze(toAnalyzeArgs(args))`；显式传 false 仍是 false（放开是默认值不是强制值）。新增 9 条回归用例。
+  - 落点：`mcp-server/src/api-command-args.ts`（新建） / `mcp-server/src/server.ts` `analyze_page_apis` 分支 / `mcp-server/src/api-command-service.ts`（契约移入 args 模块并再导出）
+  - 验收：修复后 `npm test` **326/326 pass**（317 + 9）；基线复核——临时把 `toBooleanArg` 复刻成修复前行为（`value === true`）重编译后，9 条新用例中 5 条 FAIL（#1/#5/#6/#8/#9），确认为真实回归护栏；`npm run build` tsc 零诊断；本机部署后 live 调用 `endpointCount` 由 0 变 1、`commandCount` 由 0 变 1（`get.web-interface.nav`，risk=read），负向对照显式 `loosePaths=false` 仍为 0/0
+
+
 - [x] **2.11** T11 代码审查缺陷修复：占位 baseURL 泄漏、变量绑定首匹配掩盖歧义、取值命中/未命中留痕信号混用（负责人：xiaopeng.lei）
   - **完成**：`T11` — 独立 verifier 会话审查 T9/T10 新代码，主开发复核并逐条实证。3 个可复现缺陷全部修复：(D1) 占位默认 baseURL `api.domain.com` 在 `baseURL: <expr> || <var>` 形态下未被排除 → 裸路径被挂到占位 host，命令必然打不通，抽出 `SITE_SCAN_PLACEHOLDER_BASE_HOST` 两形态统一排除；(D2) 回查变量绑定只取首个匹配，把「变量被重新赋值」这一真实歧义藏起来 → 收齐全部绑定，全部指向同一 host 才算唯一解，出现分歧即不猜；(D3) 取值命中与未命中共用 `overridden` 信号 → 告警与事实相反，拆成 `overridden` / `fallback` 两个信号，服务层分别给出方向相反的告警。新增 8 条回归用例（6 条在修复前基线实测失败）。
   - 落点：`mcp-server/src/api-command-site-scan.ts` `detectBaseUrlHosts()` / `mcp-server/src/api-command-render.ts` `applyStepMappings()` / `mcp-server/src/api-command-service.ts` `callComposite()` / `mcp-server/src/api-command-types.ts` `SITE_SCAN_PLACEHOLDER_BASE_HOST`
-  - 验收：修复后 `npm test` **317/317 pass**（309 + 8）；修复前基线实测 6 条新用例失败；真实 B 站主 bundle（1605288 字节）复测召回未回退（113 候选中 48 个归属 `api.bilibili.com`，host 推断告警仍触发，无候选被占位 host 污染）
+  - 验收：修复后 `npm test` **317/317 pass**（309 + 8，2.12 完成后为 326/326）；修复前基线实测 6 条新用例失败；真实 B 站主 bundle（1605288 字节）复测召回未回退（113 候选中 48 个归属 `api.bilibili.com`，host 推断告警仍触发，无候选被占位 host 污染）
 
 ## Phase 3：测试（QA）
 
 - [x] **3.1** 功能测试与回归（负责人：xiaopeng.lei）
-  - **完成**：`npm test` → **317/317 pass**（存量 245 条零回归 + 新增 72 条：T1–T10 累计 64 条 + T11 审查回归 8 条）；`npm run doctor` → 5 pass / 3 info / 0 warn / 0 fail。AC-11 专项：扩展域名白名单外目标被拒且零网络请求（`api-command-security.test.mjs:363`/`:395`）；AC-3 / AC-4：缺参与未确认均零网络请求（`api-command-render.test.mjs:227`）。
+  - **完成**：`npm test` → **326/326 pass**（存量 245 条零回归 + 新增 81 条：T1–T10 累计 64 条 + T11 审查回归 8 条 + T12 传输层修复回归 9 条）；`npm run doctor` → 5 pass / 3 info / 0 warn / 0 fail。AC-11 专项：扩展域名白名单外目标被拒且零网络请求（`api-command-security.test.mjs:363`/`:395`）；AC-3 / AC-4：缺参与未确认均零网络请求（`api-command-render.test.mjs:227`）。
   - 范围：`npm test` 全绿（存量 245 条零回归 + 各批次新增用例）；`npm run doctor` 0 fail；AC 全部通过，无阻断性 Bug
   - 专项回归：AC-11 —— 扩展域名白名单外的目标被拒绝且零网络请求（硬边界不变）；AC-3 / AC-4 —— 缺参与未确认均零网络请求
   - 验收：AC-1 ~ AC-14 全部通过，无阻断性 Bug
@@ -97,7 +103,7 @@
   - 验收：AC-1 / AC-2 / AC-5 / AC-6 / AC-7 / AC-9 / AC-13 指标达标并留证（数据落 `test-artifacts/`）
 
 - [x] **3.3** 文档同步（负责人：xiaopeng.lei）
-  - **完成**：`78ae4ac` + `442f3e1` — README 工具表新增 `export_api_commands` / `import_api_commands`；放开项说明按 T1–T10 实现重写；新增复合命令与 host 归属说明；中英 19 节同构、工具表各 44 条完全一致；`docs/api-command-set-upgrade-spec.md` §6 补「实现位置 + 实测结果」列。
+  - **完成**：`78ae4ac` + `442f3e1` + `171d327` — README 工具表新增 `export_api_commands` / `import_api_commands`；放开项说明按 T1–T10 实现重写；新增复合命令与 host 归属说明；中英 19 节同构、工具表各 44 条完全一致；`docs/api-command-set-upgrade-spec.md` §6 补「实现位置 + 实测结果」列；T12 后按新 HEAD `171d327` 重校 `specs/design.md` 第八节与覆盖报告的全部 file:line 引用（`api-command-service.ts` / `server.ts` 行号整体前移），并回填 T12 缺陷与 9 条回归用例。
   - 范围：README / README.zh.md 工具表新增 `export_api_commands` / `import_api_commands` 并更新放开项说明；`docs/api-command-set-upgrade-spec.md` 与实现对齐
   - 验收：README 中英一致且与 `spec.md` 契约一致；`docs/` 描述与实际实现逐条对齐
 
@@ -108,7 +114,7 @@
 
 ---
 
-**执行结果（2026-11-05）**：`npm test` 317/317 pass ｜ `npm run doctor` 0 fail ｜ 14/14 AC 通过 ｜ 代码审查 T11 修复 3 个可复现缺陷（补 8 条回归用例）｜ 基线 gap 0 阻断。
+**执行结果（2026-11-05）**：`npm test` 326/326 pass ｜ `npm run doctor` 5 pass / 3 info / 0 warn / 0 fail ｜ 14/14 AC 通过 ｜ 代码审查 T11 修复 3 个可复现缺陷（补 8 条回归用例）+ T12 修复 1 个传输层强转可复现缺陷（补 9 条回归用例）｜ 基线 gap 0 阻断 ｜ 本机部署实测通过（orbit §2.5 非 CI 路径）。
 
 **产出物索引**：
 

@@ -9,13 +9,13 @@
   "mappingNote": "本项目对外暴露的是 MCP 工具而非 HTTP 路由，四层扫描器的端点抽取器识别到 0 个端点（基线 gap NO_ENDPOINT_DISCOVERED），AC 无法自动映射到代码锚点。按 specs/design.md 第八节要求，改用 specs/spec.md 的 AC ↔ docs/api-command-set-upgrade-spec.md 的实现位置**人工**映射表回填证据，不伪造自动映射。",
   "testRun": {
     "command": "npm test",
-    "total": 309,
-    "pass": 309,
+    "total": 326,
+    "pass": 326,
     "fail": 0,
     "skipped": 0,
     "baselineTotal": 245,
     "baselineRegression": 0,
-    "addedCases": 64,
+    "addedCases": 81,
     "doctor": "5 pass / 3 info / 0 warn / 0 fail",
     "afterT11": {
       "command": "npm test",
@@ -24,6 +24,14 @@
       "fail": 0,
       "skipped": 0,
       "note": "T11 前为 309；新增 8 条 T11 回归用例（6 条失败于修复前基线，2 条为收紧不放宽的反向控制用例）"
+    },
+    "afterT12": {
+      "command": "npm test",
+      "tests": 326,
+      "pass": 326,
+      "fail": 0,
+      "skipped": 0,
+      "note": "T12 前为 317；新增 9 条 T12 回归用例（纯函数三态 3 条 + 显式 false/true 保留 2 条 + toBooleanArg 一致性 1 条 + 端到端 4 条）。基线复核：临时把 toBooleanArg 复刻成修复前行为（value === true）重编译后，9 条新用例中 5 条 FAIL（#1/#5/#6/#8/#9），确认为真实回归护栏；恢复正确实现后 9/9 通过。"
     }
   },
   "acceptanceCriteria": [
@@ -31,12 +39,14 @@
       "id": "AC-1",
       "title": "scan_site 不传 loosePaths 时端点数 >= 1（B 站基线 0）",
       "implementation": [
+        "mcp-server/src/api-command-args.ts:124 toAnalyzeArgs()（传输层入参归一化：未传的开关保留 undefined，不压成 false）",
         "mcp-server/src/api-command-types.ts:921 SITE_SCAN_DEFAULT_LOOSE = true",
-        "mcp-server/src/api-command-service.ts:1087 loose 默认取常量",
+        "mcp-server/src/api-command-service.ts:1053 loose 默认取常量",
         "mcp-server/src/api-command-site-scan.ts:725 scanSources()"
       ],
       "testCases": [
-        "mcp-server/test/api-command-site-scan.test.mjs:500 T1：loosePaths 默认放开 —— 2 段短前缀路径也能发现端点（保守模式下为 0）"
+        "mcp-server/test/api-command-site-scan.test.mjs:500 T1：loosePaths 默认放开 —— 2 段短前缀路径也能发现端点（保守模式下为 0）",
+        "mcp-server/test/api-command-args.test.mjs:125 T12：默认参数下 scan_site 能认出现代站点裸路径（宽松模式生效）"
       ],
       "realSiteEvidence": "test-artifacts/t10-bilibili-recall.json -> looseTrue.candidates=140 / uniqueFound=133（looseFalse 时仅 9）",
       "status": "passed"
@@ -45,13 +55,15 @@
       "id": "AC-2",
       "title": "GET/HEAD/OPTIONS 端点 risk=read，其余 write",
       "implementation": [
+        "mcp-server/src/api-command-args.ts:109 toBooleanArg()（trustSpec 三态：未传→服务层默认值，显式 false→false）",
         "mcp-server/src/api-command-site-scan.ts:287 inferMethod()",
         "mcp-server/src/api-command-types.ts:929 SITE_SCAN_DEFAULT_TRUST_SPEC = true",
-        "mcp-server/src/api-command-service.ts:1124 trustSpec 默认取常量",
-        "mcp-server/src/api-command-service.ts:1127 risk 覆盖"
+        "mcp-server/src/api-command-service.ts:1090 trustSpec 默认取常量",
+        "mcp-server/src/api-command-service.ts:1093 risk 覆盖"
       ],
       "testCases": [
-        "mcp-server/test/api-command-site-scan.test.mjs:523 T1：静态推导 risk 按 method 判定（GET→read，其余→write）"
+        "mcp-server/test/api-command-site-scan.test.mjs:523 T1：静态推导 risk 按 method 判定（GET→read，其余→write）",
+        "mcp-server/test/api-command-args.test.mjs:152 T12：默认 trustSpec 下 GET 命令按来源 method 判 read（不被一律降级成 write）"
       ],
       "status": "passed"
     },
@@ -60,8 +72,8 @@
       "title": "缺必填参数返回 MISSING_PARAMS 且零网络请求",
       "implementation": [
         "mcp-server/src/api-command-render.ts:85 validateParams()",
-        "mcp-server/src/api-command-service.ts:1364 call()",
-        "mcp-server/src/api-command-service.ts:1551 callComposite()（复合命令同样受此门禁）"
+        "mcp-server/src/api-command-service.ts:1330 call()",
+        "mcp-server/src/api-command-service.ts:1517 callComposite()（复合命令同样受此门禁）"
       ],
       "testCases": [
         "mcp-server/test/api-command-render.test.mjs:227 集成：缺必填 / 类型错误 / 写命令未确认，ApiCommandService.sendFn 调用次数均为 0",
@@ -73,8 +85,8 @@
       "id": "AC-4",
       "title": "risk=write 未传 confirm=true 返回 CONFIRMATION_REQUIRED 且零网络请求",
       "implementation": [
-        "mcp-server/src/api-command-service.ts:1364 call()",
-        "mcp-server/src/api-command-service.ts:1551 callComposite()（含写步骤但未确认 → 预检零请求）"
+        "mcp-server/src/api-command-service.ts:1330 call()",
+        "mcp-server/src/api-command-service.ts:1517 callComposite()（含写步骤但未确认 → 预检零请求）"
       ],
       "testCases": [
         "mcp-server/test/api-command-render.test.mjs:227 集成：缺必填 / 类型错误 / 写命令未确认，ApiCommandService.sendFn 调用次数均为 0（AC-08/21）",
@@ -89,7 +101,7 @@
         "mcp-server/src/api-command-generator.ts:194 buildBodyTemplate()（常量改写为 {{name}} 占位符）",
         "mcp-server/src/api-command-generator.ts:181 buildQueryTemplate()",
         "mcp-server/src/api-command-render.ts:145 renderRequest()（调用方值优先，缺省才回落 defaultValue）",
-        "mcp-server/src/api-command-service.ts:1769 filterParamsForCommand()（只保留子命令声明过的参数）"
+        "mcp-server/src/api-command-service.ts:1735 filterParamsForCommand()（只保留子命令声明过的参数）"
       ],
       "testCases": [
         "mcp-server/test/api-command-render.test.mjs:354 T4：恒定参数写成 {{name}} 占位符，真实值只落在 defaultValue",
@@ -163,8 +175,8 @@
       "id": "AC-10",
       "title": "invalidate_api_commands 的 action 缺失或非法时返回 INVALID_PARAMS 且该域名命令不被删除",
       "implementation": [
-        "mcp-server/src/server.ts:1979 invalidate_api_commands 分支",
-        "mcp-server/src/api-command-service.ts:771 invalidate()"
+        "mcp-server/src/server.ts:1957 invalidate_api_commands 分支",
+        "mcp-server/src/api-command-service.ts:737 invalidate()"
       ],
       "testCases": [
         "mcp-server/test/api-command-security.test.mjs:711 T7：invalidate_api_commands 的 action 缺失或非法 → INVALID_PARAMS，且命令不被删除"
@@ -224,9 +236,9 @@
       "title": "SSE 连续相同字符的增量片段拼接后不丢字",
       "implementation": [
         "mcp-server/src/baidu-ai-search.ts:427 parseBaiduBaikanSse()（增量判定改显式标记）",
-        "mcp-server/src/api-command-service.ts:567 fetchBaikanSse()（流式读取，ReadableStream reader，收到结束标记即收尾）",
-        "mcp-server/src/api-command-service.ts:535 buildAiSearchResult()（attempts 真实计数）",
-        "mcp-server/src/api-command-service.ts:483 aiSearch()（timeoutMs 跨通道总预算）"
+        "mcp-server/src/api-command-service.ts:533 fetchBaikanSse()（流式读取，ReadableStream reader，收到结束标记即收尾）",
+        "mcp-server/src/api-command-service.ts:501 buildAiSearchResult()（attempts 真实计数）",
+        "mcp-server/src/api-command-service.ts:449 aiSearch()（timeoutMs 跨通道总预算）"
       ],
       "testCases": [
         "mcp-server/test/baidu-ai-search.test.mjs:317 parseBaiduBikaiN：AC-14 三个连续「哈」必须拼成「哈哈哈」（基线只得到「哈」）",
@@ -267,7 +279,7 @@
     "gapsRegistered": 3,
     "gapsBlocking": 0,
     "verdict": "全部 14 条 AC 通过；基线 gap 已显式登记处置，无阻断项。",
-    "codeReview": "T11：独立 verifier 会话 + 主开发复核，3 个可复现缺陷全部修复并补回归用例（309 -> 317 用例）"
+    "codeReview": "T11：独立 verifier 会话 + 主开发复核，3 个可复现缺陷全部修复并补回归用例（309 -> 317 用例）；T12：deploy_to_test 真实调用暴露传输层布尔强转缺陷，1 个可复现缺陷已修复并补 9 条回归用例（317 -> 326 用例）"
   },
   "codeReviewRounds": [
     {
@@ -330,6 +342,41 @@
         "扩展侧 COMMAND_ALLOWED_KEYS 含 steps，与 Node 侧一致"
       ],
       "realSiteRecheck": "修复后用真实 B 站主 bundle（1605288 字节）复测：113 个候选中 48 个归属 api.bilibili.com（正确 baseURL host），host 推断告警仍触发，无候选被占位 host 污染 —— 收紧未造成召回回退。"
+    },
+    {
+      "round": "T12",
+      "scope": "deploy_to_test 阶段的真实 MCP 调用复测（传输层入参归一化 → 服务层默认开关）",
+      "verdict": "1 个可复现缺陷（high），已修复并补 9 条回归用例",
+      "findings": [
+        {
+          "id": "T12-D1",
+          "severity": "high",
+          "title": "传输层用 args.X === true 归一化可选布尔开关，把「未传(undefined)」压成「显式 false」",
+          "location": "mcp-server/src/server.ts:1896 analyze_page_apis 分支（修复前为 server.ts:1901-1917 的 18 行手写归一化）",
+          "detail": "server.ts 对 trustSpec / loosePaths / discoverBundles / bundleUseBrowserCache 等可选开关一律用 `args.X === true` 归一化，未传（undefined）被压成 false。而服务层 api-command-service.ts 为 loosePaths / trustSpec / discoverBundles 定义了「undefined → 默认值」语义（默认值分别为 true），被传输层摧毁。同函数内 `bundleUseBrowserCache: args.bundleUseBrowserCache !== false` 恰好正确，说明是遗漏而非设计。",
+          "impact": "真实 MCP 调用 analyze_page_apis action=scan_site，对真实现代站点返回 endpointCount=0 / commandCount=0（裸路径识别、method 判定、bundle 自动发现三项文档默认值全部失效）；直调解析层 scanJsText 对同一份 JS 却有 1 条候选 → 定位为传输层与服务层行为不一致，而非解析层缺陷。",
+          "fix": "新增纯函数层 mcp-server/src/api-command-args.ts：AnalyzeAction / AnalyzeArgs 契约移入该模块并由 api-command-service.ts 再导出；toBooleanArg(raw, key, triState) 实现三态（保留 undefined）与二态（收敛 false）两种语义；toAnalyzeArgs(rawInput) 作为「工具入参 → 服务层参数」的归一化入口。server.ts 只剩一行 apiCommandService.analyze(toAnalyzeArgs(args))。显式传 false 仍然是 false —— 放开是默认值，不是强制值。",
+          "regressionTests": [
+            "mcp-server/test/api-command-args.test.mjs:52 T12：toAnalyzeArgs 对未传的开关保留 undefined（不压成 false）",
+            "mcp-server/test/api-command-args.test.mjs:60 T12：toAnalyzeArgs 对默认即 false 的开关把未传收敛成 false",
+            "mcp-server/test/api-command-args.test.mjs:70 T12：toAnalyzeArgs 保留显式 false（放开是默认值，不是强制值）",
+            "mcp-server/test/api-command-args.test.mjs:85 T12：toAnalyzeArgs 保留显式 true 与其余字段的类型归一",
+            "mcp-server/test/api-command-args.test.mjs:110 T12：toBooleanArg 三态与二态行为一致",
+            "mcp-server/test/api-command-args.test.mjs:125 T12：默认参数下 scan_site 能认出现代站点裸路径（宽松模式生效）",
+            "mcp-server/test/api-command-args.test.mjs:139 T12：显式 loosePaths=false 回到保守模式（回退路径完好，产出 0 条）",
+            "mcp-server/test/api-command-args.test.mjs:152 T12：默认 trustSpec 下 GET 命令按来源 method 判 read（不被一律降级成 write）",
+            "mcp-server/test/api-command-args.test.mjs:168 T12：显式 trustSpec=false 时命令降级为 write（保守模式仍可回退）"
+          ],
+          "status": "fixed"
+        }
+      ],
+      "verifiedNotDefects": [
+        "显式 loosePaths=false 时仍产出 0 端点 —— 保守模式回退路径完好（放开是默认值不是强制值）",
+        "npm run build tsc 零诊断；npm test 326/326 全绿（修复前 317）",
+        "npm run doctor 5 pass / 3 info / 0 warn / 0 fail，重启后复跑一致",
+        "两端常量 api-command-types.ts ↔ browser-extension/api-command-helpers.js 仍逐字一致（T12 未触碰扩展侧）"
+      ],
+      "deployVerification": "本机部署（非 CI 项目，orbit §2.5 路径）：npm run build 重编 dist → 停止旧 MCP 进程 PID 836248（20:00:32 启动，内存仍为旧代码）→ 宿主 MiniMax Code.exe 自动重拉为 PID 833772（20:44:32）。live 注册 MCP 进程上同一调用对比：重启前 endpointCount=0/commandCount=0，重启后 endpointCount=1/commandCount=1（name=get.web-interface.nav、method=GET、risk=read）；负向对照显式 loosePaths=false → 0/0；browser_status 确认扩展侧 7 个 live 会话全部 alive。"
     }
   ]
 }

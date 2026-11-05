@@ -239,7 +239,7 @@
 | 11 | T10b README 中英同步 | 1..10 | `README.md` / `README.zh.md` | `78ae4ac` | ✅ |
 | 12 | T10c 规格回填（AC↔实现位置映射） | 1..11 | `docs/api-command-set-upgrade-spec.md` | 本次提交 | ✅ |
 
-**用例规模**：存量 245 条零回归 → 终态 **309 条全绿**（新增 64 条）。
+**用例规模**：存量 245 条零回归 → 终态 **326 条全绿**（新增 81 条：T1–T10 累计 64 条 + T11 审查回归 8 条 + T12 传输层修复回归 9 条）。
 
 新增用例分布：`api-command-composite.test.mjs` 19（T9）、`api-command-host-infer.test.mjs` 9（T10a）、
 `api-command-types.test.mjs` 常量契约 1、其余分散补入既有测试文件。
@@ -253,13 +253,13 @@
 | # | 验收项 | 口径 | 实现位置 | 实测结果 |
 |---|---|---|---|---|
 | A1 | 规格驱动路径命中 | petstore OpenAPI：19 个端点路径命中 19/19，0 未命中 | `api-command-site-scan.ts` `parseOpenApiText` / `scanSources` | 19/19 ✅ |
-| A2 | 静态推导召回 | B 站首页默认配置（放开后）：召回 ≥ 50%（基线 0%） | `api-command-service.ts:1087` `loose` → `api-command-site-scan.ts:705` `scanSources` → `:668` `applyHostCrossReference` → `:224` `detectBaseUrlHosts` | **100%**（35/35，loose=false 旧默认 0%）✅ |
+| A2 | 静态推导召回 | B 站首页默认配置（放开后）：召回 ≥ 50%（基线 0%） | `api-command-service.ts:1053` `loose` → `api-command-site-scan.ts:725` `scanSources` → `:688` `applyHostCrossReference` → `:225` `detectBaseUrlHosts` | **100%**（35/35，loose=false 旧默认 0%）✅ |
 | A3 | 静态推导存活 | B 站首页：实打存活率 ≥ 50%（基线 55%，修复后应更高） | 同 A2（同一批扫描口径） | **68.6%**（24/35，与 oracle 自身上限 68.6% 持平）✅ |
 | A4 | 免开网页调用 | 全新会话 + 页面未开 + 无抓包缓冲区，成功率 ≥ 90% | `api-command-service.ts` `call` → `executeCommandRequest` → 扩展 `background.js:2194` `cmdApiCommandExecute` | ✅ 见下方「A4 实测记录」 |
-| A5 | 导出导入闭环 | 导出 → 清空 → 导入 → 命令条数 / 名称 / 参数 / 响应裁剪规则一致，可直接调用 | `api-command-cache.ts:1127` `export` / `:1174` `import` / `:724` `rewriteCommandHost`；`api-command-service.ts:1344` / `:1356`；`server.ts:993` / `:1006` | 闭环一致，复合命令随包往返 ✅ |
+| A5 | 导出导入闭环 | 导出 → 清空 → 导入 → 命令条数 / 名称 / 参数 / 响应裁剪规则一致，可直接调用 | `api-command-cache.ts:1127` `export` / `:1174` `import` / `:724` `rewriteCommandHost`；`api-command-service.ts:1310` / `:1356`；`server.ts:993` / `:1006` | 闭环一致，复合命令随包往返 ✅ |
 | A6 | 并发写 | 两个进程先后写不同域名，双方数据都存活 | `api-command-cache.ts:78` `buildCacheTmpName` / `ensureLoaded` / `persist`（写前重读合并） | 双方数据都存活 ✅ |
-| A7 | 参数可覆盖 | 调用方传值必须生效（当前实测被忽略） | `api-command-generator.ts:174` `defaultValue` / `:181` `buildQueryTemplate` / `:194` `buildBodyTemplate`；`api-command-render.ts:145` `renderRequest`；`api-command-service.ts:1647` `filterParamsForCommand` | 调用方传值生效 ✅ |
-| A8 | 测试 | `npm test` 全绿（存量 245 零回归 + 新增用例），`npm run doctor` 0 fail | `mcp-server/test/*` | **309/309 pass**（存量 245 零回归 + 新增 64）；`doctor` 5 pass / 0 warn / 0 fail ✅ |
+| A7 | 参数可覆盖 | 调用方传值必须生效（当前实测被忽略） | `api-command-generator.ts:174` `defaultValue` / `:181` `buildQueryTemplate` / `:194` `buildBodyTemplate`；`api-command-render.ts:145` `renderRequest`；`api-command-service.ts:1613` `filterParamsForCommand` | 调用方传值生效 ✅ |
+| A8 | 测试 | `npm test` 全绿（存量 245 零回归 + 新增用例），`npm run doctor` 0 fail | `mcp-server/test/*` | **326/326 pass**（存量 245 零回归 + 新增 81）；`doctor` 5 pass / 0 warn / 0 fail ✅ |
 | A9 | 文档 | README 中英工具表 + `docs/` 与实现一致 | `README.md` / `README.zh.md` / `docs/api-command-set-upgrade-spec.md` | 中英 19 节同构、工具表各 44 条完全一致 ✅ |
 
 **A2 / A3 实测口径（重要，不可沿用旧口径）**：
