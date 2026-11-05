@@ -239,6 +239,125 @@ export function extractBaiduAiAnswer(
 export const AI_SSE_MAX_EVENTS = 800;
 
 /**
+ * 生成结束的**显式状态标记**（实测 chat-ws.baidu.com/baikan/conversation）。
+ *
+ * 真实流里结束有两种写法：先发 `state:"generate-complete"`（且 generator.isFinished=true），
+ * 再发一条 `endTurn:true` 的空事件；两者都算结束。
+ */
+export const AI_SSE_END_STATES = ["generate-complete"];
+
+/** SSE 事件名里出现这些片段 → 该事件是「全量快照」（替换而非追加）。 */
+const AI_SSE_SNAPSHOT_EVENT_RE = /(^|[._-])(full|snapshot|replace|overwrite)($|[._-])/i;
+/** SSE 事件名里出现这些片段 → 该事件是「增量片段」（追加）。 */
+const AI_SSE_INCREMENT_EVENT_RE = /(^|[._-])(delta|chunk|increment|partial)($|[._-])/i;
+
+/** 载荷里显式声明「本条是全量快照」的字段名。 */
+const AI_SSE_SNAPSHOT_FLAG_KEYS = ["isFullText", "isSnapshot", "fullText", "isFull"];
+/** 载荷里显式声明「本条是增量片段」的字段名。 */
+const AI_SSE_INCREMENT_FLAG_KEYS = ["isIncremental", "isDelta", "incremental", "delta"];
+
+/**
+ * 判定一条 SSE 事件的正文语义：**snapshot（全量快照）/ increment（增量）/ undefined（没标记）**。
+ *
+ * 判据只用**协议里的显式标记**，不再用「新片段是否以已拼内容开头」的前缀启发式：
+ *  - SSE 的 `event:` 事件名（真实流是 `message`）；
+ *  - 载荷里的显式布尔标记（`isFullText` / `isIncremental` 等）。
+ *
+ * 没标记 → 返回 undefined，由调用方按**增量追加**处理（实测真实流就是增量）。
+ */
+export function detectSseTextMode(
+  eventName: string,
+  payload: unknown,
+): "snapshot" | "increment" | undefined {
+  const name = typeof eventName === "string" ? eventName.trim() : "";
+  if (name) {
+    if (AI_SSE_SNAPSHOT_EVENT_RE.test(name)) return "snapshot";
+    if (AI_SSE_INCREMENT_EVENT_RE.test(name)) return "increment";
+  }
+  const data = isRecord(payload)
+    && isRecord((payload as any).data)
+    && isRecord((payload as any).data.message)
+    && isRecord((payload as any).data.message.content)
+    && isRecord((payload as any).data.message.content.generator)
+    && isRecord((payload as any).data.message.content.generator.data)
+    ? (payload as any).data.message.content.generator.data as Record<string, unknown>
+    : undefined;
+  if (data) {
+    for (const key of AI_SSE_SNAPSHOT_FLAG_KEYS) {
+      if (data[key] === true) return "snapshot";
+    }
+    for (const key of AI_SSE_INCREMENT_FLAG_KEYS) {
+      if (data[key] === true) return "increment";
+    }
+  }
+  return undefined;
+}
+
+/** 一条 SSE 事件：事件名 + data 载荷原文。 */
+export interface BaiduSseEvent {
+  event: string;
+  data: string;
+}
+
+/**
+ * 把 SSE 原文切成事件列表。
+ *
+ * 每个事件块形如 `event:message\ndata:{...}\n\n`；多个 `data:` 行按 SSE 规范用 `\n` 连接。
+ * 事件名不再丢弃 —— 它是判断「增量 / 全量快照」的显式标记之一。
+ */
+export function parseBaiduSseEvents(raw: string): BaiduSseEvent[] {
+  if (typeof raw !== "string" || raw.length === 0) return [];
+  const blocks = raw.split(/\n{2,}/);
+  const events: BaiduSseEvent[] = [];
+  for (const block of blocks) {
+    let event = "";
+    const dataLines: string[] = [];
+    for (const line of block.split("\n")) {
+      if (line.startsWith("event:")) {
+        if (!event) event = line.slice(6).trim();
+      } else if (line.startsWith("data:")) {
+        dataLines.push(line.slice(5).replace(/^ /, ""));
+      }
+    }
+    if (dataLines.length === 0) continue;
+    events.push({ event, data: dataLines.join("\n") });
+    if (events.length >= AI_SSE_MAX_EVENTS) break;
+  }
+  return events;
+}
+
+/**
+ * 判断已收到的 SSE 缓冲区里是否**已经出现结束标记**（用于流式读取时提前收尾）。
+ *
+ * 只看末尾几个事件块，避免在长文本里做全文正则扫描。
+ */
+export function baikanSseEnded(buffer: string): boolean {
+  if (typeof buffer !== "string" || buffer.length === 0) return false;
+  const blocks = buffer.split(/\n{2,}/);
+  for (let i = blocks.length - 1; i >= 0 && i >= blocks.length - 4; i -= 1) {
+    const line = blocks[i].split("\n").find((l) => l.startsWith("data:"));
+    if (!line) continue;
+    let payload: unknown;
+    try {
+      payload = JSON.parse(line.slice(5).trim());
+    } catch {
+      continue;  // 事件还没收全，看更早的块
+    }
+    if (!isRecord(payload) || !isRecord((payload as any).data)) continue;
+    const message = (payload as any).data.message;
+    if (!isRecord(message)) continue;
+    const meta = message.metaData;
+    if (isRecord(meta)) {
+      if (meta.endTurn === true) return true;
+      if (typeof meta.state === "string" && AI_SSE_END_STATES.includes(meta.state)) return true;
+    }
+    const content = message.content;
+    if (isRecord(content) && isRecord(content.generator) && content.generator.isFinished === true) return true;
+  }
+  return false;
+}
+
+/**
  * 构造 SSE 接口 URL。
  *
  * 只需要 `word`（查询词）+ 两个固定 query 参数；`k_signature` / `pmgr_token` /
@@ -289,12 +408,18 @@ export function buildBaiduBaikanRequestBody(query: string): string {
 /**
  * 解析 SSE 流为答案。
  *
- * 协议要点（实测）：
- *  - 每个事件一行 `data:{json}`，事件之间空行分隔；
+ * 协议要点（2026-11-05 实测 chat-ws.baidu.com/baikan/conversation）：
+ *  - 每个事件 `event:message` + 一行 `data:{json}`，事件之间空行分隔；
  *  - 正文在 `data.message.content.generator`，`component === "markdown-yiyan"` 时
- *    `generator.data.value` 是**增量片段**（逐字 / 逐词）；
+ *    `generator.data.value` 是**增量片段**（实测：首段 194 字，后续 45/70/104… 逐段递增）；
  *  - `component === "reference"` 时 `generator.data.referenceList` 是引用出处；
- *  - `metaData.endTurn === true` 或 `state === "generate-complete"` 表示结束。
+ *  - 结束标记有两个：`metaData.state === "generate-complete"`（且 generator.isFinished=true）
+ *    与 `metaData.endTurn === true`（实测二者都会出现）。
+ *
+ * 增量 / 全量的判定**只看协议里的显式标记**（SSE `event:` 事件名、载荷里的
+ * `isFullText` / `isIncremental` 之类布尔位）：显式快照才替换，缺标记一律按增量追加。
+ * 不用「新片段是否以已拼内容开头」的前缀启发式 —— 增量片段碰巧以已拼内容开头时，
+ * 启发式会把这整段正文吞掉（静默丢内容比重复更危险）。
  *
  * 容错策略：流被截断（超时 / 网络断）时，已收到的片段仍然返回，只把
  * `finished` 置 false —— 半截答案也远胜于报错。
@@ -322,14 +447,12 @@ export function parseBaiduBaikanSse(
   const seenUrls = new Set<string>();
   const citations: AiSearchCitation[] = [];
 
-  const events = raw.split(/\n{2,}/);
-  const limit = Math.min(events.length, AI_SSE_MAX_EVENTS);
-  for (let i = 0; i < limit; i += 1) {
-    const dataLine = events[i].split("\n").find((line) => line.startsWith("data:"));
-    if (!dataLine) continue;
+  const events = parseBaiduSseEvents(raw);
+  for (let i = 0; i < events.length; i += 1) {
+    const event = events[i];
     let payload: unknown;
     try {
-      payload = JSON.parse(dataLine.slice(5).trim());
+      payload = JSON.parse(event.data.trim());
     } catch {
       continue;  // 坏事件跳过，不影响后续片段
     }
@@ -340,20 +463,29 @@ export function parseBaiduBaikanSse(
     if (!isRecord(message)) continue;
 
     const meta = message.metaData;
-    if (isRecord(meta) && meta.endTurn === true) finished = true;
+    if (isRecord(meta)) {
+      if (meta.endTurn === true) finished = true;
+      if (typeof meta.state === "string" && AI_SSE_END_STATES.includes(meta.state)) finished = true;
+    }
 
     const content = message.content;
     if (!isRecord(content)) continue;
     const generator = content.generator;
     if (!isRecord(generator)) continue;
+    if (generator.isFinished === true) finished = true;
 
     if (generator.component === "markdown-yiyan") {
       const inner = generator.data;
       const value = isRecord(inner) && typeof inner.value === "string" ? inner.value : "";
       if (value.length > 0) {
         chunkCount += 1;
-        // 兼容两种服务端实现：增量片段（追加）与全量快照（替换）。
-        answer = value.startsWith(answer) && value.length >= answer.length ? value : answer + value;
+        // 语义只看**协议里的显式标记**（SSE 事件名 / 载荷布尔标记）：
+        //  - 显式 snapshot → 替换为该条全量；
+        //  - 显式 increment 或没标记 → 追加（实测真实流就是增量）。
+        // 不再用「新片段是否以已拼内容开头」的前缀启发式 —— 增量片段一旦碰巧以已拼内容开头，
+        // 就会把正文整段吞掉（静默丢内容，比重复更危险）。
+        const mode = detectSseTextMode(event.event, payload);
+        answer = mode === "snapshot" ? value : answer + value;
       }
     } else if (generator.component === "reference") {
       const inner = generator.data;

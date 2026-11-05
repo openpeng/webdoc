@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import {
   buildBaiduAiSearchUrl, cleanBaiduMarkdown, extractBaiduAiAnswer,
   buildBaiduBaikanSseUrl, buildBaiduBaikanRequestBody, parseBaiduBaikanSse,
+  parseBaiduSseEvents, detectSseTextMode, baikanSseEnded,
   BAIDU_AI_SEARCH_ORIGIN, BAIDU_BAIKAN_SSE_ORIGIN, AI_QUERY_MAX_CHARS, AI_ANSWER_MAX_CHARS_DEFAULT,
   AI_SSE_MAX_EVENTS,
 } from "../dist/baidu-ai-search.js";
@@ -255,6 +256,13 @@ const genEvent = (component, data, meta = {}) => sseEvent({
   data: { message: { metaData: { state: "generating-resp", endTurn: false, ...meta }, content: { generator: { component, data } } } },
 });
 const textChunk = (value) => genEvent("markdown-yiyan", { value });
+/** 带显式快照标记的事件：载荷里 isFullText=true。 */
+const snapshotChunk = (value) => genEvent("markdown-yiyan", { value, isFullText: true });
+/** 带显式快照标记的事件：SSE 事件名声明 full。 */
+const snapshotChunkByEvent = (value) => `event:message_full\ndata:${JSON.stringify({
+  data: { message: { metaData: { state: "generating-resp", endTurn: false },
+    content: { generator: { component: "markdown-yiyan", data: { value } } } } },
+})}\n\n`;
 const refEvent = (list) => genEvent("reference", { referenceList: list });
 
 test("buildBaiduBaikanSseUrl：只带 word + 两个固定 query 参数", () => {
@@ -294,9 +302,75 @@ test("parseBaiduBaikanSse：增量片段按顺序拼接", () => {
   assert.equal(r.blockCount, 3);
 });
 
-test("parseBaiduBaikanSse：全量快照（后一次包含前一次）不重复拼接", () => {
-  const raw = textChunk("结论") + textChunk("结论成立") + textChunk("结论成立。");
-  assert.equal(parseBaiduBaikanSse(raw).answer, "结论成立。");
+test("parseBaiduBaikanSse：缺显式标记一律按增量追加（不再用前缀启发式）", () => {
+  // 基线行为：靠「新片段是否以已拼内容开头」猜增量/快照，
+  // 增量片段一旦碰巧以已拼内容开头，整段正文会被静默吞掉。
+  const trap = textChunk("结论") + textChunk("结论成立");
+  assert.equal(parseBaiduBaikanSse(trap).answer, "结论结论成立",
+    "无标记时必须原样追加，不得因为前缀巧合而吞掉内容");
+
+  // 实测真实流就是增量：首段 194 字，后续逐段递增
+  const real = textChunk("==**OpenSpec 是一个 AI 原生") + textChunk("、规范驱动开发**") + textChunk("。");
+  assert.equal(parseBaiduBaikanSse(real).answer, "==**OpenSpec 是一个 AI 原生、规范驱动开发**。");
+});
+
+test("parseBaiduBikaiN：有显式快照标记才替换（载荷 isFullText / SSE 事件名 full）", () => {
+  const byFlag = snapshotChunk("结论") + snapshotChunk("结论成立。");
+  assert.equal(parseBaiduBaikanSse(byFlag).answer, "结论成立。", "isFullText=true → 替换");
+
+  const byEvent = snapshotChunkByEvent("结论") + snapshotChunkByEvent("结论成立。");
+  assert.equal(parseBaiduBaikanSse(byEvent).answer, "结论成立。", "事件名声明 full → 替换");
+
+  // 快照标记之后的增量仍然按增量追加
+  const mixed = snapshotChunk("结论") + textChunk("成立。");
+  assert.equal(parseBaiduBaikanSse(mixed).answer, "结论成立。");
+});
+
+test("parseBaiduSseEvents：事件名不再丢弃；多 data 行按 SSE 规范拼接", () => {
+  const events = parseBaiduSseEvents("event:message\ndata:{\"a\":1}\n\nevent:custom\ndata:{\"b\":2}\n\n");
+  assert.equal(events.length, 2);
+  assert.equal(events[0].event, "message");
+  assert.equal(events[1].event, "custom");
+  assert.deepEqual(JSON.parse(events[0].data), { a: 1 });
+
+  const multi = parseBaiduSseEvents("event:message\ndata:{\"a\":\ndata:1}\n\n");
+  assert.equal(multi.length, 1);
+  assert.deepEqual(JSON.parse(multi[0].data), { a: 1 }, "多 data 行必须拼回一个合法 JSON");
+});
+
+test("detectSseTextMode：只看协议里的显式标记", () => {
+  const payload = (data) => ({ data: { message: { content: { generator: { data } } } } });
+  assert.equal(detectSseTextMode("message", payload({ value: "x" })), undefined, "无标记 → undefined");
+  assert.equal(detectSseTextMode("message_full", payload({ value: "x" })), "snapshot");
+  assert.equal(detectSseTextMode("message.snapshot", payload({ value: "x" })), "snapshot");
+  assert.equal(detectSseTextMode("message_delta", payload({ value: "x" })), "increment");
+  assert.equal(detectSseTextMode("message", payload({ value: "x", isFullText: true })), "snapshot");
+  assert.equal(detectSseTextMode("message", payload({ value: "x", isIncremental: true })), "increment");
+});
+
+test("baikanSseEnded：识别两种结束标记（state=generate-complete / endTurn）", () => {
+  const done1 = sseEvent({ data: { message: { metaData: { state: "generate-complete", endTurn: false },
+    content: { generator: { component: "", isFinished: true } } } } });
+  assert.equal(baikanSseEnded(done1), true, "state=generate-complete 即结束");
+  const done2 = sseEvent({ data: { message: { metaData: { endTurn: true }, content: { generator: {} } } } });
+  assert.equal(baikanSseEnded(done2), true, "endTurn=true 即结束");
+  const running = textChunk("半截") + sseEvent({ data: { message: { metaData: { state: "generating-resp", endTurn: false },
+    content: { generator: { component: "markdown-yiyan", data: { value: "x" } } } } } });
+  assert.equal(baikanSseEnded(running), false, "生成中不得判结束");
+  assert.equal(baikanSseEnded(""), false);
+});
+
+test("parseBaiduBaikanSse：真实结束标记（state=generate-complete / isFinished）都算 finished", () => {
+  const byState = parseBaiduBaikanSse(textChunk("答案") + sseEvent({
+    data: { message: { metaData: { state: "generate-complete", endTurn: false },
+      content: { generator: { component: "", isFinished: true } } } },
+  }));
+  assert.equal(byState.finished, true);
+  const byEndTurn = parseBaiduBaikanSse(textChunk("答案") + sseEvent({
+    data: { message: { metaData: { state: "generate-complete", endTurn: true },
+      content: { generator: { component: "", isFinished: true } } } },
+  }));
+  assert.equal(byEndTurn.finished, true);
 });
 
 test("parseBaiduBaikanSse：endTurn 标记决定 finished", () => {

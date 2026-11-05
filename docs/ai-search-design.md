@@ -101,24 +101,47 @@ body 固定，只有 `content.query` 随查询变化：
 
 ### 3.2 响应
 
-`text/event-stream`，事件之间以**空行**分隔，每个事件一行 `data:{json}`：
+`text/event-stream`，事件之间以**空行**分隔，每个事件是 `event:message` + 一行 `data:{json}`：
 
 | 事件内路径 | 含义 |
 | --- | --- |
 | `data.message.content.generator.component === "markdown-yiyan"` | 正文片段，文本在 `generator.data.value` |
 | `data.message.content.generator.component === "reference"` | 引用出处，在 `generator.data.referenceList[]`（`text` / `title`、`url`、`source` / `author_name`） |
-| `data.message.metaData.endTurn === true` | 生成结束 |
+| `data.message.metaData.state === "generate-complete"`（且 `generator.isFinished === true`） | 生成结束（实测先发这一条） |
+| `data.message.metaData.endTurn === true` | 生成结束（实测后发这一条空事件） |
 
-**`value` 是增量还是快照，服务端两种都出现过**。解析器用一行自适应：
+**`value` 的语义只看协议里的显式标记，不再靠前缀启发式**（2026-11-05 实测修正）：
 
 ```ts
-answer = value.startsWith(answer) && value.length >= answer.length ? value : answer + value;
+const mode = detectSseTextMode(event.event, payload);   // "snapshot" | "increment" | undefined
+answer = mode === "snapshot" ? value : answer + value;   // 缺标记 → 一律按增量追加
 ```
 
-- 若 `value` 以当前 `answer` 开头且不更短 → 判定为**全量快照**，直接替换；
-- 否则判定为**增量片段**，追加。
+- 显式标记来自两处：SSE 的 `event:` **事件名**（真实流是 `message`；含 `full` / `snapshot` 的视为快照）和载荷里的布尔位（`isFullText` / `isIncremental` 等）；
+- **没有标记 → 按增量追加**（实测真实流就是增量：首段 194 字，后续 45 / 70 / 104… 逐段递增）。
 
-这样两种实现都不需要协商，也不会出现「答案被覆盖成最后一句话」或「整段重复十遍」。
+**为什么不再用前缀启发式**：旧实现靠「新片段是否以已拼内容开头」猜语义，
+`answer = value.startsWith(answer) && value.length >= answer.length ? value : answer + value`。
+一旦某个**增量片段碰巧以已拼内容开头**（例：先拼到「结论」，下一段是「结论成立」），
+启发式会把这整段正文当成快照**替换掉**，正文被静默吞掉 —— 丢内容比重复更危险。
+现在缺标记一律追加，增量永远不会被吞；服务端若哪天改发全量并带上显式标记，也仍然能正确替换。
+
+### 3.2.1 流式读取：收到结束标记立刻收尾
+
+服务端在答案生成完成后**仍会挂着连接数秒**（实测：整段读完 8781ms，结束标记在 838ms 就到了）。
+所以主通道改成 `ReadableStream` 逐段读取，**一收到结束标记就主动 `cancel()` 收尾**：
+
+| 方式 | 耗时 |
+| --- | --- |
+| 整段读完（基线） | 8781ms |
+| 结束即返回（现实现） | 838ms |
+
+单次调用省约 8 秒（≈90%）。流被截断（超时 / 断网）时，已收到的片段照常返回，只把 `finished` 置 `false`。
+
+### 3.2.2 超时是跨通道总预算
+
+`timeoutMs` 是**主通道 + 兜底通道共用的一份预算**（基线是每条通道各拿一整份，最坏总耗时翻倍）。
+兜底层内部的「扩展 → Node 直读 → 退避重试」也共用同一个 deadline：预算不够睡到下一次重试就直接放弃。
 
 ### 3.3 兜底通道的块结构
 
@@ -216,13 +239,13 @@ interface AiSearchResult extends BaiduAiAnswer {
 3. **只支持百度**。`cleanBaiduMarkdown` 里的 `:ml-*` 是百度私有语法，换引擎（Bing / Google / 秘塔）需要新提取器，不能复用。
 4. **兜底通道的 `via` 语义偏细**。返回 `extension:page|worker|cache` 三层，但对调用方没有决策价值——它只该关心「拿到了没有」。保留是因为排查风控问题时这层信息很关键。
 5. **`sections[]` 在主通道只有一段**（`area: "sse"`）。SSE 是连续增量流，没有天然的分块边界，硬切会把句子切断。兜底通道才有真实的 `summary` / `block_summary` 分块。字段为兼容两侧而统一，但语义不完全对等。
-6. **超时是「整段读完」而非「首字节」**。`fetch` + `response.text()` 在 25s 内没读完就 abort，即使已经收到 95% 内容。这里刻意选择保留半截答案（`finished: false` + warning）而不是丢弃，因为对「拿个大概」的场景，半截答案的信息量远大于一个报错。
+6. **超时是「整段读完」而非「首字节」**。已改为逐段流式读取 + 收到结束标记即收尾（见 §3.2.1），但**流被截断时**（超时 / 断网）仍会 abort，此时可能已收到 95% 内容。这里刻意选择保留半截答案（`finished: false` + warning）而不是丢弃，因为对「拿个大概」的场景，半截答案的信息量远大于一个报错。
 
 ---
 
 ## 8. 验证记录
 
-### 8.1 单测（`mcp-server/test/baidu-ai-search.test.mjs`，41 例 / A–G 七组）
+### 8.1 单测（`mcp-server/test/baidu-ai-search.test.mjs` 解析侧 + `mcp-server/test/api-command-ai-search.test.mjs` 服务层）
 
 | 组 | 覆盖 | 例数 |
 | --- | --- | --- |
@@ -232,7 +255,8 @@ interface AiSearchResult extends BaiduAiAnswer {
 | D | 引用列表（去重 / hidden / `text`↔`title` 回落） | 3 |
 | E | 截断与配额（clamp 边界） | 4 |
 | F | 引用角标（`^3^` / `^3^^5^` / `2^10` 不误伤） | 5 |
-| G | SSE 主通道（增量 / 快照自适应 / `endTurn` / 坏事件 / 截断） | 15 |
+| G | SSE 主通道（增量追加 / 显式快照替换 / `endTurn` / `generate-complete` / 坏事件 / 截断） | 20 |
+| H | 服务层（流式提前返回 / 跨通道总预算 / 兜底仍可用） | 3 |
 
 ### 8.2 真机端到端（5 条查询，全部 `via=baikan-sse`）
 
