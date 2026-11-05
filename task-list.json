@@ -289,6 +289,28 @@
         "status": "done",
         "commit": "T11",
         "completion_note": "D1：抽出 SITE_SCAN_PLACEHOLDER_BASE_HOST，两种 baseURL 形态统一排除占位默认值；D2：收齐变量全部协议相对字面量绑定，全部指向同一 host 才算唯一解，出现分歧视为歧义不猜；D3：拆成 overridden（映射赢，调用方传值未生效）与 fallback（映射未命中，退化为调用方传值）两个信号，服务层分别给出方向相反的告警。新增 8 条回归用例（6 条修复前基线失败 + 2 条收紧不放宽的反向控制用例）"
+      },
+      {
+        "id": "T12",
+        "title": "代码审查缺陷修复：占位 baseURL 泄漏 / 变量绑定首匹配掩盖歧义 / 取值留痕信号混用",
+        "owner": "xiaopeng.lei",
+        "dependsOn": [
+          "T9",
+          "T10"
+        ],
+        "files": [
+          "mcp-server/src/api-command-site-scan.ts",
+          "mcp-server/src/api-command-render.ts",
+          "mcp-server/src/api-command-service.ts",
+          "mcp-server/src/api-command-types.ts",
+          "mcp-server/test/api-command-host-infer.test.mjs",
+          "mcp-server/test/api-command-composite.test.mjs"
+        ],
+        "acceptanceCriteria": [],
+        "acceptance": "独立 verifier 会话审查 T9/T10 新代码，3 个可复现缺陷全部修复：(D1) 占位默认 baseURL api.domain.com 在 `baseURL: <expr> || <var>` 形态下未被排除，裸路径被挂到占位 host，命令必然打不通；(D2) 回查变量绑定只取首个匹配，把「变量被重新赋值」这一真实歧义藏起来；(D3) 取值命中与未命中共用 overridden 留痕信号，导致告警与事实相反。修复前基线实测 6 条新用例失败，修复后全绿；真实 B 站主 bundle 复测召回未回退",
+        "status": "done",
+        "commit": "171d327",
+        "completion_note": "D1（high）：传输层 server.ts 用 args.X === true 归一化可选布尔开关，把未传（undefined）压成显式 false，摧毁服务层 loosePaths / trustSpec / discoverBundles 三项「undefined → 默认值（true）」语义；真实 MCP 调用 analyze_page_apis action=scan_site 返回 endpointCount=0 / commandCount=0（裸路径识别、method 判定、bundle 自动发现全失效），直调解析层 scanJsText 对同一份 JS 却有 1 条候选 → 定位为传输层与服务层行为不一致，而非解析层缺陷。修复：新增纯函数层 mcp-server/src/api-command-args.ts（AnalyzeAction/AnalyzeArgs 契约 + toBooleanArg 三态/二态 + toAnalyzeArgs 归一化入口），server.ts 只剩一行 apiCommandService.analyze(toAnalyzeArgs(args))；显式传 false 仍是 false（放开是默认值不是强制值）。新增 9 条回归用例，基线复核时其中 5 条在修复前实测失败。"
       }
     ]
   },
@@ -301,7 +323,7 @@
         "updatedAt": "2026-11-05",
         "branch": "feature/webpilot-api-command-set-s1137748852001393342",
         "baseCommit": "e4b2ec9",
-        "testResult": "npm test 317/317 pass（309 + T11 审查回归 8 条）；npm run doctor 5 pass / 3 info / 0 warn / 0 fail",
+        "testResult": "npm test 326/326 pass（309 + T11 审查回归 8 条 + T12 传输层修复回归 9 条）；npm run doctor 5 pass / 3 info / 0 warn / 0 fail",
         "acceptanceEvidence": {
           "AC_1": "petstore OpenAPI 路径命中 19/19",
           "AC_2": "B 站静态推导召回 100%（35/35，loose=false 旧默认 0%）",
