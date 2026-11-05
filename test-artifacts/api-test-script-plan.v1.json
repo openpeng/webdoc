@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "api-test-script-plan/v1",
+  "generatedAt": "2026-11-05T09:50:50.514Z",
+  "scan": {
+    "modelPath": "test-artifacts/unified-scan-model.v1.json",
+    "sha256": "80bbba77147f87fe353b2c5728fee10074618f400965319c53e7c08d55c103d6",
+    "project": "webdoc",
+    "generatedAt": "2026-11-05T09:50:45.596Z"
+  },
+  "framework": "pytest",
+  "scripts": []
+}

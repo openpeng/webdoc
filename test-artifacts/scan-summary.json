@@ -1,0 +1,55 @@
+{
+  "schemaVersion": "unified-scan-model/v1",
+  "generatedAt": "2026-11-05T09:50:45.596Z",
+  "project": "webdoc",
+  "qualityGate": {
+    "status": "conditional_pass",
+    "gaps": [
+      {"code":"NO_ENDPOINT_DISCOVERED","message":"No indexed API endpoint matched the requested scope. Batch/event-only changes need a later adapter or explicit code anchors.","severity":"warning"},
+      {"code":"UNMAPPED_ACCEPTANCE_CRITERIA","message":"14 acceptance criteria have no deterministic code mapping.","severity":"warning"}
+    ]
+  },
+  "counts": {
+    "endpoints": 0,
+    "serverEndpoints": 0,
+    "frontendClientCalls": 0,
+    "serviceClientCalls": 0,
+    "flows": 0,
+    "symbols": 0,
+    "branchFacts": 0,
+    "traceNodes": 0,
+    "traceBranches": 0,
+    "acceptanceCriteria": 14,
+    "businessRules": 10,
+    "unmappedAcceptanceCriteria": 14
+  },
+  "coverage": {
+    "total": 14,
+    "mapped": 0,
+    "unmapped": 14
+  },
+  "inputs": {
+    "spec": "specs/spec.md",
+    "design": null
+  },
+  "reasonLegend": {
+    "MAPPED_BY_EXPLICIT_ENDPOINT_PATH": "Mapped by the exact endpoint path explicitly referenced in the acceptance criterion.",
+    "NO_DETERMINISTIC_ANCHOR": "No deterministic requirement-to-code anchor was found; retain as a coverage gap for review."
+  },
+  "acceptanceCriteria": [
+    {"id":"AC-1","status":"unmapped","contractIds":[],"reason":"NO_DETERMINISTIC_ANCHOR"},
+    {"id":"AC-2","status":"unmapped","contractIds":[],"reason":"NO_DETERMINISTIC_ANCHOR"},
+    {"id":"AC-3","status":"unmapped","contractIds":[],"reason":"NO_DETERMINISTIC_ANCHOR"},
+    {"id":"AC-4","status":"unmapped","contractIds":[],"reason":"NO_DETERMINISTIC_ANCHOR"},
+    {"id":"AC-5","status":"unmapped","contractIds":[],"reason":"NO_DETERMINISTIC_ANCHOR"},
+    {"id":"AC-6","status":"unmapped","contractIds":[],"reason":"NO_DETERMINISTIC_ANCHOR"},
+    {"id":"AC-7","status":"unmapped","contractIds":[],"reason":"NO_DETERMINISTIC_ANCHOR"},
+    {"id":"AC-8","status":"unmapped","contractIds":[],"reason":"NO_DETERMINISTIC_ANCHOR"},
+    {"id":"AC-9","status":"unmapped","contractIds":[],"reason":"NO_DETERMINISTIC_ANCHOR"},
+    {"id":"AC-10","status":"unmapped","contractIds":[],"reason":"NO_DETERMINISTIC_ANCHOR"},
+    {"id":"AC-11","status":"unmapped","contractIds":[],"reason":"NO_DETERMINISTIC_ANCHOR"},
+    {"id":"AC-12","status":"unmapped","contractIds":[],"reason":"NO_DETERMINISTIC_ANCHOR"},
+    {"id":"AC-13","status":"unmapped","contractIds":[],"reason":"NO_DETERMINISTIC_ANCHOR"},
+    {"id":"AC-14","status":"unmapped","contractIds":[],"reason":"NO_DETERMINISTIC_ANCHOR"}
+  ]
+}

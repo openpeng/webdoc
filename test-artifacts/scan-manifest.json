@@ -1,0 +1,9 @@
+{
+  "schemaVersion": "unified-scan-manifest/v1",
+  "generatedAt": "2026-11-05T09:50:45.596Z",
+  "artifacts": {
+    "modelPath": "F:\\mycode\\mcp-servers\\webdoc\\test-artifacts\\unified-scan-model.v1.json",
+    "summaryPath": "F:\\mycode\\mcp-servers\\webdoc\\test-artifacts\\scan-summary.json"
+  },
+  "qualityGate": "conditional_pass"
+}

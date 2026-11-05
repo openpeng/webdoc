@@ -1,0 +1,191 @@
+[
+  {
+    "phaseId": "P1",
+    "phase": "Phase 1：发现覆盖与精确率",
+    "owner": "xiaopeng.lei",
+    "tasks": [
+      {
+        "id": "T1",
+        "title": "静态推导放开：loosePaths / trustSpec 默认放开 + 扩展侧 bundle 发现优先 + needsReview 降级",
+        "owner": "xiaopeng.lei",
+        "dependsOn": [],
+        "files": [
+          "mcp-server/src/api-command-types.ts",
+          "mcp-server/src/api-command-service.ts",
+          "mcp-server/src/api-command-site-scan.ts"
+        ],
+        "acceptanceCriteria": ["AC-1", "AC-2"],
+        "acceptance": "analyze_page_apis action=scan_site 不传 loosePaths 时端点数 >= 1（B 站基线 0）；GET/HEAD/OPTIONS 端点 risk=read，其余 write；needsReview 仅保留 1 条来源标注；新增用例 >= 1 条且存量 245 条零回归",
+        "status": "pending"
+      },
+      {
+        "id": "T2",
+        "title": "路径归一与 method 修复：协议相对 URL、host 前缀丢失、inferMethod 扩展",
+        "owner": "xiaopeng.lei",
+        "dependsOn": [],
+        "files": [
+          "mcp-server/src/api-command-site-scan.ts",
+          "mcp-server/src/api-command-generator.ts"
+        ],
+        "acceptanceCriteria": ["AC-13"],
+        "acceptance": "协议相对 URL（//host/path）不再被整体当路径；候选自带 host 且 host 与 domain 不同时标记 crossHost；inferMethod 能识别 axios({method}) / 对象字面量 method / $.ajax({type})；petstore OpenAPI 19/19 路径命中；新增用例 >= 1 条",
+        "status": "pending"
+      }
+    ]
+  },
+  {
+    "phaseId": "P2",
+    "phase": "Phase 2：值落盘与调用能力",
+    "owner": "xiaopeng.lei",
+    "tasks": [
+      {
+        "id": "T4",
+        "title": "值落盘放开 + 常量参数改写为 {{name}} 占位符 + 响应敏感字段默认不强制打码",
+        "owner": "xiaopeng.lei",
+        "dependsOn": [],
+        "files": [
+          "mcp-server/src/api-command-normalize.ts",
+          "mcp-server/src/api-command-cache.ts",
+          "mcp-server/src/api-command-generator.ts",
+          "mcp-server/src/api-command-render.ts",
+          "mcp-server/src/api-command-response-schema.ts"
+        ],
+        "acceptanceCriteria": ["AC-5"],
+        "acceptance": "调用方传 params.nickname=\"lisi\" 时实际请求体为 lisi（基线发出 zhangsan）；恒定参数在命令定义中呈现为 {{name}} 占位符且真值落在 param.defaultValue；标量样本值可落盘且字符串长度 <= 200；strictRedaction 默认 false；新增用例 >= 1 条",
+        "status": "pending"
+      },
+      {
+        "id": "T3",
+        "title": "请求头放开：全部非凭据头（仅排除 Cookie / Authorization / Proxy-Authorization / Set-Cookie）",
+        "owner": "xiaopeng.lei",
+        "dependsOn": ["T4"],
+        "files": [
+          "mcp-server/src/api-command-types.ts",
+          "mcp-server/src/api-command-render.ts",
+          "mcp-server/src/api-command-service.ts",
+          "browser-extension/api-command-helpers.js",
+          "browser-extension/background.js"
+        ],
+        "acceptanceCriteria": ["AC-6"],
+        "acceptance": "请求含 X-Requested-With 且不含 Cookie / Authorization；EXECUTE_OPTIONS_ALLOWED_KEYS 含 headers；两端常量逐字同步断言通过；新增用例 >= 1 条",
+        "status": "pending"
+      }
+    ]
+  },
+  {
+    "phaseId": "P3",
+    "phase": "Phase 3：可分发闭环",
+    "owner": "xiaopeng.lei",
+    "tasks": [
+      {
+        "id": "T5",
+        "title": "导出 / 导入闭环 + source.origin 来源标注 + 成品格式命令包导入",
+        "owner": "xiaopeng.lei",
+        "dependsOn": ["T1", "T2", "T4"],
+        "files": [
+          "mcp-server/src/api-command-types.ts",
+          "mcp-server/src/api-command-cache.ts",
+          "mcp-server/src/api-command-site-scan.ts",
+          "mcp-server/src/server.ts"
+        ],
+        "acceptanceCriteria": ["AC-7", "AC-8"],
+        "acceptance": "导出 -> 清空 -> 导入后命令条数 / 名称 / 参数 / 响应裁剪规则一致且可直接调用；成品格式命令包导入产出 >= 1 条且 request.urlTemplate / risk / responseFields / manuallyEdited 被保留；新增 export_api_commands / import_api_commands 两个 MCP 工具；新增用例 >= 1 条",
+        "status": "pending"
+      }
+    ]
+  },
+  {
+    "phaseId": "P4",
+    "phase": "Phase 4：安全边界与缓存一致性",
+    "owner": "xiaopeng.lei",
+    "tasks": [
+      {
+        "id": "T6",
+        "title": "缓存写前重读合并 + 唯一 tmp 名 + loadFailed 保护",
+        "owner": "xiaopeng.lei",
+        "dependsOn": [],
+        "files": ["mcp-server/src/api-command-cache.ts"],
+        "acceptanceCriteria": ["AC-9"],
+        "acceptance": "两个 MCP 进程先后写不同域名，磁盘上两个域名的命令都存在（基线先写者被整片抹除）；tmp 文件名含 pid + 时间戳；读失败状态下 persist 只写本次新增域名；新增用例 >= 1 条",
+        "status": "pending"
+      },
+      {
+        "id": "T7",
+        "title": "invalidate 破坏性默认值修复 + 扩展侧只读门改按 method 派生",
+        "owner": "xiaopeng.lei",
+        "dependsOn": ["T4"],
+        "files": [
+          "mcp-server/src/server.ts",
+          "mcp-server/src/api-command-service.ts",
+          "browser-extension/background.js"
+        ],
+        "acceptanceCriteria": ["AC-10", "AC-12"],
+        "acceptance": "invalidate_api_commands 的 action 缺失或非法时返回 INVALID_PARAMS 且该域名命令不被删除；扩展只读模式下 risk=read 但 method=POST 被拒绝；域名白名单 / 紧急停止 / 目标 URL 校验三项硬边界一行未改；新增用例 >= 1 条",
+        "status": "pending"
+      }
+    ]
+  },
+  {
+    "phaseId": "P5",
+    "phase": "Phase 5：检索链路修正",
+    "owner": "xiaopeng.lei",
+    "tasks": [
+      {
+        "id": "T8",
+        "title": "ai_search 修正：SSE 增量拼接、流式读取、跨通道总预算、attempts 计数",
+        "owner": "xiaopeng.lei",
+        "dependsOn": [],
+        "files": [
+          "mcp-server/src/baidu-ai-search.ts",
+          "mcp-server/src/api-command-service.ts"
+        ],
+        "acceptanceCriteria": ["AC-14"],
+        "acceptance": "三个连续「哈」拼接后得到「哈哈哈」（基线得到「哈」）；SSE 收到结束标记即返回已收内容；timeoutMs 为跨通道总预算，无 ~4x 超时放大；attempts 真实计数；新增用例 >= 1 条",
+        "status": "pending"
+      }
+    ]
+  },
+  {
+    "phaseId": "P6",
+    "phase": "Phase 6：复合命令（排最后）",
+    "owner": "xiaopeng.lei",
+    "tasks": [
+      {
+        "id": "T9",
+        "title": "复合命令：ApiCommand.steps + resolveCompositeSteps + call 按序执行",
+        "owner": "xiaopeng.lei",
+        "dependsOn": ["T1", "T2", "T3", "T4", "T5", "T6", "T7"],
+        "files": [
+          "mcp-server/src/api-command-types.ts",
+          "mcp-server/src/api-command-render.ts",
+          "mcp-server/src/api-command-service.ts"
+        ],
+        "acceptanceCriteria": ["AC-3", "AC-4"],
+        "acceptance": "命令名指向复合命令时按序执行子命令并合并结果；上一步响应按 from 路径取值注入下一步 params；取值路径语法需先与用户确认再定稿；复合命令同样受 MISSING_PARAMS / CONFIRMATION_REQUIRED 门禁约束；新增用例 >= 1 条",
+        "status": "pending"
+      }
+    ]
+  },
+  {
+    "phaseId": "P7",
+    "phase": "Phase 7：回归与文档",
+    "owner": "xiaopeng.lei",
+    "tasks": [
+      {
+        "id": "T10",
+        "title": "回归验证：npm test 全绿 + 真实站点复刻率复测 + README 中英同步",
+        "owner": "xiaopeng.lei",
+        "dependsOn": ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9"],
+        "files": [
+          "mcp-server/test/*",
+          "README.md",
+          "README.zh.md",
+          "docs/*"
+        ],
+        "acceptanceCriteria": ["AC-1", "AC-2", "AC-5", "AC-6", "AC-7", "AC-8", "AC-9", "AC-10", "AC-12", "AC-13", "AC-14"],
+        "acceptance": "npm test 全绿（存量 245 条零回归 + 各批次新增用例）；npm run doctor 0 fail；静态推导召回 >= 50%（基线 0%）、实打存活 >= 50%；免开网页调用成功率 >= 90%；导出导入闭环一致可调用；并发写不互删；参数可覆盖；README 中英工具表与 docs/ 与实现一致",
+        "status": "pending"
+      }
+    ]
+  }
+]

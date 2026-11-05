@@ -1,0 +1,24 @@
+{
+  "schemaVersion": "test-consumer-manifest/v1",
+  "generatedAt": "2026-11-05T09:50:50.516Z",
+  "scan": {
+    "modelPath": "test-artifacts/unified-scan-model.v1.json",
+    "sha256": "80bbba77147f87fe353b2c5728fee10074618f400965319c53e7c08d55c103d6",
+    "project": "webdoc",
+    "generatedAt": "2026-11-05T09:50:45.596Z"
+  },
+  "artifacts": {
+    "functionalPath": "F:\\mycode\\mcp-servers\\webdoc\\test-artifacts\\functional-test-matrix.v1.json",
+    "apiPath": "F:\\mycode\\mcp-servers\\webdoc\\test-artifacts\\api-test-plan.v1.json",
+    "apiScriptPath": "F:\\mycode\\mcp-servers\\webdoc\\test-artifacts\\api-test-script-plan.v1.json",
+    "whiteboxPath": "F:\\mycode\\mcp-servers\\webdoc\\test-artifacts\\whitebox-test-plan.v1.json"
+  },
+  "counts": {
+    "functional": 24,
+    "api": 0,
+    "apiScripts": 0,
+    "whitebox": 0,
+    "whiteboxTotal": 0,
+    "whiteboxTruncated": false
+  }
+}
