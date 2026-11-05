@@ -28,6 +28,7 @@ import {
   SITE_SCAN_MAX_TOTAL_BYTES, SITE_SCAN_MAX_SOURCE_BYTES, SITE_SCAN_FETCH_TIMEOUT_MS,
   SITE_SCAN_MAX_ENDPOINTS, SITE_SCAN_REVIEW_REASON, SITE_SCAN_NO_SOURCE_WARNING,
   SITE_SCAN_SOURCE_FAILED_WARNING, SITE_SCAN_CONSERVATIVE_RISK_WARNING,
+  SITE_SCAN_DEFAULT_LOOSE, SITE_SCAN_DEFAULT_TRUST_SPEC,
   BUNDLE_COLLECT_MAX_SOURCES, BUNDLE_COLLECT_DEFAULT_SOURCES,
   BUNDLE_COLLECT_MAX_SOURCE_BYTES,
   BUNDLE_COLLECT_NO_EXTENSION_WARNING, BUNDLE_COLLECT_FAILED_WARNING,
@@ -877,15 +878,24 @@ export class ApiCommandService {
 
     // 登录态补采：受会话鉴权的 bundle 由扩展侧借页面上下文取文本；
     // 取到的文本仍交给下面同一个 scanSources() 解析（扫描逻辑只有一份）。
-    // 只有「确实有 URL 要取」或「要求自动发现」时才发消息，纯内联文本不打扰扩展。
-    const allowExtension = args.collectViaExtension === true || args.discoverBundles === true;
-    const needExtension = allowExtension && (scanUrls.length > 0 || args.discoverBundles === true);
+    // 【放开·绿区】scan_site 的默认输入源改为「扩展侧 bundle 发现优先 → Node 直读兜底」：
+    // 扩展侧能借页面上下文看到**浏览器实际加载的全部 bundle**（Node 侧 HTML 正则通常只看到
+    // 其中一小部分），且能借登录态取到受保护的脚本。前提是有 tabId；没有 tabId 时回退纯 Node。
+    const hasRemoteSource = scanUrls.length > 0;
+    const wantDiscovery = args.discoverBundles === true
+      || (args.discoverBundles !== false && !hasRemoteSource && typeof args.tabId === "number");
+    const allowExtension = args.collectViaExtension === true || wantDiscovery;
+    const needExtension = allowExtension && (scanUrls.length > 0 || wantDiscovery);
     const extensionTexts = needExtension
       ? await this.collectBundlesViaExtension(args, policy, scanUrls, warnings)
       : new Map<string, string>();
 
     // 记录已被 sources 消费的补采 URL，剩下的才是 discover 发现的新 bundle。
     const consumedExtensionUrls = new Set<string>();
+    // 输入来源分层计数：只给层级与条数，绝不回显 URL 或文本内容。
+    let inlineCount = 0;
+    let nodeFetchCount = 0;
+    let extensionCount = 0;
     for (const raw of rawSources) {
       if (totalBytes >= SITE_SCAN_MAX_TOTAL_BYTES) { warnings.add(SITE_SCAN_SOURCE_FAILED_WARNING); break; }
       const item = asRecord(raw);
@@ -895,6 +905,7 @@ export class ApiCommandService {
       let text = "";
       if (typeof item.text === "string" && item.text.length > 0) {
         text = item.text.slice(0, SITE_SCAN_MAX_TEXT_CHARS);
+        inlineCount += 1;
       } else if (typeof item.url === "string" && item.url.trim()) {
         const verdict = checkScanUrl(item.url.trim(), policy);
         if (!verdict.ok || !verdict.url) {
@@ -903,11 +914,12 @@ export class ApiCommandService {
         }
         // 优先用扩展补采结果（含登录态）；没取到再退回 Node 直读（公开可读的 bundle）。
         text = extensionTexts.get(verdict.url) ?? "";
-        if (text) consumedExtensionUrls.add(verdict.url);
+        if (text) { consumedExtensionUrls.add(verdict.url); extensionCount += 1; }
         if (!text) {
           const fetched = await this.fetchScanSource(verdict.url, args.scanTimeoutMs);
           if (!fetched.ok) { warnings.add(SITE_SCAN_SOURCE_FAILED_WARNING); continue; }
           text = fetched.text;
+          nodeFetchCount += 1;
         }
       }
       if (!text || text.length > SITE_SCAN_MAX_SOURCE_BYTES) {
@@ -927,11 +939,19 @@ export class ApiCommandService {
       if (totalBytes >= SITE_SCAN_MAX_TOTAL_BYTES) { warnings.add(SITE_SCAN_SOURCE_FAILED_WARNING); break; }
       if (!text || text.length > SITE_SCAN_MAX_SOURCE_BYTES) continue;
       totalBytes += text.length;
+      extensionCount += 1;
       prepared.push({ kind: "js", text });
     }
 
     const maxEndpoints = clampInt(args.maxEndpoints, 1, SITE_SCAN_MAX_ENDPOINTS, SITE_SCAN_MAX_ENDPOINTS);
-    const scanned = scanSources(prepared, { domain, loose: args.loosePaths === true, maxEndpoints });
+    // 输入来源层级（必须在「零候选提前返回」之前落定，否则报告里看不到层级）。
+    report.bundleSource = extensionCount > 0 ? "extension"
+      : nodeFetchCount > 0 ? "node-html"
+      : inlineCount > 0 ? "inline"
+      : "none";
+    // 【放开·绿区】loosePaths 默认 true：现代站点（/x/...、/pgc/...）在保守模式下产出为 0。
+    const loose = args.loosePaths === undefined ? SITE_SCAN_DEFAULT_LOOSE : args.loosePaths === true;
+    const scanned = scanSources(prepared, { domain, loose, maxEndpoints });
     for (const warning of warnings) report.warnings.push(warning);
     for (const warning of scanned.warnings) {
       if (!report.warnings.includes(warning)) report.warnings.push(warning);
@@ -958,27 +978,26 @@ export class ApiCommandService {
       schema: new Map(),
       now: new Date().toISOString(),
       scheme: "https",
-      forceNeedsReview: true,
+      // needsReview 由 scan_site 自己统一收敛为 1 条来源标注，不叠加生成层的理由。
+      forceNeedsReview: false,
       emptyResponseSchema: true,
     };
     const generated = generateCommands(groups, ctx);
 
-    // 没有真实流量证据 → 默认全部按写操作保守处理；trustSpec 时规格类来源按声明方法。
-    const trustSpec = args.trustSpec === true;
+    // 没有真实流量证据 → 放开后按来源声明 / 观测到的 method 判定 risk；
+    // trustSpec=false 时回退「一律 write」的保守模式。
+    const trustSpec = args.trustSpec === undefined ? SITE_SCAN_DEFAULT_TRUST_SPEC : args.trustSpec === true;
     const commands = trustSpec
       ? generated.commands
       : generated.commands.map((command) => ({ ...command, risk: "write" as Risk }));
     if (!trustSpec && commands.length > 0) report.warnings.push(SITE_SCAN_CONSERVATIVE_RISK_WARNING);
 
-    const needsReview: ReviewItem[] = [...generated.needsReview];
-    const known = new Set(needsReview.map((item) => `${item.commandId}\u0000${item.reason}`));
-    for (const command of commands) {
-      const key = `${command.commandId}\u0000${SITE_SCAN_REVIEW_REASON}`;
-      if (!known.has(key)) {
-        known.add(key);
-        needsReview.push({ commandId: command.commandId, reason: SITE_SCAN_REVIEW_REASON });
-      }
-    }
+    // 【放开·绿区】needsReview 降为 1 条来源标注（放开前是 3 条理由叠加：
+    // analyze_current 兼容入口 + 缺响应体样本 + 不安全常量 各一条）。
+    const needsReview: ReviewItem[] = commands.map((command) => ({
+      commandId: command.commandId,
+      reason: SITE_SCAN_REVIEW_REASON,
+    }));
 
     const mergeResult = await this.cache.merge(domain, commands, {
       mode,

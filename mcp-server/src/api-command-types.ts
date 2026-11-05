@@ -573,6 +573,12 @@ export interface AnalysisReport {
   stale: string[];
   mode: AnalysisMode;
   sampledResponseCount: number;   // 只给计数，不给样本值
+  /**
+   * 静态推导实际使用的输入来源层级（scan_site）：
+   * `extension` = 扩展侧借页面上下文发现 / 取回的 bundle；`node-html` = 纯 Node 直读；
+   * `inline` = 只用了调用方内联文本。其它分析动作为 undefined。
+   */
+  bundleSource?: string;
 }
 
 export interface ListResult {
@@ -765,12 +771,27 @@ export const SITE_SCAN_ALLOW_PRIVATE_HOSTS_DEFAULT = false;
 /** 【放开·黄区】允许跨 hostname 的脚本源（CDN）；默认 false，需显式列 extraHosts。 */
 export const SITE_SCAN_ALLOW_CROSS_HOST_DEFAULT = false;
 
+/**
+ * 【放开·绿区】静态推导默认放宽路径判定（`loosePaths` 的默认值）。
+ * 放开前默认 false —— 现代站点（`/x/...`、`/pgc/...` 这类非标准前缀）一条都发现不了。
+ * 改回 false 即可回到保守模式；这是配置化放开，**不删除任何判定代码**。
+ */
+export const SITE_SCAN_DEFAULT_LOOSE = true;
+
+/**
+ * 【放开·绿区】静态推导默认信任来源声明的 HTTP method（`trustSpec` 的默认值）。
+ * 放开前默认 false —— 所有静态推导命令一律按 `write` 保守处理，GET 端点也要显式确认。
+ * 改为 true 后按真实 method 判定 risk（GET/HEAD/OPTIONS → read，其余 → write）。
+ * 改回 false 即可回到保守模式。
+ */
+export const SITE_SCAN_DEFAULT_TRUST_SPEC = true;
+
 export const SITE_SCAN_REVIEW_REASON = "静态推导产物：接口来自前端代码 / 规格 / 归档流量，未经真实响应验证，参数与响应结构需人工复核";
 export const SITE_SCAN_NO_SOURCE_WARNING = "未提供任何可读数据源，未生成命令；可传 sources（url 或 text）";
 export const SITE_SCAN_PRIVATE_HOST_WARNING = "已按 allowPrivateHosts=false 跳过内网 / 回环地址的数据源";
 export const SITE_SCAN_CROSS_HOST_WARNING = "已按同源策略跳过跨 hostname 的数据源；如需 CDN 脚本，必须同时传 allowCrossHost=true 并在 extraHosts 中列出该 hostname（两者是「总开关 + 精确白名单」的双重确认，缺一不可）";
 export const SITE_SCAN_SOURCE_FAILED_WARNING = "部分数据源读取失败或超过配额，已跳过";
-export const SITE_SCAN_CONSERVATIVE_RISK_WARNING = "静态推导命令默认全部按 write 保守处理；规格类来源可传 trustSpec=true 按声明方法判定";
+export const SITE_SCAN_CONSERVATIVE_RISK_WARNING = "静态推导命令默认全部按 write 保守处理；可传 trustSpec=false 保持该保守模式，trustSpec=true 时按来源声明的 method 判定";
 
 // ============================================================================
 // 14. BundleCollect —— 扩展侧「带登录态补采 JS bundle」（scan_site 的补充通道）
