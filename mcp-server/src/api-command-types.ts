@@ -382,6 +382,10 @@ export const NON_JSON_BODY_REVIEW_REASON = "请求体不是 JSON 对象，未生
 export const UNSAFE_CONSTANT_REVIEW_REASON = "检测到不安全常量或敏感字段名，已转为必填参数或丢弃，请人工复核";
 export const STALE_MANUAL_WARNING = "人工修正命令未在本次分析中观测到，已保留并标记 stale；如需删除请设置 overwriteManual=true";
 export const NO_CACHE_LIST_WARNING = "该域名尚无命令集，请调用 analyze_page_apis 进行页面分析";
+/** 写盘前重读磁盘缓存失败：磁盘状态未知，宁可不写，也不拿内存快照覆盖磁盘上已有的命令集。 */
+export const CACHE_WRITE_SKIPPED_WARNING = "缓存写入已跳过：写盘前重读磁盘缓存失败，避免覆盖磁盘上已有的命令集";
+/** 读盘失败保护：本次只写入本次新增/改动的域名，其余域名以磁盘内容为准。 */
+export const CACHE_LOAD_FAILED_WARNING = "缓存读取失败，本次只写入本次新增/改动的域名，其余域名以磁盘内容为准";
 /** inferParams 用此前缀标记「不安全常量已转必填参数」，generateCommands 据此生成 needsReview。 */
 export const NEEDS_REVIEW_DESCRIPTION_PREFIX = "[需人工复核] ";
 
@@ -592,6 +596,7 @@ export interface CacheLoadDiagnostics {
   skippedInvalid: Array<{ host: string; commandId?: string; reason: string }>;
   errors: Array<{ source: string; error: string }>;
   backupFile?: string;            // *.corrupt-<ts>
+  loadFailed?: boolean;           // 读盘失败（IO 错误 / 结构非法）：本进程没有可信磁盘视图
 }
 export interface CacheReport {
   domains: Array<{ host: string; commandCount: number; updatedAt: string }>;
