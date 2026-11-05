@@ -941,6 +941,15 @@ export const SITE_SCAN_CROSS_HOST_COMMAND_WARNING = "部分静态推导端点来
  * 只说明机制，不回显任何 host / 路径。
  */
 export const SITE_SCAN_HOST_INFERRED_WARNING = "部分静态推导端点为裸路径，已按同批数据源中出现的协议相对 URL 继承其真实 host（同一路径对应多个 host 时不做推断）";
+/**
+ * 前端 HTTP 客户端的**占位默认 baseURL**。
+ *
+ * 前端请求库的出厂默认值是 `//api.domain.com`（axios 早期版本的默认 baseURL），
+ * 打包后它原样留在 bundle 里。它是**占位符，不是真实主机** —— 静态推导若把它当成
+ * baseURL，裸路径就会被挂到 api.domain.com 上，生成的命令必然打不通。
+ * 两种 baseURL 写法（`baseURL: <expr> || <var>` 与 `baseURL: "//host"`）都必须排除它。
+ */
+export const SITE_SCAN_PLACEHOLDER_BASE_HOST = "api.domain.com";
 
 // ============================================================================
 // 14. BundleCollect —— 扩展侧「带登录态补采 JS bundle」（scan_site 的补充通道）

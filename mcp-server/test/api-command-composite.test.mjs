@@ -419,6 +419,53 @@ test("T9：applyStepMappings 取值优先级 —— 映射 > 调用方 > 固定�
   assert.equal(literal.params.page, 7);
 });
 
+test("T11：取值命中与取值未命中是两个相反的信号，不得混用", () => {
+  // 缺陷：命中（映射赢）与未命中（调用方传值兜底）都记进 overridden，
+  // 上层只能给出同一句告警 —— 把「调用方传值生效了」说成「调用方传值未生效」，
+  // 与事实相反，排查时会被误导。
+  const plan = resolveCompositeSteps({
+    ...base(),
+    steps: [{ name: "get.order", params: { id: { from: "$.data.order.id" } } }],
+  })[0];
+
+  // 命中：映射的值生效，调用方传值**未生效** → overridden
+  const hit = applyStepMappings(plan, { data: { order: { id: "ord-9" } } }, { id: "from-caller" });
+  assert.equal(hit.params.id, "ord-9");
+  assert.ok(hit.overridden.includes("id"), "映射命中 → 记 overridden");
+  assert.deepEqual(hit.fallback, [], "映射命中 → 不得记 fallback");
+
+  // 未命中：调用方传值**生效** → fallback（不是 overridden）
+  const miss = applyStepMappings(plan, { data: {} }, { id: "from-caller" });
+  assert.equal(miss.params.id, "from-caller");
+  assert.ok(miss.fallback.includes("id"), "映射未命中 → 记 fallback");
+  assert.deepEqual(miss.overridden, [], "映射未命中 → 不得记 overridden（否则告警与事实相反）");
+});
+
+test("T11：服务层对「映射命中」与「映射未命中」给出方向相反的告警", async (t) => {
+  // 缺陷在服务层的表述：两个分支共用同一句「调用方传值未生效」，
+  // 但未命中时实际是**调用方传值生效了** —— 告警与事实相反。
+  const { dir, service } = await makeService(
+    [createCmd(), base(), compositeCmd({
+      steps: [
+        { name: "create.order", params: { sku: "SKU-1" } },
+        { name: "get.order", params: { id: { from: "$.data.nothing.here" } } },
+      ],
+    })],
+    async () => ({ success: true, status: 200, body: { data: { order: { id: "ord-1" } } }, durationMs: 5 }),
+  );
+  t.after(() => rm(dir, { recursive: true, force: true }));
+
+  // 调用方也传了 id → 映射未命中时退化用调用方传值，告警必须说「调用方传值生效」。
+  const result = await service.call({
+    domain: DOMAIN, name: "flow.create_then_get", confirm: true, params: { id: "caller-id" },
+  });
+  assert.ok(!result.error, "调用方传值兜底时应正常执行");
+  assert.ok(result.warnings.some((w) => w.includes("取值路径未命中")),
+    `未命中必须提示取值路径未命中，实际 warnings=${JSON.stringify(result.warnings)}`);
+  assert.ok(!result.warnings.some((w) => w.includes("调用方传值未生效")),
+    `未命中时不得说「调用方传值未生效」（与事实相反），实际 warnings=${JSON.stringify(result.warnings)}`);
+});
+
 test("T9：resolveCompositeSteps 只拆参数不求值，步数按上限截断", () => {
   const plans = resolveCompositeSteps({
     ...base(),

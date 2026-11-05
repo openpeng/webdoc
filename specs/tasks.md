@@ -78,10 +78,15 @@
   - 落点：`test-artifacts/test-coverage-result.v1.json`（由 `orbit_test_artifacts mode=record` 写入）
   - 验收：14 条 AC 均有对应执行用例编号与证据引用；基线 gap `UNMAPPED_ACCEPTANCE_CRITERIA` 显式登记处置（不伪造自动映射）
 
+- [x] **2.11** T11 代码审查缺陷修复：占位 baseURL 泄漏、变量绑定首匹配掩盖歧义、取值命中/未命中留痕信号混用（负责人：xiaopeng.lei）
+  - **完成**：`T11` — 独立 verifier 会话审查 T9/T10 新代码，主开发复核并逐条实证。3 个可复现缺陷全部修复：(D1) 占位默认 baseURL `api.domain.com` 在 `baseURL: <expr> || <var>` 形态下未被排除 → 裸路径被挂到占位 host，命令必然打不通，抽出 `SITE_SCAN_PLACEHOLDER_BASE_HOST` 两形态统一排除；(D2) 回查变量绑定只取首个匹配，把「变量被重新赋值」这一真实歧义藏起来 → 收齐全部绑定，全部指向同一 host 才算唯一解，出现分歧即不猜；(D3) 取值命中与未命中共用 `overridden` 信号 → 告警与事实相反，拆成 `overridden` / `fallback` 两个信号，服务层分别给出方向相反的告警。新增 8 条回归用例（6 条在修复前基线实测失败）。
+  - 落点：`mcp-server/src/api-command-site-scan.ts` `detectBaseUrlHosts()` / `mcp-server/src/api-command-render.ts` `applyStepMappings()` / `mcp-server/src/api-command-service.ts` `callComposite()` / `mcp-server/src/api-command-types.ts` `SITE_SCAN_PLACEHOLDER_BASE_HOST`
+  - 验收：修复后 `npm test` **317/317 pass**（309 + 8）；修复前基线实测 6 条新用例失败；真实 B 站主 bundle（1605288 字节）复测召回未回退（113 候选中 48 个归属 `api.bilibili.com`，host 推断告警仍触发，无候选被占位 host 污染）
+
 ## Phase 3：测试（QA）
 
 - [x] **3.1** 功能测试与回归（负责人：xiaopeng.lei）
-  - **完成**：`npm test` → **309/309 pass**（存量 245 条零回归 + 新增 64 条）；`npm run doctor` → 5 pass / 3 info / 0 warn / 0 fail。AC-11 专项：扩展域名白名单外目标被拒且零网络请求（`api-command-security.test.mjs:363`/`:395`）；AC-3 / AC-4：缺参与未确认均零网络请求（`api-command-render.test.mjs:227`）。
+  - **完成**：`npm test` → **317/317 pass**（存量 245 条零回归 + 新增 72 条：T1–T10 累计 64 条 + T11 审查回归 8 条）；`npm run doctor` → 5 pass / 3 info / 0 warn / 0 fail。AC-11 专项：扩展域名白名单外目标被拒且零网络请求（`api-command-security.test.mjs:363`/`:395`）；AC-3 / AC-4：缺参与未确认均零网络请求（`api-command-render.test.mjs:227`）。
   - 范围：`npm test` 全绿（存量 245 条零回归 + 各批次新增用例）；`npm run doctor` 0 fail；AC 全部通过，无阻断性 Bug
   - 专项回归：AC-11 —— 扩展域名白名单外的目标被拒绝且零网络请求（硬边界不变）；AC-3 / AC-4 —— 缺参与未确认均零网络请求
   - 验收：AC-1 ~ AC-14 全部通过，无阻断性 Bug
@@ -103,7 +108,7 @@
 
 ---
 
-**执行结果（2026-11-05）**：`npm test` 309/309 pass ｜ `npm run doctor` 0 fail ｜ 14/14 AC 通过 ｜ 基线 gap 0 阻断。
+**执行结果（2026-11-05）**：`npm test` 317/317 pass ｜ `npm run doctor` 0 fail ｜ 14/14 AC 通过 ｜ 代码审查 T11 修复 3 个可复现缺陷（补 8 条回归用例）｜ 基线 gap 0 阻断。
 
 **产出物索引**：
 

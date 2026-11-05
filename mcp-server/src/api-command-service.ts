@@ -1661,6 +1661,12 @@ export class ApiCommandService {
           `第 ${plan.index + 1} 步的 ${mapped.overridden.join(", ")} 由取值映射决定，调用方传值未生效`,
         );
       }
+      if (mapped.fallback.length > 0) {
+        // 取值路径未命中 → 退化用调用方传值；与上面那条方向相反，必须分开表述。
+        warnings.push(
+          `第 ${plan.index + 1} 步的 ${mapped.fallback.join(", ")} 取值路径未命中，已退化为调用方传值`,
+        );
+      }
 
       // 运行时再校验一次（映射取到的值类型可能不符子命令约束）。
       const validation = validateParams(child, mapped.params);
