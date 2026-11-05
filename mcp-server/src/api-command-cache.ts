@@ -32,6 +32,7 @@ import {
   isPersistableLiteral, looksLikeCredential, sanitizeErrorMessage, redactHeaderNames,
   sanitizeRequestHeaders,
 } from "./api-command-normalize.js";
+import { stableCommandId } from "./api-command-generator.js";
 import type {
   ApiCommand, ApiParam, ApiCommandCacheFile, DomainBucket, CacheLoadDiagnostics,
   CacheReport, CommandCard, CommandSummary, ListResult, AnalysisDiff, AnalysisMode,
@@ -47,6 +48,10 @@ export type CommandPatch = Partial<Pick<ApiCommand, "name" | "params" | "respons
 export type ListOptions = { includeDisabled?: boolean; keyword?: string; risk?: Risk };
 export type MergeOptions = { mode: AnalysisMode; overwriteManual: boolean };
 export type InvalidateOptions = { commandId?: string; action: "disable" | "delete" | "clear_domain" };
+export type ExportOptions = { includeDisabled?: boolean };
+export type ImportOptions = { overwrite?: boolean };
+export type ExportResult = { domain: string; exported: number; path: string; warnings: string[] };
+export type ImportResult = { domain: string; imported: number; skipped: number; path: string; warnings: string[] };
 export type MergeResult = {
   diff: AnalysisDiff;
   preservedManualEdits: string[];
@@ -525,6 +530,7 @@ function toCard(command: ApiCommand): CommandCard {
     name: command.name,
     method: command.request.method,
     pathTemplate: command.request.pathTemplate,
+    urlTemplate: command.request.urlTemplate,
     risk: command.risk,
     confidence: command.confidence,
     params: command.params,
@@ -541,6 +547,31 @@ function toCard(command: ApiCommand): CommandCard {
 // ===========================================================================
 // Repository
 // ===========================================================================
+
+/**
+ * 导入他人命令集时把 urlTemplate 的主机改写成目标域名。
+ *
+ * 只替换 URL 的 authority 部分（字符串级替换，不走 URL 序列化）——
+ * URL 序列化会把 `{{param}}` 占位符百分号编码，模板就废了。
+ * 改写后 commandId 也按新域名重算，保证同一份命令在同一域名下稳定。
+ */
+export function rewriteCommandHost(raw: unknown, host: string): any {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return raw;
+  const item = { ...(raw as Record<string, unknown>) };
+  item.domain = host;
+  const request = (item.request && typeof item.request === "object" && !Array.isArray(item.request))
+    ? { ...(item.request as Record<string, unknown>) }
+    : undefined;
+  if (request && typeof request.urlTemplate === "string") {
+    request.urlTemplate = request.urlTemplate.replace(/^(https?:\/\/)[^/]+/i, `$1${host}`);
+    if (typeof request.method === "string" && typeof request.pathTemplate === "string") {
+      const method = String(request.method).toUpperCase();
+      item.commandId = stableCommandId(host, method as HttpMethod, String(request.pathTemplate));
+    }
+  }
+  if (request) item.request = request;
+  return item;
+}
 
 export class ApiCommandCache {
   private readonly domains = new Map<string, DomainBucket>();
@@ -815,6 +846,117 @@ export class ApiCommandCache {
     bucket.updatedAt = now;
     await this.persist();
     return { diff, preservedManualEdits, stale, warnings };
+  }
+
+  /**
+   * 导出命令集为**可审查 JSON**（交付他人直接使用的载体）。
+   * 导出内容保留来源标注、参数、响应裁剪规则、备注；不含任何凭据头。
+   */
+  async export(domain: string, filePath: string, opts: ExportOptions = {}): Promise<ExportResult> {
+    await this.ensureLoaded();
+    const host = normalizeHostname(domain);
+    const warnings: string[] = [];
+    if (!isValidHostname(host)) {
+      return { domain: host, exported: 0, path: filePath, warnings: ["domain 非法，未导出"] };
+    }
+    const bucket = this.bucket(host);
+    if (!bucket || bucket.commands.length === 0) {
+      warnings.push(NO_CACHE_LIST_WARNING);
+      return { domain: host, exported: 0, path: filePath, warnings };
+    }
+    const includeDisabled = opts.includeDisabled === true;
+    const commands = bucket.commands
+      .filter((command) => includeDisabled || !command.health.disabled)
+      .map((command) => ({
+        ...command,
+        // 导出件不携带健康度计数与失效标记（那是本机运行态，不是命令定义）。
+        health: {
+          hits: 0, misses: 0, consecutiveFailures: 0, disabled: false, totalDurationMs: 0,
+        },
+      }));
+    const payload = {
+      version: CACHE_VERSION,
+      kind: "webpilot-api-command-set",
+      generatedBy: GENERATED_BY,
+      exportedAt: new Date().toISOString(),
+      domain: host,
+      commands,
+    };
+    try {
+      await mkdir(dirname(filePath), { recursive: true });
+      await writeFile(filePath, JSON.stringify(payload, null, 2), "utf8");
+    } catch (error: any) {
+      const detail = sanitizeErrorMessage(String(error?.message ?? "")) || ERROR_SAFE_MESSAGES.WRITE_FAILED;
+      return { domain: host, exported: 0, path: filePath, warnings: [`导出失败：${detail}`] };
+    }
+    return { domain: host, exported: commands.length, path: filePath, warnings };
+  }
+
+  /**
+   * 导入他人交付的命令集。
+   *  - 文件必须是合法 JSON，且含 commands 数组；
+   *  - 每条命令都过 toCommand() 白名单重建（未知键丢弃、非法条目跳过）；
+   *  - urlTemplate 的主机改写为目标域名（否则导入后必然打错地址）；
+   *  - 同名命令：overwrite=true 覆盖，否则跳过并计入 skipped。
+   */
+  async import(domain: string, filePath: string, opts: ImportOptions = {}): Promise<ImportResult> {
+    await this.ensureLoaded();
+    const host = normalizeHostname(domain);
+    const warnings: string[] = [];
+    if (!isValidHostname(host)) {
+      return { domain: host, imported: 0, skipped: 0, path: filePath, warnings: ["domain 非法，未导入"] };
+    }
+    let text: string;
+    try {
+      text = await readFile(filePath, "utf8");
+    } catch (error: any) {
+      const detail = sanitizeErrorMessage(String(error?.message ?? "")) || ERROR_SAFE_MESSAGES.WRITE_FAILED;
+      return { domain: host, imported: 0, skipped: 0, path: filePath, warnings: [`读取导入文件失败：${detail}`] };
+    }
+    let parsed: any;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      return { domain: host, imported: 0, skipped: 0, path: filePath, warnings: ["导入文件不是合法 JSON"] };
+    }
+    const rawCommands = parsed && typeof parsed === "object" && Array.isArray(parsed.commands)
+      ? parsed.commands as unknown[]
+      : [];
+    if (rawCommands.length === 0) {
+      return { domain: host, imported: 0, skipped: 0, path: filePath, warnings: ["导入文件里没有 commands 数组"] };
+    }
+
+    const localDiag: CacheLoadDiagnostics = { skippedInvalid: [], errors: [] };
+    const clean: ApiCommand[] = [];
+    for (const raw of rawCommands) {
+      const rewritten = rewriteCommandHost(raw, host);
+      const rebuilt = toCommand(rewritten, host, localDiag);
+      if (rebuilt) clean.push(rebuilt);
+    }
+    for (const skipped of localDiag.skippedInvalid) {
+      warnings.push(`导入条目 ${skipped.commandId || ""} 未通过白名单校验：${skipped.reason}`);
+    }
+
+    const overwrite = opts.overwrite === true;
+    const now = new Date().toISOString();
+    const bucket = this.bucket(host) ?? { host, updatedAt: now, commands: [] };
+    let imported = 0;
+    let skipped = 0;
+    for (const command of clean) {
+      const index = bucket.commands.findIndex((existing) => existing.name === command.name);
+      if (index >= 0) {
+        if (!overwrite) { skipped += 1; continue; }
+        bucket.commands[index] = { ...command, createdAt: bucket.commands[index].createdAt, updatedAt: now };
+      } else {
+        bucket.commands.push({ ...command, updatedAt: now });
+      }
+      imported += 1;
+    }
+    skipped += rawCommands.length - clean.length;
+    bucket.updatedAt = now;
+    this.domains.set(host, bucket);
+    await this.persist();
+    return { domain: host, imported, skipped, path: filePath, warnings };
   }
 
   /** 人工修正：置 manuallyEdited=true；allowedValues 必须逐值过 isSafeLiteral。 */

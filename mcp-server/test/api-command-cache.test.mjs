@@ -81,8 +81,109 @@ test("落盘 JSON → 新实例加载仍命中（AC-11）", async (t) => {
   assert.equal((await reloaded.get(DOMAIN, { name: commands[1].name })).commandId, commands[1].commandId);
 });
 
-test("损坏 JSON → 备份 *.corrupt-<ts> 后重建空缓存，不崩溃（AC-16）", async (t) => {
-  const { file } = await withTemp(t);
+// ---------------------------------------------------------------------------
+// T5 导出 / 导入闭环（AC-7）
+// ---------------------------------------------------------------------------
+
+test("T5：导出 → 清空 → 导入，命令条数 / 名称 / 参数 / 响应裁剪规则一致且可直接调用", async (t) => {
+  const { dir, file } = await withTemp(t);
+  const cache = new ApiCommandCache(file);
+  const commands = makeCommands();
+  await cache.merge(DOMAIN, commands, { mode: "full", overwriteManual: false });
+  // 人工改一条：加响应裁剪规则与备注，导出后必须原样保留。
+  await cache.update(DOMAIN, commands[0].commandId, {
+    responseFields: ["id", "name"],
+    note: "人工确认过的字段",
+  });
+
+  const exportPath = join(dir, "exported.api-commands.json");
+  const exported = await cache.export(DOMAIN, exportPath);
+  assert.equal(exported.exported, 2);
+  assert.equal(exported.path, exportPath);
+
+  const raw = JSON.parse(await readFile(exportPath, "utf8"));
+  assert.equal(raw.kind, "webpilot-api-command-set");
+  assert.equal(raw.domain, DOMAIN);
+  assert.equal(raw.commands.length, 2);
+  assert.ok(!JSON.stringify(raw).includes("Cookie"), "导出件不得含凭据头");
+
+  // 清空缓存后导入（模拟交付他人 → 对方导入）。
+  const other = new ApiCommandCache(join(dir, "other.json"));
+  const imported = await other.import(DOMAIN, exportPath, { overwrite: false });
+  assert.equal(imported.imported, 2);
+  assert.equal(imported.skipped, 0);
+
+  const before = await cache.list(DOMAIN, { includeDisabled: true });
+  const after = await other.list(DOMAIN, { includeDisabled: true });
+  assert.equal(after.total, before.total, "导入后条数必须一致");
+  assert.deepEqual(
+    after.commands.map((c) => c.name).sort(),
+    before.commands.map((c) => c.name).sort(),
+    "导入后名称必须一致",
+  );
+  assert.deepEqual(
+    after.commands.find((c) => c.name === before.commands[0].name)?.responseFields,
+    before.commands.find((c) => c.name === before.commands[0].name)?.responseFields,
+    "响应裁剪规则必须一致",
+  );
+  const importedCommand = await other.get(DOMAIN, { name: commands[0].name });
+  assert.ok(importedCommand, "导入后应能按名命中");
+  assert.equal(importedCommand.note, "人工确认过的字段", "备注必须保留");
+  assert.equal(importedCommand.manuallyEdited, true, "人工标记必须保留");
+  assert.ok(
+    importedCommand.request.urlTemplate.startsWith(`https://${DOMAIN}/`),
+    "导入后的 urlTemplate 必须指向目标域名，可直接调用",
+  );
+});
+
+test("T5：导入到别的域名时 urlTemplate 主机被改写；同名命令默认跳过、overwrite 才覆盖", async (t) => {
+  const { dir, file } = await withTemp(t);
+  const cache = new ApiCommandCache(file);
+  await cache.merge(DOMAIN, makeCommands(), { mode: "full", overwriteManual: false });
+  const exportPath = join(dir, "exported.json");
+  await cache.export(DOMAIN, exportPath);
+
+  const other = new ApiCommandCache(join(dir, "other.json"));
+  const target = "other.example.com";
+  const imported = await other.import(target, exportPath, { overwrite: false });
+  assert.equal(imported.imported, 2);
+  const listed = await other.list(target);
+  assert.equal(listed.total, 2);
+  assert.ok(listed.commands.every((c) => c.urlTemplate.startsWith(`https://${target}/`)),
+    "urlTemplate 主机必须改写成目标域名");
+
+  // 再导入一次：同名跳过。
+  const again = await other.import(target, exportPath, { overwrite: false });
+  assert.equal(again.imported, 0);
+  assert.equal(again.skipped, 2);
+  // overwrite=true 才覆盖。
+  const forced = await other.import(target, exportPath, { overwrite: true });
+  assert.equal(forced.imported, 2);
+  assert.equal((await other.list(target)).total, 2);
+});
+
+test("T5：导入非法文件（不存在 / 非 JSON / 无 commands）一律不写入并给出告警", async (t) => {
+  const { dir, file } = await withTemp(t);
+  const cache = new ApiCommandCache(file);
+  const missing = await cache.import(DOMAIN, join(dir, "nope.json"));
+  assert.equal(missing.imported, 0);
+  assert.ok(missing.warnings.length > 0);
+
+  const badPath = join(dir, "bad.json");
+  await writeFile(badPath, "{ not json", "utf8");
+  const bad = await cache.import(DOMAIN, badPath);
+  assert.equal(bad.imported, 0);
+  assert.ok(bad.warnings.some((w) => w.includes("JSON")));
+
+  const emptyPath = join(dir, "empty.json");
+  await writeFile(emptyPath, JSON.stringify({ commands: [] }), "utf8");
+  const empty = await cache.import(DOMAIN, emptyPath);
+  assert.equal(empty.imported, 0);
+  assert.ok(empty.warnings.length > 0);
+  assert.equal((await cache.list(DOMAIN)).total, 0, "非法导入不得污染缓存");
+});
+
+test("损坏 JSON → 备份 *.corrupt-<ts> 后重建空缓存，不崩溃（AC-16）", async (t) => {  const { file } = await withTemp(t);
   const cache1 = new ApiCommandCache(file);
   await cache1.merge(DOMAIN, [makeCommands()[0]], { mode: "full", overwriteManual: false });
   const broken = "{ this is not json";

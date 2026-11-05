@@ -44,7 +44,7 @@ import type {
   Risk, ReviewItem, GenerateContext, SiteScanKind, SiteScanSource,
 } from "./api-command-types.js";
 import { ApiCommandCache } from "./api-command-cache.js";
-import type { CommandPatch } from "./api-command-cache.js";
+import type { CommandPatch, ExportResult, ImportResult } from "./api-command-cache.js";
 import {
   normalizeHostname, normalizeRecords, filterCandidates, templatePath,
   groupEndpoints, endpointKey, redactHeaderNames,
@@ -54,7 +54,8 @@ import {
 } from "./api-command-response-schema.js";
 import { generateCommands } from "./api-command-generator.js";
 import { validateParams, renderRequest, previewFor, RenderError } from "./api-command-render.js";
-import { scanSources, toScanRecords, checkScanUrl } from "./api-command-site-scan.js";
+import { scanSources, toScanRecords, checkScanUrl, extractFinishedCommands } from "./api-command-site-scan.js";
+import { rewriteCommandHost, toCommand } from "./api-command-cache.js";
 import {
   AI_ANSWER_MAX_CHARS_DEFAULT, AI_ANSWER_MAX_CHARS_LIMIT, AI_QUERY_MAX_CHARS,
   BAIDU_AI_SEARCH_ORIGIN, BAIDU_AI_SEARCH_PATH,
@@ -137,8 +138,19 @@ export interface CallArgs {
   headers?: Record<string, unknown>;
 }
 
-export interface UpdateArgs {
+export interface ExportArgs {
   domain: string;
+  path: string;
+  includeDisabled?: boolean;
+}
+
+export interface ImportArgs {
+  domain: string;
+  path: string;
+  overwrite?: boolean;
+}
+
+export interface UpdateArgs {  domain: string;
   commandId: string;
   name?: string;
   params?: ApiParam[];
@@ -902,6 +914,22 @@ export class ApiCommandService {
     let inlineCount = 0;
     let nodeFetchCount = 0;
     let extensionCount = 0;
+    // 成品格式命令包（带 request.urlTemplate 的成品命令）：原样导入，保留
+    // risk / responseFields / manuallyEdited / note —— 走「线索格式」候选管线会把它们降级丢弃。
+    const finishedCommands: ApiCommand[] = [];
+    for (const raw of rawSources) {
+      const item = asRecord(raw);
+      if (String(item.kind ?? "") !== "commands") continue;
+      const text = typeof item.text === "string" ? item.text : "";
+      if (!text) continue;
+      const finished = extractFinishedCommands(text);
+      if (finished.length === 0) continue;
+      for (const rawCommand of finished) {
+        const rewritten = rewriteCommandHost(rawCommand, domain);
+        const rebuilt = toCommand(rewritten, domain, { skippedInvalid: [], errors: [] });
+        if (rebuilt) finishedCommands.push(rebuilt);
+      }
+    }
     for (const raw of rawSources) {
       if (totalBytes >= SITE_SCAN_MAX_TOTAL_BYTES) { warnings.add(SITE_SCAN_SOURCE_FAILED_WARNING); break; }
       const item = asRecord(raw);
@@ -912,6 +940,8 @@ export class ApiCommandService {
       if (typeof item.text === "string" && item.text.length > 0) {
         text = item.text.slice(0, SITE_SCAN_MAX_TEXT_CHARS);
         inlineCount += 1;
+        // 成品格式命令包已在上一步单独处理，不再进候选管线（避免字段被降级）。
+        if (kind === "commands" && extractFinishedCommands(text).length > 0) continue;
       } else if (typeof item.url === "string" && item.url.trim()) {
         const verdict = checkScanUrl(item.url.trim(), policy);
         if (!verdict.ok || !verdict.url) {
@@ -972,7 +1002,7 @@ export class ApiCommandService {
     report.warnings.push(
       `静态推导读取 ${scanned.sourcesRead} 个数据源，产出 ${scanned.candidates.length} 个端点候选（无响应体样本）`,
     );
-    if (scanned.candidates.length === 0) return report;
+    if (scanned.candidates.length === 0 && finishedCommands.length === 0) return report;
 
     // 静态候选 → 双变体记录 → 复用现有分组与生成纯函数；schema 为空（无真实响应）。
     const records = toScanRecords(scanned.candidates, domain);
@@ -994,14 +1024,17 @@ export class ApiCommandService {
     // 没有真实流量证据 → 放开后按来源声明 / 观测到的 method 判定 risk；
     // trustSpec=false 时回退「一律 write」的保守模式。
     const trustSpec = args.trustSpec === undefined ? SITE_SCAN_DEFAULT_TRUST_SPEC : args.trustSpec === true;
-    const commands = trustSpec
+    const scannedCommands = trustSpec
       ? generated.commands
       : generated.commands.map((command) => ({ ...command, risk: "write" as Risk }));
-    if (!trustSpec && commands.length > 0) report.warnings.push(SITE_SCAN_CONSERVATIVE_RISK_WARNING);
+    // 成品格式命令包：risk / responseFields / manuallyEdited / note 原样保留，
+    // 不受 trustSpec 的保守化影响（它已经是成品，不是静态推导产物）。
+    const commands = [...scannedCommands, ...finishedCommands];
+    if (!trustSpec && scannedCommands.length > 0) report.warnings.push(SITE_SCAN_CONSERVATIVE_RISK_WARNING);
 
     // 【放开·绿区】needsReview 降为 1 条来源标注（放开前是 3 条理由叠加：
     // analyze_current 兼容入口 + 缺响应体样本 + 不安全常量 各一条）。
-    const needsReview: ReviewItem[] = commands.map((command) => ({
+    const needsReview: ReviewItem[] = scannedCommands.map((command) => ({
       commandId: command.commandId,
       reason: SITE_SCAN_REVIEW_REASON,
     }));
@@ -1204,6 +1237,30 @@ export class ApiCommandService {
       error: { code, message: ERROR_SAFE_MESSAGES[code] },
       ...extras,
     };
+  }
+
+  /**
+   * 导出命令集为可审查 JSON（交付他人直接使用）。
+   * 导出件保留来源标注、参数、响应裁剪规则与备注；不含凭据头。
+   */
+  async exportCommands(args: ExportArgs): Promise<ExportResult> {
+    const domain = normalizeHostname(args.domain ?? "");
+    const result = await this.cache.export(domain, args.path, {
+      includeDisabled: args.includeDisabled === true,
+    });
+    return result;
+  }
+
+  /**
+   * 导入他人交付的命令集。urlTemplate 的主机改写为目标域名，
+   * 同名命令按 overwrite 决定覆盖或跳过。
+   */
+  async importCommands(args: ImportArgs): Promise<ImportResult> {
+    const domain = normalizeHostname(args.domain ?? "");
+    const result = await this.cache.import(domain, args.path, {
+      overwrite: args.overwrite === true,
+    });
+    return result;
   }
 
   async call(args: CallArgs): Promise<ExecuteResult> {

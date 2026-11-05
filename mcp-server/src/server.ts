@@ -978,8 +978,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           allowPrivateHosts: { type: "boolean", description: "scan_site 黄区开关：允许内网/回环地址数据源，默认 false（SSRF 风险）" },
           allowCrossHost: { type: "boolean", description: "scan_site 黄区开关：允许跨 hostname 脚本源（CDN），默认 false，需同时给 extraHosts" },
           extraHosts: { type: "array", items: { type: "string" }, description: "allowCrossHost=true 时显式放行的精确 hostname 白名单" },
-          trustSpec: { type: "boolean", description: "默认 false：静态推导命令一律按 write 保守处理；置 true 时 openapi/commands 来源按声明方法判定 risk" },
-          loosePaths: { type: "boolean", description: "放宽 JS 路径判定（接受非标准 API 前缀），默认 false，会增加误报" },
+          trustSpec: { type: "boolean", description: "默认 true：静态推导命令按来源声明的 method 判定 risk（GET/HEAD/OPTIONS → read）；置 false 回退为全部按 write 保守处理" },
+          loosePaths: { type: "boolean", description: "放宽 JS 路径判定（接受非标准 API 前缀），默认 true，会增加误报；置 false 回退保守模式" },
           scanTimeoutMs: { type: "number", description: "单个远端数据源读取超时，默认 8000，clamp 100..30000" },
           collectViaExtension: { type: "boolean", description: "scan_site 绿区开关：URL 类数据源改由扩展侧借页面登录态取文本（Node 直读 401 时用），默认 false" },
           discoverBundles: { type: "boolean", description: "scan_site 绿区开关：从 tabId 对应页面自动发现已加载的 JS bundle 并补采，默认 false（隐含 collectViaExtension）" },
@@ -987,6 +987,32 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           bundleUseBrowserCache: { type: "boolean", description: "是否允许 CDP 读浏览器缓存里已加载过的原始字节兜底，默认 true" },
         },
         required: ["action"],
+      },
+    },
+    {
+      name: "export_api_commands",
+      description: "把某域名已沉淀的 API 命令集导出为可审查 JSON（交付他人直接使用）。导出件保留来源标注、参数、响应裁剪规则与备注；不含任何凭据头。",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          domain: { type: "string", description: "精确 hostname" },
+          path: { type: "string", description: "导出文件路径" },
+          includeDisabled: { type: "boolean", description: "是否包含已禁用命令，默认 false" },
+        },
+        required: ["domain", "path"],
+      },
+    },
+    {
+      name: "import_api_commands",
+      description: "导入他人交付的 API 命令集（export_api_commands 的产物）。每条命令都过白名单重建；urlTemplate 的主机改写为目标域名；同名命令按 overwrite 决定覆盖或跳过。",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          domain: { type: "string", description: "精确 hostname（目标域名）" },
+          path: { type: "string", description: "导入文件路径" },
+          overwrite: { type: "boolean", description: "同名命令是否覆盖，默认 false（跳过并计入 skipped）" },
+        },
+        required: ["domain", "path"],
       },
     },
     {
@@ -1889,6 +1915,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           discoverBundles: args.discoverBundles === true,
           bundleMaxSources: typeof args.bundleMaxSources === "number" ? args.bundleMaxSources : undefined,
           bundleUseBrowserCache: args.bundleUseBrowserCache !== false,
+        }));
+
+      case "export_api_commands":
+        return apiToolCall(async () => apiCommandService.exportCommands({
+          domain: await resolveDomainArg(args),
+          path: typeof args.path === "string" ? args.path : "",
+          includeDisabled: args.includeDisabled === true,
+        }));
+
+      case "import_api_commands":
+        return apiToolCall(async () => apiCommandService.importCommands({
+          domain: await resolveDomainArg(args),
+          path: typeof args.path === "string" ? args.path : "",
+          overwrite: args.overwrite === true,
         }));
 
       case "list_api_commands":

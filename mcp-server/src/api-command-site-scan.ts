@@ -488,7 +488,16 @@ export function parseOpenApiText(text: string, opts: ScanParseOptions = {}): Sit
   return [...found.values()];
 }
 
-/** 从本地声明式命令包抽端点（可审查 JSON，只进不出、不随包分发）。 */
+/**
+ * 从本地声明式命令包抽端点（可审查 JSON，只进不出、不随包分发）。
+ *
+ * 同时接受两种格式：
+ *  - **线索格式**（早期 / 手写）：`{ method, path | pathTemplate, params: [...] }`；
+ *  - **成品格式**（由 export_api_commands 导出或人工整理）：命令条目里带
+ *    `request.urlTemplate` / `request.pathTemplate` / `risk` / `responseFields` /
+ *    `manuallyEdited` / `note` 等成品字段 —— 这类命令包**必须原样保留**，
+ *    不能降级成线索（降级会把 risk 变成 write、把 responseFields 丢掉）。
+ */
 export function parseCommandSetText(text: string, opts: ScanParseOptions = {}): SiteScanCandidate[] {
   const limit = Number.isFinite(opts.maxCandidates) && Number(opts.maxCandidates) > 0
     ? Math.floor(Number(opts.maxCandidates))
@@ -500,9 +509,14 @@ export function parseCommandSetText(text: string, opts: ScanParseOptions = {}): 
   const found = new Map<string, SiteScanCandidate>();
   for (const raw of commands) {
     const item = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-    const pathTemplate = toPathTemplate(item.path ?? item.pathTemplate);
+    const request = (item.request && typeof item.request === "object" && !Array.isArray(item.request))
+      ? item.request as Record<string, unknown>
+      : undefined;
+    // 成品格式的路径在 request.pathTemplate / request.urlTemplate 里。
+    const pathSource = item.pathTemplate ?? item.path ?? request?.pathTemplate;
+    const pathTemplate = toPathTemplate(pathSource);
     if (!pathTemplate) continue;
-    const methodRaw = String(item.method || "GET").toUpperCase();
+    const methodRaw = String(item.method ?? request?.method ?? "GET").toUpperCase();
     const method: HttpMethod = (HTTP_METHODS as readonly string[]).includes(methodRaw)
       ? methodRaw as HttpMethod : "GET";
     const queryNames: string[] = [];
@@ -516,12 +530,52 @@ export function parseCommandSetText(text: string, opts: ScanParseOptions = {}): 
         else if (param.location === "query" && !queryNames.includes(name)) queryNames.push(name);
       }
     }
-    const candidate: SiteScanCandidate = { method, pathTemplate, queryNames, bodyNames, origin: "commands" };
-    const key = candidateKey(method, pathTemplate);
+    // 成品格式：还原 URL 里的 host（urlTemplate 的主机才是命令真正要打的目标）。
+    const host = request?.urlTemplate ? hostFromUrlTemplate(String(request.urlTemplate)) : undefined;
+    const candidate: SiteScanCandidate = {
+      method, pathTemplate, queryNames, bodyNames, origin: "commands",
+      ...(host ? { host } : {}),
+    };
+    const key = candidateKey(method, pathTemplate, host);
     if (!found.has(key)) found.set(key, candidate);
     if (found.size >= limit) break;
   }
   return [...found.values()];
+}
+
+/** 从 urlTemplate 里取精确 hostname（取不到就返回 undefined，绝不猜）。 */
+export function hostFromUrlTemplate(urlTemplate: string): string | undefined {
+  if (typeof urlTemplate !== "string" || !urlTemplate.trim()) return undefined;
+  try {
+    const parsed = new URL(urlTemplate.trim());
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return undefined;
+    const host = normalizeHostname(parsed.hostname);
+    return host && isValidHostname(host) ? host : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 成品格式命令包 → 原始命令条目（保留 request.urlTemplate / risk / responseFields /
+ * manuallyEdited / note 等全部字段）。不是成品格式（没有 request.urlTemplate）时返回空数组。
+ */
+export function extractFinishedCommands(text: string): Array<Record<string, unknown>> {
+  let data: unknown;
+  try { data = JSON.parse(String(text || "")); } catch { return []; }
+  const root = (data && typeof data === "object" ? data : {}) as Record<string, unknown>;
+  const commands = Array.isArray(root.commands) ? root.commands as unknown[] : [];
+  const out: Array<Record<string, unknown>> = [];
+  for (const raw of commands) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const item = raw as Record<string, unknown>;
+    const request = (item.request && typeof item.request === "object" && !Array.isArray(item.request))
+      ? item.request as Record<string, unknown>
+      : undefined;
+    if (!request || typeof request.urlTemplate !== "string" || !request.urlTemplate.trim()) continue;
+    out.push(item);
+  }
+  return out;
 }
 
 // ===========================================================================
