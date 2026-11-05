@@ -80,21 +80,21 @@ flowchart TD
 
 ## 六、测试与验收（必须）
 
-- [ ] 验收标准1（对应 AC-1）：`analyze_page_apis` `action=scan_site` 不传 `loosePaths` 时端点数 ≥ 1（B 站基线 0）。
-- [ ] 验收标准2（对应 AC-2）：GET/HEAD/OPTIONS 端点的 `risk` 为 `read`，其余为 `write`。
-- [ ] 验收标准3（对应 AC-3）：缺必填参数返回 `MISSING_PARAMS` 且零网络请求。
-- [ ] 验收标准4（对应 AC-4）：`risk=write` 未传 `confirm=true` 返回 `CONFIRMATION_REQUIRED` 且零网络请求。
-- [ ] 验收标准5（对应 AC-5）：调用方传 `params.nickname="lisi"` 时实际请求体为 `lisi`。
-- [ ] 验收标准6（对应 AC-6）：请求含 `X-Requested-With`，不含 `Cookie` / `Authorization`。
-- [ ] 验收标准7（对应 AC-7）：导出 → 清空 → 导入后命令条数、名称、参数、响应裁剪规则一致且可直接调用。
-- [ ] 验收标准8（对应 AC-8）：成品格式命令包导入产出 ≥ 1 条且 `request.urlTemplate` / `risk` / `responseFields` / `manuallyEdited` 被保留。
-- [ ] 验收标准9（对应 AC-9）：两个进程先后写不同域名，磁盘上两个域名的命令都存在。
-- [ ] 验收标准10（对应 AC-10）：`invalidate_api_commands` 的 `action` 缺失或非法时返回 `INVALID_PARAMS` 且该域名命令不被删除。
-- [ ] 验收标准11（对应 AC-11）：扩展域名白名单外的目标被拒绝且零网络请求（硬边界，一行不改）。
-- [ ] 验收标准12（对应 AC-12）：只读模式下 `risk=read` 但 `method=POST` 的命令被扩展侧拒绝。
-- [ ] 验收标准13（对应 AC-13）：petstore OpenAPI 19 个端点产出 19 条命令且路径 19/19 命中。
-- [ ] 验收标准14（对应 AC-14）：SSE 连续相同字符的增量片段拼接后不丢字。
-- [ ] 验收标准15（对应 A8）：`npm test` 全绿（存量 245 条零回归 + 每批次新增用例），`npm run doctor` 0 fail。
+- [x] 验收标准1（对应 AC-1）：`analyze_page_apis` `action=scan_site` 不传 `loosePaths` 时端点数 ≥ 1（B 站基线 0）。
+- [x] 验收标准2（对应 AC-2）：GET/HEAD/OPTIONS 端点的 `risk` 为 `read`，其余为 `write`。
+- [x] 验收标准3（对应 AC-3）：缺必填参数返回 `MISSING_PARAMS` 且零网络请求。
+- [x] 验收标准4（对应 AC-4）：`risk=write` 未传 `confirm=true` 返回 `CONFIRMATION_REQUIRED` 且零网络请求。
+- [x] 验收标准5（对应 AC-5）：调用方传 `params.nickname="lisi"` 时实际请求体为 `lisi`。
+- [x] 验收标准6（对应 AC-6）：请求含 `X-Requested-With`，不含 `Cookie` / `Authorization`。
+- [x] 验收标准7（对应 AC-7）：导出 → 清空 → 导入后命令条数、名称、参数、响应裁剪规则一致且可直接调用。
+- [x] 验收标准8（对应 AC-8）：成品格式命令包导入产出 ≥ 1 条且 `request.urlTemplate` / `risk` / `responseFields` / `manuallyEdited` 被保留。
+- [x] 验收标准9（对应 AC-9）：两个进程先后写不同域名，磁盘上两个域名的命令都存在。
+- [x] 验收标准10（对应 AC-10）：`invalidate_api_commands` 的 `action` 缺失或非法时返回 `INVALID_PARAMS` 且该域名命令不被删除。
+- [x] 验收标准11（对应 AC-11）：扩展域名白名单外的目标被拒绝且零网络请求（硬边界，一行不改）。
+- [x] 验收标准12（对应 AC-12）：只读模式下 `risk=read` 但 `method=POST` 的命令被扩展侧拒绝。
+- [x] 验收标准13（对应 AC-13）：petstore OpenAPI 19 个端点产出 19 条命令且路径 19/19 命中。
+- [x] 验收标准14（对应 AC-14）：SSE 连续相同字符的增量片段拼接后不丢字。
+- [x] 验收标准15（对应 A8）：`npm test` 全绿（存量 245 条零回归 + 每批次新增用例），`npm run doctor` 0 fail。
 
 ## 七、风险（必须）
 
@@ -114,22 +114,32 @@ flowchart TD
 
 > 每条 AC 映射到实现位置（接口/方法），保证 spec→design 可追溯。四层扫描完整映射见 full 版。
 
-| AC ID | 实现位置（接口/方法） | 备注 |
-|-------|----------------------|------|
-| AC-1 | `api-command-service.ts:837` `scanSite()` + `api-command-types.ts` `SITE_SCAN_DEFAULT_LOOSE` | 默认 `loosePaths` 放开为 true |
-| AC-2 | `api-command-site-scan.ts:177` `inferMethod()` + `api-command-service.ts:837` `scanSite()` 的 risk 覆盖 | GET/HEAD/OPTIONS → `read` |
-| AC-3 | `api-command-render.ts:82` `validateParams()` | 缺参 → `MISSING_PARAMS`，渲染前拦截 |
-| AC-4 | `api-command-service.ts:1156` `call()` | `risk=write` 未确认 → `CONFIRMATION_REQUIRED` |
-| AC-5 | `api-command-generator.ts:186` `buildBodyTemplate()` + `api-command-render.ts:141` `renderRequest()` | 常量改写为 `{{name}}` 占位符，调用方值优先 |
-| AC-6 | `api-command-types.ts` `API_COMMAND_FORBIDDEN_HEADERS` / `EXECUTE_OPTIONS_ALLOWED_KEYS:266` + `browser-extension/api-command-helpers.js:446` `rebuildExecuteOptions()` + `browser-extension/background.js:2190` `cmdApiCommandExecute()` | 仅剔 `Cookie` / `Authorization` 等凭据头 |
-| AC-7 | `api-command-cache.ts` 新增 `export()` / `import()` + `server.ts:948`–`:991` 工具注册区新增 `export_api_commands` / `import_api_commands` | 导出导入闭环 |
-| AC-8 | `api-command-site-scan.ts:438` `parseCommandSetText()` | 成品格式优先，保全 `request.urlTemplate` / `risk` / `responseFields` / `manuallyEdited` / `note` |
-| AC-9 | `api-command-cache.ts:576` `persist()` + `:504` `ensureLoaded()` | 写前重读按 hostname 合并 + 唯一 tmp 名 |
-| AC-10 | `server.ts:1931` `invalidate_api_commands` 分支 + `api-command-service.ts:655` `invalidate()` | 只认字面量 `clear_domain`，其余 `INVALID_PARAMS` |
-| AC-11 | `browser-extension/background.js:126` `assertCommandAllowed()` + `api-command-helpers.js` `assertApiTargetUrl()` | 硬边界，一行不改 |
-| AC-12 | `browser-extension/background.js:126` `assertCommandAllowed()` | 只读门改按 `options.method` 派生 |
-| AC-13 | `api-command-site-scan.ts` OpenAPI 解析（`scanSources` / `parseCommandSetText` 路径） | 规格驱动路径命中 19/19 |
-| AC-14 | `baidu-ai-search.ts:302` `parseBaiduBaikanSse()` + `api-command-service.ts:516` `fetchBaikanSse()` | 增量判定改显式标记 + 流式读取 |
+> **行号已于 2026-11-05 逐条复核**（原稿行号随实现漂移已失效，本表按当前 HEAD `442f3e1` 重校）。
+> 每条 AC 的**执行证据用例**见 `test-artifacts/test-coverage-result.v1.json`（14/14 通过，gap 已显式登记）。
+
+| AC ID | 实现位置（接口/方法） | 证据用例 | 备注 |
+|-------|----------------------|---------|------|
+| AC-1 | `api-command-service.ts:1087` `scanSite()` 的 loose 取值 + `api-command-types.ts:921` `SITE_SCAN_DEFAULT_LOOSE` + `api-command-site-scan.ts:705` `scanSources()` | `api-command-site-scan.test.mjs:500` | 默认 `loosePaths` 放开为 true |
+| AC-2 | `api-command-site-scan.ts:267` `inferMethod()` + `api-command-types.ts:929` `SITE_SCAN_DEFAULT_TRUST_SPEC` + `api-command-service.ts:1124`/`:1127` trustSpec 与 risk 覆盖 | `api-command-site-scan.test.mjs:523` | GET/HEAD/OPTIONS → `read` |
+| AC-3 | `api-command-render.ts:85` `validateParams()` + `api-command-service.ts:1364` `call()` + `:1551` `callComposite()` | `api-command-render.test.mjs:227`、`api-command-composite.test.mjs:291` | 缺参 → `MISSING_PARAMS`，渲染前拦截；复合命令同样受此门禁 |
+| AC-4 | `api-command-service.ts:1364` `call()` + `:1551` `callComposite()` | `api-command-render.test.mjs:227`、`api-command-composite.test.mjs:262` | `risk=write` 未确认 → `CONFIRMATION_REQUIRED` |
+| AC-5 | `api-command-generator.ts:194` `buildBodyTemplate()` + `:181` `buildQueryTemplate()` + `api-command-render.ts:145` `renderRequest()` + `api-command-service.ts:1763` `filterParamsForCommand()` | `api-command-render.test.mjs:354`/`:367`/`:378` | 常量改写为 `{{name}}` 占位符，调用方值优先 |
+| AC-6 | `api-command-types.ts:313` `API_COMMAND_FORBIDDEN_HEADERS` + `:287` `EXECUTE_OPTIONS_ALLOWED_KEYS` + `browser-extension/api-command-helpers.js:236` `sanitizeRequestHeaders()` / `:489` `rebuildExecuteOptions()` + `browser-extension/background.js:2194` `cmdApiCommandExecute()` | `api-command-render.test.mjs:285`/`:315`、`api-command-security.test.mjs:279` | 仅剔 `Cookie` / `Authorization` 等凭据头 |
+| AC-7 | `api-command-cache.ts:1127` `export()` + `:1174` `import()` + `:724` `rewriteCommandHost()` + `server.ts:993` / `:1006` 工具注册 | `api-command-cache.test.mjs:113`、`api-command-composite.test.mjs:447` | 导出导入闭环；复合命令随包往返 |
+| AC-8 | `api-command-site-scan.ts:558` `parseCommandSetText()` | `api-command-site-scan.test.mjs:662`、`api-command-cache.test.mjs:164` | 成品格式优先，保全 `request.urlTemplate` / `risk` / `responseFields` / `manuallyEdited` / `note` |
+| AC-9 | `api-command-cache.ts:891` `persist()` + `:759` `ensureLoaded()` + `:78` `buildCacheTmpName()` | `api-command-cache.test.mjs:529`/`:553`/`:569`/`:587` | 写前重读按 hostname 合并 + 唯一 tmp 名 + `loadFailed` 保护 |
+| AC-10 | `server.ts:1979` `invalidate_api_commands` 分支 + `api-command-service.ts:771` `invalidate()` | `api-command-security.test.mjs:711` | 只认字面量 `clear_domain`，其余 `INVALID_PARAMS` 且不删数据 |
+| AC-11 | `browser-extension/background.js:126` `assertCommandAllowed()` + `browser-extension/api-command-helpers.js:364` `assertApiTargetUrl()` | `api-command-security.test.mjs:363`/`:395`/`:412` | 硬边界，一行不改 |
+| AC-12 | `browser-extension/background.js:126` `assertCommandAllowed()`（只读门按 `options.method` 派生） | `api-command-security.test.mjs:329`/`:311` | 不再采信客户端自述 `risk` |
+| AC-13 | `api-command-site-scan.ts:483` `parseOpenApiText()` + `:705` `scanSources()` + `:188` `splitProtocolRelativeUrl()` + `:668` `applyHostCrossReference()` + `:224` `detectBaseUrlHosts()` | `api-command-site-scan.test.mjs:574`/`:581`/`:609`、`api-command-host-infer.test.mjs:60`–`:94` | 规格驱动路径命中 19/19；T10a 跨源 host 交叉引用 + baseURL 侦测 |
+| AC-14 | `baidu-ai-search.ts:427` `parseBaiduBikanSse()` + `api-command-service.ts:567` `fetchBaiduSse()` + `:535` `buildAiSearchResult()` + `:483` `aiSearch()` | `baidu-ai-search.test.mjs:317`、`api-command-ai-search.test.mjs:47`/`:83`/`:116` | 增量判定改显式标记 + 流式读取 + 跨通道总预算 + attempts 真实计数 |
+
+**基线 gap 处置（显式登记，不伪造自动映射）**：
+
+| gap | 处置 |
+|---|---|
+| `NO_ENDPOINT_DISCOVERED` | 本项目暴露的是 MCP 工具而非 HTTP 路由，端点抽取器识别到 0 个端点。改用本表 + `test-artifacts/test-coverage-result.v1.json` 人工映射；后续如需自动映射需为 MCP 工具注册补一层端点适配器（本期非目标） |
+| `UNMAPPED_ACCEPTANCE_CRITERIA` | 每批次新增用例在测试名中显式标注 `Tn`，覆盖产物按标注逐条人工回填用例编号与证据引用 |
 
 ---
 

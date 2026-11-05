@@ -1,0 +1,263 @@
+{
+  "schemaVersion": "test-coverage-result/v1",
+  "generatedAt": "2026-11-05",
+  "project": "webdoc",
+  "story": "1137748852001393342",
+  "branch": "feature/webpilot-api-command-set-s1137748852001393342",
+  "baseCommit": "e4b2ec9",
+  "mappingMode": "manual",
+  "mappingNote": "本项目对外暴露的是 MCP 工具而非 HTTP 路由，四层扫描器的端点抽取器识别到 0 个端点（基线 gap NO_ENDPOINT_DISCOVERED），AC 无法自动映射到代码锚点。按 specs/design.md 第八节要求，改用 specs/spec.md 的 AC ↔ docs/api-command-set-upgrade-spec.md 的实现位置**人工**映射表回填证据，不伪造自动映射。",
+  "testRun": {
+    "command": "npm test",
+    "total": 309,
+    "pass": 309,
+    "fail": 0,
+    "skipped": 0,
+    "baselineTotal": 245,
+    "baselineRegression": 0,
+    "addedCases": 64,
+    "doctor": "5 pass / 3 info / 0 warn / 0 fail"
+  },
+  "acceptanceCriteria": [
+    {
+      "id": "AC-1",
+      "title": "scan_site 不传 loosePaths 时端点数 >= 1（B 站基线 0）",
+      "implementation": [
+        "mcp-server/src/api-command-types.ts:921 SITE_SCAN_DEFAULT_LOOSE = true",
+        "mcp-server/src/api-command-service.ts:1087 loose 默认取常量",
+        "mcp-server/src/api-command-site-scan.ts:705 scanSources()"
+      ],
+      "testCases": [
+        "mcp-server/test/api-command-site-scan.test.mjs:500 T1：loosePaths 默认放开 —— 2 段短前缀路径也能发现端点（保守模式下为 0）"
+      ],
+      "realSiteEvidence": "test-artifacts/t10-bilibili-recall.json -> looseTrue.candidates=140 / uniqueFound=133（looseFalse 时仅 9）",
+      "status": "passed"
+    },
+    {
+      "id": "AC-2",
+      "title": "GET/HEAD/OPTIONS 端点 risk=read，其余 write",
+      "implementation": [
+        "mcp-server/src/api-command-site-scan.ts:267 inferMethod()",
+        "mcp-server/src/api-command-types.ts:929 SITE_SCAN_DEFAULT_TRUST_SPEC = true",
+        "mcp-server/src/api-command-service.ts:1124 trustSpec 默认取常量",
+        "mcp-server/src/api-command-service.ts:1127 risk 覆盖"
+      ],
+      "testCases": [
+        "mcp-server/test/api-command-site-scan.test.mjs:523 T1：静态推导 risk 按 method 判定（GET→read，其余→write）"
+      ],
+      "status": "passed"
+    },
+    {
+      "id": "AC-3",
+      "title": "缺必填参数返回 MISSING_PARAMS 且零网络请求",
+      "implementation": [
+        "mcp-server/src/api-command-render.ts:85 validateParams()",
+        "mcp-server/src/api-command-service.ts:1364 call()",
+        "mcp-server/src/api-command-service.ts:1551 callComposite()（复合命令同样受此门禁）"
+      ],
+      "testCases": [
+        "mcp-server/test/api-command-render.test.mjs:227 集成：缺必填 / 类型错误 / 写命令未确认，ApiCommandService.sendFn 调用次数均为 0",
+        "mcp-server/test/api-command-composite.test.mjs:291 T9：取值路径未命中 → MISSING_PARAMS，且该步零网络请求"
+      ],
+      "status": "passed"
+    },
+    {
+      "id": "AC-4",
+      "title": "risk=write 未传 confirm=true 返回 CONFIRMATION_REQUIRED 且零网络请求",
+      "implementation": [
+        "mcp-server/src/api-command-service.ts:1364 call()",
+        "mcp-server/src/api-command-service.ts:1551 callComposite()（含写步骤但未确认 → 预检零请求）"
+      ],
+      "testCases": [
+        "mcp-server/test/api-command-render.test.mjs:227 集成：缺必填 / 类型错误 / 写命令未确认，ApiCommandService.sendFn 调用次数均为 0（AC-08/21）",
+        "mcp-server/test/api-command-composite.test.mjs:262 T9：含写操作步骤但未确认 → CONFIRMATION_REQUIRED 且零网络请求"
+      ],
+      "status": "passed"
+    },
+    {
+      "id": "AC-5",
+      "title": "调用方传 params.nickname=\"lisi\" 时实际请求体为 lisi（基线发出 zhangsan）",
+      "implementation": [
+        "mcp-server/src/api-command-generator.ts:194 buildBodyTemplate()（常量改写为 {{name}} 占位符）",
+        "mcp-server/src/api-command-generator.ts:181 buildQueryTemplate()",
+        "mcp-server/src/api-command-render.ts:145 renderRequest()（调用方值优先，缺省才回落 defaultValue）",
+        "mcp-server/src/api-command-service.ts:1763 filterParamsForCommand()（只保留子命令声明过的参数）"
+      ],
+      "testCases": [
+        "mcp-server/test/api-command-render.test.mjs:354 T4：恒定参数写成 {{name}} 占位符，真实值只落在 defaultValue",
+        "mcp-server/test/api-command-render.test.mjs:367 T4：调用方传值必须真实生效（覆盖 defaultValue），不传才回落默认值",
+        "mcp-server/test/api-command-render.test.mjs:378 T4：端到端 —— 恒定参数经 call_api_command 传值后下发给扩展的是调用方的值"
+      ],
+      "status": "passed"
+    },
+    {
+      "id": "AC-6",
+      "title": "请求含 X-Requested-With，不含 Cookie / Authorization",
+      "implementation": [
+        "mcp-server/src/api-command-types.ts:313 API_COMMAND_FORBIDDEN_HEADERS",
+        "mcp-server/src/api-command-types.ts:287 EXECUTE_OPTIONS_ALLOWED_KEYS（含 headers）",
+        "browser-extension/api-command-helpers.js:236 sanitizeRequestHeaders()",
+        "browser-extension/api-command-helpers.js:489 rebuildExecuteOptions()",
+        "browser-extension/background.js:2194 cmdApiCommandExecute()（拼进 fetch）"
+      ],
+      "testCases": [
+        "mcp-server/test/api-command-render.test.mjs:285 T3：调用方传的非凭据请求头原样下发，凭据头一律剔除且不报错",
+        "mcp-server/test/api-command-render.test.mjs:315 T3：非法请求头（字段名非法 / 值含 CR-LF / 超长）一律丢弃，不进 fetch 入参",
+        "mcp-server/test/api-command-security.test.mjs:279 A.3b 放开后：非凭据请求头原样下发，凭据头（Cookie / Authorization 等）一律剔除"
+      ],
+      "status": "passed"
+    },
+    {
+      "id": "AC-7",
+      "title": "导出 → 清空 → 导入后条数 / 名称 / 参数 / 响应裁剪规则一致且可直接调用",
+      "implementation": [
+        "mcp-server/src/api-command-cache.ts:1127 export()",
+        "mcp-server/src/api-command-cache.ts:1174 import()",
+        "mcp-server/src/api-command-cache.ts:724 rewriteCommandHost()",
+        "mcp-server/src/server.ts:993 export_api_commands",
+        "mcp-server/src/server.ts:1006 import_api_commands"
+      ],
+      "testCases": [
+        "mcp-server/test/api-command-cache.test.mjs:113 T5：导出 → 清空 → 导入，命令条数 / 名称 / 参数 / 响应裁剪规则一致且可直接调用",
+        "mcp-server/test/api-command-composite.test.mjs:447 T9：导出 → 清空 → 导入闭环后 steps 不丢，且仍可直接调用"
+      ],
+      "status": "passed"
+    },
+    {
+      "id": "AC-8",
+      "title": "成品格式命令包导入产出 >= 1 条且 request.urlTemplate / risk / responseFields / manuallyEdited 被保留",
+      "implementation": [
+        "mcp-server/src/api-command-site-scan.ts:558 parseCommandSetText()（成品格式优先，保全字段）"
+      ],
+      "testCases": [
+        "mcp-server/test/api-command-site-scan.test.mjs:662 T5：成品格式命令包导入后保留 request.urlTemplate / risk / responseFields / manuallyEdited",
+        "mcp-server/test/api-command-cache.test.mjs:164 T5：导入到别的域名时 urlTemplate 主机被改写；同名命令默认跳过、overwrite 才覆盖"
+      ],
+      "status": "passed"
+    },
+    {
+      "id": "AC-9",
+      "title": "两个进程先后写不同域名，磁盘上两个域名的命令都存在",
+      "implementation": [
+        "mcp-server/src/api-command-cache.ts:891 persist()（写前重读 + 按 hostname 合并）",
+        "mcp-server/src/api-command-cache.ts:759 ensureLoaded()（loadFailed 保护）",
+        "mcp-server/src/api-command-cache.ts:78 buildCacheTmpName()（pid + 时间戳 + 序号）"
+      ],
+      "testCases": [
+        "mcp-server/test/api-command-cache.test.mjs:529 T6：两个进程先后写不同域名，磁盘上两个域名的命令都存在（AC-9）",
+        "mcp-server/test/api-command-cache.test.mjs:553 T6：tmp 文件名唯一（含 pid + 时间戳 + 序号），写盘不残留 tmp 文件",
+        "mcp-server/test/api-command-cache.test.mjs:569 T6：读盘失败（结构非法）时只写本次新增的域名，其余域名以磁盘为准",
+        "mcp-server/test/api-command-cache.test.mjs:587 T6：磁盘读不出来时整次写盘跳过，不用内存快照覆盖磁盘既有数据"
+      ],
+      "status": "passed"
+    },
+    {
+      "id": "AC-10",
+      "title": "invalidate_api_commands 的 action 缺失或非法时返回 INVALID_PARAMS 且该域名命令不被删除",
+      "implementation": [
+        "mcp-server/src/server.ts:1979 invalidate_api_commands 分支",
+        "mcp-server/src/api-command-service.ts:771 invalidate()"
+      ],
+      "testCases": [
+        "mcp-server/test/api-command-security.test.mjs:711 T7：invalidate_api_commands 的 action 缺失或非法 → INVALID_PARAMS，且命令不被删除"
+      ],
+      "status": "passed"
+    },
+    {
+      "id": "AC-11",
+      "title": "扩展域名白名单外的目标被拒绝且零网络请求（硬边界，一行不改）",
+      "implementation": [
+        "browser-extension/background.js:126 assertCommandAllowed()（域名白名单 / 紧急停止）",
+        "browser-extension/api-command-helpers.js:364 assertApiTargetUrl()（协议 + hostname 精确相等 + 不跟随跳转）"
+      ],
+      "testCases": [
+        "mcp-server/test/api-command-security.test.mjs:363 A.5 目标 URL 白名单：跨 host / 非 http(s) / 白名单外域名 / overrides 跨 host",
+        "mcp-server/test/api-command-security.test.mjs:395 A.6 重定向 fail-closed：opaqueredirect / status 0 / 302 全部 REDIRECT_BLOCKED 且无第二次请求",
+        "mcp-server/test/api-command-security.test.mjs:412 A.7 401/403 → AUTH_REQUIRED 且不计连续失败；紧急停止拒绝全部消息"
+      ],
+      "status": "passed"
+    },
+    {
+      "id": "AC-12",
+      "title": "只读模式下 risk=read 但 method=POST 的命令被扩展侧拒绝",
+      "implementation": [
+        "browser-extension/background.js:126 assertCommandAllowed()（只读门按 options.method 派生，不再采信客户端自述 risk）"
+      ],
+      "testCases": [
+        "mcp-server/test/api-command-security.test.mjs:329 T7：只读门按 method 派生 —— risk=read 但 method=POST 仍被拒（AC-12）",
+        "mcp-server/test/api-command-security.test.mjs:311 A.4 只读模式不可绕过：risk=write + confirm:true 仍 READ_ONLY_BLOCKED，fetch 调用 0 次"
+      ],
+      "status": "passed"
+    },
+    {
+      "id": "AC-13",
+      "title": "petstore OpenAPI 19 个端点产出 19 条命令且路径 19/19 命中",
+      "implementation": [
+        "mcp-server/src/api-command-site-scan.ts:483 parseOpenApiText()",
+        "mcp-server/src/api-command-site-scan.ts:705 scanSources()",
+        "mcp-server/src/api-command-site-scan.ts:188 splitProtocolRelativeUrl()（协议相对 URL 不再当路径）",
+        "mcp-server/src/api-command-site-scan.ts:668 applyHostCrossReference()（T10a 跨源 host 交叉引用）",
+        "mcp-server/src/api-command-site-scan.ts:224 detectBaseUrlHosts()（T10a 客户端 baseURL 侦测）"
+      ],
+      "testCases": [
+        "mcp-server/test/api-command-site-scan.test.mjs:574 T2：协议相对 URL 不再被整体当路径，host 被还原",
+        "mcp-server/test/api-command-site-scan.test.mjs:581 T2：同一路径挂在不同 host 上是两条候选（不互相去重）",
+        "mcp-server/test/api-command-site-scan.test.mjs:609 T2：跨 host 命令按各自 host 归档，并打上 crossHost 标记",
+        "mcp-server/test/api-command-host-infer.test.mjs:60 T10：scanSources 把裸路径挂到客户端 baseURL 主机上（而不是扫描目标域名）",
+        "mcp-server/test/api-command-host-infer.test.mjs:73 T10：跨源交叉引用 —— 协议相对写法给出的 host 被裸路径继承",
+        "mcp-server/test/api-command-host-infer.test.mjs:82 T10：同一路径对应多个 host 时不做推断（保持扫描目标域名）",
+        "mcp-server/test/api-command-host-infer.test.mjs:94 T10：多个 baseURL 主机并存时不做推断（不猜）"
+      ],
+      "realSiteEvidence": "test-artifacts/t10-bilibili-recall.json -> oracle=35 / looseTrue.recall=1.0（35/35）/ looseFalse.recall=0 / survival=0.6857（24/35）",
+      "status": "passed"
+    },
+    {
+      "id": "AC-14",
+      "title": "SSE 连续相同字符的增量片段拼接后不丢字",
+      "implementation": [
+        "mcp-server/src/baidu-ai-search.ts:427 parseBaiduBaikanSse()（增量判定改显式标记）",
+        "mcp-server/src/api-command-service.ts:567 fetchBaikanSse()（流式读取，ReadableStream reader，收到结束标记即收尾）",
+        "mcp-server/src/api-command-service.ts:535 buildAiSearchResult()（attempts 真实计数）",
+        "mcp-server/src/api-command-service.ts:483 aiSearch()（timeoutMs 跨通道总预算）"
+      ],
+      "testCases": [
+        "mcp-server/test/baidu-ai-search.test.mjs:317 parseBaiduBikaiN：AC-14 三个连续「哈」必须拼成「哈哈哈」（基线只得到「哈」）",
+        "mcp-server/test/api-command-ai-search.test.mjs:47 T8：SSE 逐段读取，收到结束标记即返回（不等服务端关连接）",
+        "mcp-server/test/api-command-ai-search.test.mjs:83 T8：timeoutMs 是跨通道总预算 —— 主通道耗尽预算后不再走兜底",
+        "mcp-server/test/api-command-ai-search.test.mjs:116 T8：主通道快速失败时，兜底通道仍可用剩余预算"
+      ],
+      "status": "passed"
+    }
+  ],
+  "gaps": [
+    {
+      "gap": "NO_ENDPOINT_DISCOVERED",
+      "detail": "本项目对外暴露的是 MCP 工具而非 HTTP 路由，四层扫描器的端点抽取器识别到 0 个端点，契约层与调用图层为空，AC 无法自动映射到代码锚点。",
+      "disposition": "不用扫描器的端点层做验收依据，改用 specs/design.md 第八节的 AC ↔ 实现位置**人工**映射表回填证据；后续如需自动映射需为 MCP 工具注册补一层端点适配器（本期非目标）。",
+      "owner": "主开发（雷晓鹏）",
+      "status": "accepted_with_manual_mapping"
+    },
+    {
+      "gap": "UNMAPPED_ACCEPTANCE_CRITERIA",
+      "detail": "14 条 AC 在扫描器侧均无确定性代码映射，覆盖报告无法自动回填证据。",
+      "disposition": "每批次新增用例在测试名中显式标注 `Tn`，本文件按标注逐条人工回填用例编号与证据引用，**不伪造自动映射**。",
+      "owner": "主开发（雷晓鹏）",
+      "status": "resolved_by_manual_backfill"
+    },
+    {
+      "gap": "AC-11 白名单外目标的零网络请求断言",
+      "detail": "A.5 用例断言了跨 host / 非 http(s) / 白名单外域名被拒绝，但未对「fetch 调用次数 == 0」逐变体单独计数。",
+      "disposition": "A.5 与 A.6 均断言零第二次请求；已实测通过。补一条逐变体计数断言列入后续硬化（非阻断）。",
+      "owner": "主开发（雷晓鹏）",
+      "status": "open_non_blocking"
+    }
+  ],
+  "summary": {
+    "acTotal": 14,
+    "acPassed": 14,
+    "acUnmapped": 0,
+    "gapsRegistered": 3,
+    "gapsBlocking": 0,
+    "verdict": "全部 14 条 AC 通过；基线 gap 已显式登记处置，无阻断项。"
+  }
+}
