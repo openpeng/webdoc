@@ -279,6 +279,16 @@ export const EXECUTE_OPTIONS_ALLOWED_KEYS = ["url", "method", "hostname", "risk"
 export const EXECUTE_OPTIONS_FORBIDDEN_KEYS = ["confirm", "overrides", "tabId"] as const;
 
 /**
+ * 只读模式下的**安全方法白名单**：不在表内的一律按写操作处理（fail-closed）。
+ *
+ * 只读门按 HTTP method 派生，**不采信客户端上报的 risk**（AC-12）——
+ * risk 是客户端自述的字段，声明成 read 就能把 POST 放行，等于没有只读边界。
+ * method 缺失或非法时同样按写操作拦下。
+ * 【扩展侧需同步】
+ */
+export const READ_ONLY_SAFE_METHODS: readonly string[] = ["GET", "HEAD", "OPTIONS"];
+
+/**
  * (c) 请求 header **最低保证集**：这两个头由代码无条件补上，不依赖调用方。
  * 【放开·绿区】放开后不再用它作上限 —— 除凭据头外的任意头都可由调用方传入。
  * 【扩展侧需同步】

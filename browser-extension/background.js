@@ -132,7 +132,11 @@ async function assertCommandAllowed(msg) {
   // 扩展侧完全不读 confirm：它不是安全边界（客户端可随意置 true）。
   // 真正的边界是 popup 写入的 chrome.storage.local（WS 客户端不可写）。
   if (API_EXECUTION_TYPES.has(msg.type)) {
-    if (settings.readOnlyMode && msg.options && msg.options.risk === 'write') {
+    // 只读门按 HTTP method 派生，**不采信客户端上报的 risk**（AC-12）：
+    // risk 是客户端自述字段，声明成 read 就能把 POST 放行，等于没有只读边界。
+    // method 缺失 / 非法一律按写操作处理（fail-closed）；risk=write 同样拦下。
+    if (settings.readOnlyMode
+        && (!isReadOnlySafeMethod(msg.options?.method) || msg.options?.risk === 'write')) {
       throw new Error(formatApiError('READ_ONLY_BLOCKED'));
     }
     // 按目标 URL 校验：协议 http(s) + hostname 精确相等（Q13）+ 域名白名单。

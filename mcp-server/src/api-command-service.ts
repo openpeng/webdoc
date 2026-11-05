@@ -162,7 +162,21 @@ export interface UpdateArgs {  domain: string;
 export interface InvalidateArgs {
   domain: string;
   commandId?: string;
-  action: "disable" | "delete" | "clear_domain";
+  /**
+   * 运行期只认 disable / delete / clear_domain 三个字面量；
+   * 其它值（含缺失）一律 INVALID_PARAMS，**不做缺省兜底**（AC-10）。
+   */
+  action: "disable" | "delete" | "clear_domain" | (string & {});
+}
+
+/** invalidate 的合法动作集合（唯一定义点）。 */
+export const INVALIDATE_ACTIONS = ["disable", "delete", "clear_domain"] as const;
+export type InvalidateAction = typeof INVALIDATE_ACTIONS[number];
+
+/** 动作字面量判定：非白名单一律视为非法（不兜底、不猜测意图）。 */
+export function isInvalidateAction(value: unknown): value is InvalidateAction {
+  return typeof value === "string"
+    && (INVALIDATE_ACTIONS as readonly string[]).includes(value);
 }
 
 /** 编排层可预期错误，携带统一错误码；server.ts 的 catch 统一转 isError:true。 */
@@ -670,12 +684,18 @@ export class ApiCommandService {
     return { updated: true, manuallyEdited: command.manuallyEdited, command };
   }
 
-  /** invalidate_api_commands：disable / delete / clear_domain。 */
+  /**
+   * invalidate_api_commands：disable / delete / clear_domain。
+   *
+   * action 缺失或非法一律 INVALID_PARAMS，**绝不兜底成 clear_domain**（AC-10）：
+   * 缺省成整域删除会让一次参数写错直接抹掉整个域名的命令集。
+   */
   async invalidate(args: InvalidateArgs): Promise<{ affected: number; remaining: number }> {
     const domain = normalizeHostname(args.domain);
-    const action = args.action === "disable" || args.action === "delete" || args.action === "clear_domain"
-      ? args.action
-      : "clear_domain";
+    const action = args.action;
+    if (!isInvalidateAction(action)) {
+      throw new ServiceError("INVALID_PARAMS", "action 必须是 disable / delete / clear_domain 之一");
+    }
     return this.cache.invalidate(domain, { commandId: args.commandId, action });
   }
 

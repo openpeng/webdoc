@@ -23,6 +23,7 @@ const EXPOSED = [
   "EXECUTE_OPTIONS_ALLOWED_KEYS", "EXECUTE_OPTIONS_FORBIDDEN_KEYS",
   "API_COMMAND_ALLOWED_HEADERS", "RESPONSE_SENSITIVE_FIELDS", "PARAM_RESERVED_NAMES",
   "API_COMMAND_FORBIDDEN_HEADERS", "HEADER_NAME_PATTERN", "MAX_HEADER_VALUE_LENGTH",
+  "READ_ONLY_SAFE_METHODS", "isReadOnlySafeMethod",
   "sanitizeRequestHeaders",
   "REQUEST_PARAM_NAME_DENYLIST", "STATIC_RESOURCE_TYPES", "STATIC_ASSET_EXTENSIONS",
   "TELEMETRY_PATH_KEYWORDS", "SAMPLE_CANDIDATE_RESOURCE_TYPES", "SAMPLE_MIME_KEYWORDS",
@@ -214,7 +215,7 @@ test("EXECUTE_OPTIONS_FORBIDDEN_KEYS / LOG_STRIP_KEYS / 日志与 header 白名�
                       "STOP_OPTIONS_ALLOWED_KEYS", "EXECUTE_OPTIONS_ALLOWED_KEYS",
                       "EXECUTE_OPTIONS_FORBIDDEN_KEYS", "API_COMMAND_ALLOWED_HEADERS",
                       "API_COMMAND_FORBIDDEN_HEADERS", "HEADER_NAME_PATTERN",
-                      "MAX_HEADER_VALUE_LENGTH",
+                      "MAX_HEADER_VALUE_LENGTH", "READ_ONLY_SAFE_METHODS",
                       "RESPONSE_SENSITIVE_FIELDS", "PARAM_RESERVED_NAMES",
                       "REQUEST_PARAM_NAME_DENYLIST", "LOG_STRIP_KEYS", "API_LOG_ALLOWED_KEYS"]) {
     same(H[name], T[name]);
@@ -290,4 +291,15 @@ test("helpers 纯 helper 的常量级行为：错误码前缀、日志脱敏、h
   assert.equal(H.apiNormalizeHostname("HTTPS://u:p@WWW.Example.COM:8443/path?x=1"), "www.example.com");
   assert.equal(H.apiClampInt(999999, 1000, 500000, 50000), 500000);
   assert.deepEqual(plain(H.apiPickWhitelist({ a: 1, b: 2, __proto__: {} }, ["a"])), { a: 1 });
+});
+
+test("只读安全方法白名单两侧一致，且缺失 / 非法 method 一律按写操作处理（fail-closed）", () => {
+  same(H.READ_ONLY_SAFE_METHODS, T.READ_ONLY_SAFE_METHODS);
+  assert.deepEqual([...T.READ_ONLY_SAFE_METHODS], ["GET", "HEAD", "OPTIONS"]);
+  for (const method of ["GET", "HEAD", "OPTIONS", "get", "head", "options"]) {
+    assert.equal(H.isReadOnlySafeMethod(method), true, `${method} 必须视为只读安全`);
+  }
+  for (const method of ["POST", "PUT", "PATCH", "DELETE", "TRACE", "", undefined, null, "GET ", 123]) {
+    assert.equal(H.isReadOnlySafeMethod(method), false, `${method} 必须按写操作处理`);
+  }
 });

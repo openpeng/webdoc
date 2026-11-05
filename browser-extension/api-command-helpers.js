@@ -205,6 +205,20 @@ const EXECUTE_OPTIONS_FORBIDDEN_KEYS = ['confirm', 'overrides', 'tabId'];
 const BUNDLE_COLLECT_ALLOWED_KEYS = ['urls', 'discover', 'maxSources', 'maxBytes', 'timeoutMs', 'useBrowserCache', 'hosts'];
 const BUNDLE_COLLECT_FORBIDDEN_KEYS = ['headers', 'cookies', 'credentials', 'method', 'body', 'postData', 'confirm', 'tabId', 'overrides'];
 
+/**
+ * 只读模式下的安全方法白名单：不在表内的一律按写操作处理（fail-closed）—— 逐字同步。
+ * 只读门按 method 派生，不采信客户端上报的 risk（risk 是客户端自述字段）。
+ */
+const READ_ONLY_SAFE_METHODS = ['GET', 'HEAD', 'OPTIONS'];
+
+/**
+ * 只读判定：按 HTTP method 派生，**不采信客户端上报的 risk**（AC-12）。
+ * method 缺失 / 非法一律按写操作处理（fail-closed）。
+ */
+function isReadOnlySafeMethod(method) {
+  return READ_ONLY_SAFE_METHODS.indexOf(String(method || '').toUpperCase()) >= 0;
+}
+
 /** (c) 请求 header 最低保证集：这两个头由代码无条件补上，不依赖调用方。 */
 const API_COMMAND_ALLOWED_HEADERS = ['accept', 'content-type'];
 

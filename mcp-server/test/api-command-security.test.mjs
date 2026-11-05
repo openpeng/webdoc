@@ -326,6 +326,40 @@ test("A.4 只读模式不可绕过：risk=write + confirm:true 仍 READ_ONLY_BLO
   assert.equal(readOnlyRead.fetchCalls.length, 1);
 });
 
+test("T7：只读门按 method 派生 —— risk=read 但 method=POST 仍被拒（AC-12）", async () => {
+  // 客户端自述 risk=read、方法却是 POST：只读边界必须按 method 判定，不能被自述字段绕过。
+  const { sandbox, sent, fetchCalls } = loadExtension({ initialStorage: { readOnlyMode: true } });
+  await sandbox.handleDaemonMessage(executeMsg({ risk: "read", method: "POST", body: "{}" }));
+  assert.equal(fetchCalls.length, 0, "只读模式下 POST 不得发出任何请求");
+  const reply = lastReply(sent);
+  assert.equal(reply.type, "error");
+  assert.equal(reply.success, false);
+  assert.ok(reply.error.includes("READ_ONLY_BLOCKED"), `实际: ${reply.error}`);
+
+  // 其余写方法同样按 method 拦下
+  for (const method of ["PUT", "PATCH", "DELETE"]) {
+    const blocked = loadExtension({ initialStorage: { readOnlyMode: true } });
+    await blocked.sandbox.handleDaemonMessage(executeMsg({ risk: "read", method, body: "{}" }));
+    assert.equal(blocked.fetchCalls.length, 0, `${method} 在只读模式下必须被拦下`);
+    assert.ok(lastReply(blocked.sent).error.includes("READ_ONLY_BLOCKED"));
+  }
+
+  // method 缺失 / 非法 → fail-closed，一律按写操作拦下
+  for (const method of ["", undefined, "TRACE", "GETT"]) {
+    const blocked = loadExtension({ initialStorage: { readOnlyMode: true } });
+    await blocked.sandbox.handleDaemonMessage(executeMsg({ risk: "read", method }));
+    assert.equal(blocked.fetchCalls.length, 0, `method=${String(method)} 必须 fail-closed`);
+    assert.ok(lastReply(blocked.sent).error.includes("READ_ONLY_BLOCKED"));
+  }
+
+  // 只读安全方法仍然放行（GET / HEAD / OPTIONS）
+  for (const method of ["GET", "HEAD", "OPTIONS"]) {
+    const allowed = loadExtension({ initialStorage: { readOnlyMode: true } });
+    await allowed.sandbox.handleDaemonMessage(executeMsg({ risk: "read", method }));
+    assert.equal(allowed.fetchCalls.length, 1, `${method} 在只读模式下应放行`);
+  }
+});
+
 test("A.5 目标 URL 白名单：跨 host / 非 http(s) / 白名单外域名 / overrides 跨 host（AC-23）", async () => {
   // 跨 host（url 与命令 hostname 不一致）
   const crossHost = loadExtension();
@@ -672,4 +706,35 @@ test("D.5 空响应 / 超大响应 / 超长字段：服务层裁剪与截断不�
   const disabled = await blocked.call({ domain: DOMAIN, commandId: id, params: { id: "42" } });
   assert.equal(disabled.error.code, "COMMAND_DISABLED");
   assert.equal(calls, 0);
+});
+
+test("T7：invalidate_api_commands 的 action 缺失或非法 → INVALID_PARAMS，且命令不被删除（AC-10）", async (t) => {
+  const { cache, commands } = await makeCache(t);
+  const service = new ApiCommandService(cache, async () => { throw new Error("不应调用"); });
+
+  // 基线行为：非法 action 被兜底成 clear_domain，整个域名的命令集一次抹光。
+  for (const action of ["", "clear", "CLEAR_DOMAIN", "drop", "disable ", undefined, null]) {
+    await assert.rejects(
+      () => service.invalidate({ domain: DOMAIN, commandId: commands[0].commandId, action }),
+      (err) => {
+        assert.equal(err.code, "INVALID_PARAMS", `action=${String(action)} 必须报 INVALID_PARAMS`);
+        return true;
+      },
+      `action=${String(action)} 必须被拒绝`,
+    );
+  }
+
+  // 关键：一条命令都不能被删掉
+  const listed = await cache.list(DOMAIN);
+  assert.equal(listed.total, 1, "非法 action 不得删除任何命令");
+  const report = await cache.report(DOMAIN);
+  assert.equal(report.domains.length, 1);
+  assert.equal(report.domains[0].commandCount, 1, "非法 action 不得整域删除");
+  const still = await cache.get(DOMAIN, { commandId: commands[0].commandId });
+  assert.ok(still, "命令必须仍在缓存中");
+
+  // 合法 action 仍然正常工作
+  const ok = await service.invalidate({ domain: DOMAIN, commandId: commands[0].commandId, action: "disable" });
+  assert.equal(ok.affected, 1);
+  assert.equal(ok.remaining, 1);
 });

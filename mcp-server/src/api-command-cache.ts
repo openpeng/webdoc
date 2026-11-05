@@ -1114,6 +1114,10 @@ export class ApiCommandCache {
     const host = normalizeHostname(domain);
     const bucket = this.bucket(host);
     if (!bucket) return { affected: 0, remaining: 0 };
+    // 动作白名单：不认识的动作一律不生效（绝不兜底成 clear_domain）。
+    if (opts.action !== "disable" && opts.action !== "delete" && opts.action !== "clear_domain") {
+      return { affected: 0, remaining: bucket.commands.length };
+    }
     const now = new Date().toISOString();
     if (opts.action === "clear_domain") {
       const affected = bucket.commands.length;
