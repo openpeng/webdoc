@@ -548,6 +548,8 @@ export interface CommandCard {
   name: string;
   method: HttpMethod;
   pathTemplate: string;
+  /** 请求模板（不含任何 header 值与业务样本值）；调用方据此拼最终 URL。 */
+  urlTemplate?: string;
   risk: Risk;
   confidence?: number;
   params?: ApiParam[];

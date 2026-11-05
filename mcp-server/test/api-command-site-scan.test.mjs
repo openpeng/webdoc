@@ -56,6 +56,8 @@ const COMMAND_SET = JSON.stringify({
   ],
 });
 
+const NOW = "2026-01-01T00:00:00.000Z";
+
 async function withCache(fn) {
   const dir = await mkdtemp(join(tmpdir(), "webpilot-scan-"));
   try {
@@ -617,5 +619,65 @@ test("T2：跨 host 命令按各自 host 归档，并打上 crossHost 标记", a
     const cross = await cache.list("cm.example.com", { includeDisabled: true });
     assert.equal(cross.commands.length, 1, "跨 host 命令应归档到它自己的 host");
     assert.ok(report.warnings.includes(SITE_SCAN_CROSS_HOST_COMMAND_WARNING));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T5 成品格式命令包（AC-8）
+// ---------------------------------------------------------------------------
+
+const FINISHED_COMMAND_SET = JSON.stringify({
+  version: 1,
+  kind: "webpilot-api-command-set",
+  domain: "api.example.com",
+  commands: [
+    {
+      commandId: "cmd_aaaaaaaaaa",
+      name: "list.orders",
+      domain: "api.example.com",
+      risk: "read",
+      confidence: 0.9,
+      schemaVersion: 1,
+      manuallyEdited: true,
+      deprecated: false,
+      note: "交付方人工确认过",
+      request: {
+        method: "GET",
+        urlTemplate: "https://api.example.com/v1/orders?page={{page}}",
+        pathTemplate: "/v1/orders",
+        bodyTemplate: null,
+        queryTemplate: { page: "{{page}}" },
+      },
+      params: [{ name: "page", location: "query", type: "number", required: false }],
+      responseFields: ["id", "title"],
+      responseSchema: { fields: [], depthLimited: false, sampleCount: 0 },
+      redactedHeaderNames: [],
+      source: { analysisId: "an_x", analyzedAt: NOW, generatedBy: "1.1.1", origin: "manual" },
+      health: { hits: 0, misses: 0, consecutiveFailures: 0, disabled: false, totalDurationMs: 0 },
+      analyzedAt: NOW, lastVerifiedAt: NOW, createdAt: NOW, updatedAt: NOW,
+    },
+  ],
+});
+
+test("T5：成品格式命令包导入后保留 request.urlTemplate / risk / responseFields / manuallyEdited", async () => {
+  await withCache(async (cache) => {
+    const service = new ApiCommandService(cache, async () => { throw new Error("不应调用"); });
+    const report = await service.analyze({
+      action: "scan_site", domain: "api.example.com",
+      sources: [{ kind: "commands", text: FINISHED_COMMAND_SET }],
+    });
+    assert.equal(report.commandCount, 1, "成品命令包必须产出命令（基线产出 0 条）");
+    const card = report.commands.find((c) => c.name === "list.orders");
+    assert.ok(card, "应产出 list.orders");
+    assert.equal(card.risk, "read", "risk 必须保留");
+    assert.equal(card.manuallyEdited, true, "manuallyEdited 必须保留");
+    assert.deepEqual(card.responseFields, ["id", "title"], "responseFields 必须保留");
+    assert.equal(card.urlTemplate, "https://api.example.com/v1/orders?page={{page}}",
+      "request.urlTemplate 必须保留");
+
+    const stored = await cache.get("api.example.com", { name: "list.orders" });
+    assert.ok(stored);
+    assert.equal(stored.note, "交付方人工确认过", "note 必须保留");
+    assert.equal(stored.source.origin, "manual", "来源标注必须保留");
   });
 });
