@@ -110,3 +110,72 @@ test("T10：scanJsText 单源解析不改变裸路径语义（host 推断在 sca
   assert.ok(bare);
   assert.equal(bare.host, undefined, "单源解析保持原始语义，不在解析层猜 host");
 });
+
+// ============================================================================
+// T11 代码审查回归：detectBaseUrlHosts 的三个缺陷
+// ============================================================================
+
+test("T11：detectBaseUrlHosts 的 `baseURL:...||var` 形态也排除占位默认值", () => {
+  // 缺陷：占位默认值只在 `baseURL:"//host"` 直写形态被排除；
+  // 变量形态（`|| a`，a = "//api.domain.com"）没排除，占位符被当成真实 baseURL。
+  const text = `
+var a = "//api.domain.com";
+var c = { baseURL: !s && n.baseURL || a };
+`;
+  assert.deepEqual(detectBaseUrlHosts(text), [], "占位默认值不得计入 baseURL 主机");
+});
+
+test("T11：占位默认值与真实主机并存时，占位符不得污染唯一解", () => {
+  // 缺陷后果：占位符与真实主机一起进 hosts → 唯一解判据失效；
+  // 或占位符单独成为唯一解 → 裸路径被挂到 api.domain.com，命令必然打不通。
+  const text = `
+var a = "//api.domain.com";
+var b = "//api.real.com";
+var c = { baseURL: !s && n.baseURL || a };
+var d = { baseURL: !s && m.baseURL || b };
+`;
+  assert.deepEqual(detectBaseUrlHosts(text), ["api.real.com"]);
+});
+
+test("T11：占位默认值不得成为扫描产物的 host（端到端）", () => {
+  const text = `
+var a = "//api.domain.com";
+var c = { baseURL: !s && n.baseURL || a };
+fetch("/x/web-interface/nav");
+`;
+  const res = scanSources([{ kind: "js", text }], { domain: DOMAIN, loose: true });
+  const hosts = res.candidates.map((c) => c.host).filter(Boolean);
+  assert.ok(!hosts.includes("api.domain.com"),
+    `占位 host 不得出现在候选里，实际：${JSON.stringify(hosts)}`);
+});
+
+test("T11：同一变量被绑到多个 host 时视为歧义（不做推断）", () => {
+  // 缺陷：回查变量绑定时只取**首个**匹配，把「变量被重新赋值」这一真实歧义藏起来；
+  // 压缩 bundle 里短变量名跨作用域复用极常见，首绑定命中会让裸路径挂到任意一个 host 上。
+  const text = `
+var a = "//api.one.com";
+a = "//api.two.com";
+var c = { baseURL: !s && n.baseURL || a };
+fetch("/x/thing");
+`;
+  assert.deepEqual(detectBaseUrlHosts(text), [], "同一变量绑定不一致 → 有歧义，不猜");
+  const res = scanSources([{ kind: "js", text }], { domain: DOMAIN, loose: true });
+  const bare = res.candidates.filter((c) => c.pathTemplate === "/x/thing" && !c.host);
+  assert.equal(bare.length, 1, "有歧义时保留扫描目标域名，不猜 host");
+  assert.equal(bare[0].host, undefined);
+});
+
+test("T11：同一变量绑定到同一个 host（多处赋值）仍算唯一解", () => {
+  // 收紧不得误伤：多处赋值但指向同一个 host 时没有歧义，应当照常推断。
+  const text = `
+var a = "//api.real.com";
+a = "//api.real.com";
+var c = { baseURL: !s && n.baseURL || a };
+fetch("/x/thing");
+`;
+  assert.deepEqual(detectBaseUrlHosts(text), ["api.real.com"]);
+});
+
+test("T11：单一绑定的真实 baseURL 仍能侦测出来（收紧不得丢召回）", () => {
+  assert.deepEqual(detectBaseUrlHosts(BUNDLE_WITH_BASEURL), ["api.bilibili.com"]);
+});

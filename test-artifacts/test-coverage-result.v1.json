@@ -16,7 +16,15 @@
     "baselineTotal": 245,
     "baselineRegression": 0,
     "addedCases": 64,
-    "doctor": "5 pass / 3 info / 0 warn / 0 fail"
+    "doctor": "5 pass / 3 info / 0 warn / 0 fail",
+    "afterT11": {
+      "command": "npm test",
+      "tests": 317,
+      "pass": 317,
+      "fail": 0,
+      "skipped": 0,
+      "note": "T11 前为 309；新增 8 条 T11 回归用例（6 条失败于修复前基线，2 条为收紧不放宽的反向控制用例）"
+    }
   },
   "acceptanceCriteria": [
     {
@@ -25,7 +33,7 @@
       "implementation": [
         "mcp-server/src/api-command-types.ts:921 SITE_SCAN_DEFAULT_LOOSE = true",
         "mcp-server/src/api-command-service.ts:1087 loose 默认取常量",
-        "mcp-server/src/api-command-site-scan.ts:705 scanSources()"
+        "mcp-server/src/api-command-site-scan.ts:725 scanSources()"
       ],
       "testCases": [
         "mcp-server/test/api-command-site-scan.test.mjs:500 T1：loosePaths 默认放开 —— 2 段短前缀路径也能发现端点（保守模式下为 0）"
@@ -37,7 +45,7 @@
       "id": "AC-2",
       "title": "GET/HEAD/OPTIONS 端点 risk=read，其余 write",
       "implementation": [
-        "mcp-server/src/api-command-site-scan.ts:267 inferMethod()",
+        "mcp-server/src/api-command-site-scan.ts:287 inferMethod()",
         "mcp-server/src/api-command-types.ts:929 SITE_SCAN_DEFAULT_TRUST_SPEC = true",
         "mcp-server/src/api-command-service.ts:1124 trustSpec 默认取常量",
         "mcp-server/src/api-command-service.ts:1127 risk 覆盖"
@@ -81,7 +89,7 @@
         "mcp-server/src/api-command-generator.ts:194 buildBodyTemplate()（常量改写为 {{name}} 占位符）",
         "mcp-server/src/api-command-generator.ts:181 buildQueryTemplate()",
         "mcp-server/src/api-command-render.ts:145 renderRequest()（调用方值优先，缺省才回落 defaultValue）",
-        "mcp-server/src/api-command-service.ts:1763 filterParamsForCommand()（只保留子命令声明过的参数）"
+        "mcp-server/src/api-command-service.ts:1769 filterParamsForCommand()（只保留子命令声明过的参数）"
       ],
       "testCases": [
         "mcp-server/test/api-command-render.test.mjs:354 T4：恒定参数写成 {{name}} 占位符，真实值只落在 defaultValue",
@@ -119,7 +127,7 @@
       ],
       "testCases": [
         "mcp-server/test/api-command-cache.test.mjs:113 T5：导出 → 清空 → 导入，命令条数 / 名称 / 参数 / 响应裁剪规则一致且可直接调用",
-        "mcp-server/test/api-command-composite.test.mjs:447 T9：导出 → 清空 → 导入闭环后 steps 不丢，且仍可直接调用"
+        "mcp-server/test/api-command-composite.test.mjs:494 T9：导出 → 清空 → 导入闭环后 steps 不丢，且仍可直接调用"
       ],
       "status": "passed"
     },
@@ -127,7 +135,7 @@
       "id": "AC-8",
       "title": "成品格式命令包导入产出 >= 1 条且 request.urlTemplate / risk / responseFields / manuallyEdited 被保留",
       "implementation": [
-        "mcp-server/src/api-command-site-scan.ts:558 parseCommandSetText()（成品格式优先，保全字段）"
+        "mcp-server/src/api-command-site-scan.ts:578 parseCommandSetText()（成品格式优先，保全字段）"
       ],
       "testCases": [
         "mcp-server/test/api-command-site-scan.test.mjs:662 T5：成品格式命令包导入后保留 request.urlTemplate / risk / responseFields / manuallyEdited",
@@ -193,11 +201,11 @@
       "id": "AC-13",
       "title": "petstore OpenAPI 19 个端点产出 19 条命令且路径 19/19 命中",
       "implementation": [
-        "mcp-server/src/api-command-site-scan.ts:483 parseOpenApiText()",
-        "mcp-server/src/api-command-site-scan.ts:705 scanSources()",
-        "mcp-server/src/api-command-site-scan.ts:188 splitProtocolRelativeUrl()（协议相对 URL 不再当路径）",
-        "mcp-server/src/api-command-site-scan.ts:668 applyHostCrossReference()（T10a 跨源 host 交叉引用）",
-        "mcp-server/src/api-command-site-scan.ts:224 detectBaseUrlHosts()（T10a 客户端 baseURL 侦测）"
+        "mcp-server/src/api-command-site-scan.ts:503 parseOpenApiText()",
+        "mcp-server/src/api-command-site-scan.ts:725 scanSources()",
+        "mcp-server/src/api-command-site-scan.ts:189 splitProtocolRelativeUrl()（协议相对 URL 不再当路径）",
+        "mcp-server/src/api-command-site-scan.ts:688 applyHostCrossReference()（T10a 跨源 host 交叉引用）",
+        "mcp-server/src/api-command-site-scan.ts:225 detectBaseUrlHosts()（T10a 客户端 baseURL 侦测）"
       ],
       "testCases": [
         "mcp-server/test/api-command-site-scan.test.mjs:574 T2：协议相对 URL 不再被整体当路径，host 被还原",
@@ -258,6 +266,70 @@
     "acUnmapped": 0,
     "gapsRegistered": 3,
     "gapsBlocking": 0,
-    "verdict": "全部 14 条 AC 通过；基线 gap 已显式登记处置，无阻断项。"
-  }
+    "verdict": "全部 14 条 AC 通过；基线 gap 已显式登记处置，无阻断项。",
+    "codeReview": "T11：独立 verifier 会话 + 主开发复核，3 个可复现缺陷全部修复并补回归用例（309 -> 317 用例）"
+  },
+  "codeReviewRounds": [
+    {
+      "round": "T11",
+      "scope": "T9 复合命令 + T10 静态推导 host 交叉引用 / baseURL 侦测（独立 verifier 会话 + 主开发复核）",
+      "verdict": "3 个可复现缺陷，全部已修复并补回归用例",
+      "findings": [
+        {
+          "id": "T11-D1",
+          "severity": "high",
+          "title": "占位默认 baseURL（api.domain.com）在变量形态下未被排除",
+          "location": "mcp-server/src/api-command-site-scan.ts:225 detectBaseUrlHosts()",
+          "detail": "占位默认值只在 `baseURL:\"//host\"` 直写形态被排除；`baseURL: <expr> || <var>`（var 绑定到 //api.domain.com）没排除，占位符被当成真实 baseURL，裸路径被挂到 api.domain.com 上，生成的命令必然打不通。",
+          "impact": "端到端实测：scan_site 在 www.example.com 上产出 2 条 host 为 api.domain.com 的命令、真实目标域名下 0 条。",
+          "fix": "抽出常量 SITE_SCAN_PLACEHOLDER_BASE_HOST，两种形态统一由 addHost 排除。",
+          "regressionTests": [
+            "mcp-server/test/api-command-host-infer.test.mjs:118 T11：detectBaseUrlHosts 的 `baseURL:...||var` 形态也排除占位默认值",
+            "mcp-server/test/api-command-host-infer.test.mjs:128 T11：占位默认值与真实主机并存时，占位符不得污染唯一解",
+            "mcp-server/test/api-command-host-infer.test.mjs:140 T11：占位默认值不得成为扫描产物的 host（端到端）"
+          ],
+          "status": "fixed"
+        },
+        {
+          "id": "T11-D2",
+          "severity": "high",
+          "title": "回查变量绑定只取首个匹配，把真实歧义藏起来",
+          "location": "mcp-server/src/api-command-site-scan.ts:225 detectBaseUrlHosts()",
+          "detail": "回查 `<var>` 的协议相对字面量绑定时用 bindRe.exec(source) 只取首个匹配。压缩 bundle 里短变量名跨作用域复用极常见（实测 `a` 先绑 api.one.com 后改绑 api.two.com），首绑定命中会让「唯一解」判据失效，把裸路径挂到任意一个 host 上。",
+          "impact": "实测：同变量绑两个 host 时 detectBaseUrlHosts 返回 1 个 host（应为 0 / 歧义），scanSources 的唯一解保护被绕过。",
+          "fix": "收齐该变量的全部协议相对字面量绑定；全部指向同一 host 才算唯一解，出现分歧视为歧义、不贡献任何 host。",
+          "regressionTests": [
+            "mcp-server/test/api-command-host-infer.test.mjs:152 T11：同一变量被绑到多个 host 时视为歧义（不做推断）",
+            "mcp-server/test/api-command-host-infer.test.mjs:168 T11：同一变量绑定到同一个 host（多处赋值）仍算唯一解",
+            "mcp-server/test/api-command-host-infer.test.mjs:179 T11：单一绑定的真实 baseURL 仍能侦测出来（收紧不得丢召回）"
+          ],
+          "status": "fixed"
+        },
+        {
+          "id": "T11-D3",
+          "severity": "medium",
+          "title": "取值命中与取值未命中共用同一个留痕信号，导致告警与事实相反",
+          "location": "mcp-server/src/api-command-render.ts:436 applyStepMappings()",
+          "detail": "「映射命中 → 映射的值覆盖调用方传值」与「映射未命中 → 退化用调用方传值」两个方向相反的分支都记进 overridden，上层只能给出同一句「由取值映射决定，调用方传值未生效」。在未命中分支里实际是调用方传值**生效了**，告警与事实相反，排查时会被误导。",
+          "impact": "实测：hit.overridden=[ord] 与 miss.overridden=[ord] 完全相同，但 hit.params=映射值、miss.params=调用方值。",
+          "fix": "拆成两个信号：overridden（映射赢，调用方传值未生效）与 fallback（映射未命中，退化为调用方传值）；服务层分别给出方向相反的告警。",
+          "regressionTests": [
+            "mcp-server/test/api-command-composite.test.mjs:422 T11：取值命中与取值未命中是两个相反的信号，不得混用",
+            "mcp-server/test/api-command-composite.test.mjs:444 T11：服务层对「映射命中」与「映射未命中」给出方向相反的告警"
+          ],
+          "status": "fixed"
+        }
+      ],
+      "verifiedNotDefects": [
+        "嵌套复合命令被拒绝（INVALID_PARAMS，零请求）",
+        "步骤 risk 不能把子命令的 write 降级（风险只升不降）",
+        "取值路径未命中且无调用方传值 → MISSING_PARAMS，该步零请求，且 warnings 记录前序已执行步数",
+        "缓存层守卫：步数超限 / 敏感参数名 / 非法 JSONPath / 禁止键 → 命令被跳过并留明确告警",
+        "splitProtocolRelativeUrl 对非法 host（bad_host）不做猜测",
+        "跨源协议相对 host 继承生效；同一路径对应多 host 时不推断",
+        "扩展侧 COMMAND_ALLOWED_KEYS 含 steps，与 Node 侧一致"
+      ],
+      "realSiteRecheck": "修复后用真实 B 站主 bundle（1605288 字节）复测：113 个候选中 48 个归属 api.bilibili.com（正确 baseURL host），host 推断告警仍触发，无候选被占位 host 污染 —— 收紧未造成召回回退。"
+    }
+  ]
 }

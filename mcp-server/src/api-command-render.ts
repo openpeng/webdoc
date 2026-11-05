@@ -423,17 +423,32 @@ export function resolveCompositeSteps(command: ApiCommand): CompositeStepPlan[] 
  *  2. **调用方传值**（baseParams）：覆盖步骤字面量（与 defaultValue 语义一致：调用方传值优先）；
  *  3. **步骤字面量**：最泛化，等同于该步的默认值。
  *
- * - 路径未命中且调用方也给了该参数 → 用调用方的值（记入 overridden，**不静默**）；
+ * - 路径未命中且调用方也给了该参数 → 用调用方的值（记入 **fallback**，**不静默**）；
  * - 路径未命中且调用方没给 → 记入 missing（调用方据此报 MISSING_PARAMS，**不发任何请求**）。
+ *
+ * 两个信号必须分开：
+ *  - `overridden`：取值**命中**，映射的值覆盖了调用方传值 → 调用方传值**未生效**；
+ *  - `fallback`：取值**未命中**，退化用调用方传值 → 调用方传值**生效了**，是映射没取到值。
+ *
+ * 两者方向相反，若共用同一个数组，上层只能给出与事实相反的告警
+ * （把「调用方传值生效了」说成「调用方传值未生效」），排查时会被误导。
  */
 export function applyStepMappings(
   plan: CompositeStepPlan,
   previousResponse: unknown,
   baseParams: Record<string, unknown>,
-): { params: Record<string, unknown>; missing: string[]; overridden: string[] } {
+): {
+  params: Record<string, unknown>;
+  missing: string[];
+  /** 取值命中、覆盖了调用方传值的参数名。 */
+  overridden: string[];
+  /** 取值未命中、退化使用调用方传值的参数名。 */
+  fallback: string[];
+} {
   const params: Record<string, unknown> = { ...plan.literalParams };
   const missing: string[] = [];
   const overridden: string[] = [];
+  const fallback: string[] = [];
   // 来自取值映射的参数：调用方传值不得覆盖（流程的连线是权威的）。
   const fromMapping = new Set<string>();
 
@@ -448,10 +463,10 @@ export function applyStepMappings(
       continue;
     }
     if (callerProvided) {
-      // 取值路径未命中 → 退化用调用方传值，并留痕。
+      // 取值路径未命中 → 退化用调用方传值，并留痕（是 fallback，不是 overridden）。
       params[mapping.param] = baseParams[mapping.param];
       fromMapping.add(mapping.param);
-      overridden.push(mapping.param);
+      fallback.push(mapping.param);
       continue;
     }
     missing.push(mapping.param);
@@ -462,5 +477,5 @@ export function applyStepMappings(
     if (fromMapping.has(key)) continue;
     params[key] = value;
   }
-  return { params, missing, overridden };
+  return { params, missing, overridden, fallback };
 }

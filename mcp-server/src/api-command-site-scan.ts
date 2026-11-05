@@ -28,6 +28,7 @@ import {
   SITE_SCAN_PRIVATE_HOST_WARNING,
   SITE_SCAN_SOURCE_FAILED_WARNING,
   SITE_SCAN_HOST_INFERRED_WARNING,
+  SITE_SCAN_PLACEHOLDER_BASE_HOST,
   TELEMETRY_PATH_KEYWORDS,
   HTTP_METHODS,
 } from "./api-command-types.js";
@@ -227,28 +228,47 @@ export function detectBaseUrlHosts(text: string): string[] {
   const hosts = new Set<string>();
   const addHost = (raw: string) => {
     const host = normalizeHostname(raw);
-    if (host && isValidHostname(host)) hosts.add(host);
+    // 占位默认值（客户端库的默认 baseURL）不是真实主机，两种写法都要排除 ——
+    // 否则裸路径会被挂到 api.domain.com 上，命令必然打不通。
+    if (!host || !isValidHostname(host)) return;
+    if (host === SITE_SCAN_PLACEHOLDER_BASE_HOST) return;
+    hosts.add(host);
   };
 
   // 形态 1：baseURL: <expr> || <var>，再回查 <var> 的字面量绑定。
+  //
+  // 回查必须收齐**该变量的全部**协议相对字面量绑定：
+  // 只取首个绑定会把「同名变量被重新赋值」这一真实歧义藏起来 —— 压缩后的 bundle
+  // 里短变量名跨作用域复用极常见（实测 `a` 先绑 api.one.com 后改绑 api.two.com），
+  // 首绑定命中会让「唯一解」判据失效，把裸路径挂到任意一个 host 上。
+  // 绑定不一致 → 视为歧义，该变量不贡献任何 host（宁可不猜）。
   const orRe = /baseURL\s*:\s*[^,}\n]{1,80}?\|\|\s*([A-Za-z_$][\w$]*)/g;
   let match: RegExpExecArray | null;
   while ((match = orRe.exec(source)) !== null) {
     const name = match[1];
     if (!name) continue;
     const bindRe = new RegExp(
-      "\\b" + name.replace(/\$/g, "\\$") + "\\s*=\\s*(\"(\\/\\/[^\"]{4,80})\"|'(\\/\\/[^']{4,80})')",
+      "\\b" + name.replace(/\$/g, "\\$")
+      + "\\s*=\\s*(\"(\\/\\/[^\"]{4,80})\"|'(\\/\\/[^']{4,80})')",
+      "g",
     );
-    const bound = bindRe.exec(source);
-    if (!bound) continue;
-    addHost((bound[2] || bound[3] || "").replace(/^\/\//, ""));
+    const boundHosts = new Set<string>();
+    let bound: RegExpExecArray | null;
+    while ((bound = bindRe.exec(source)) !== null) {
+      const raw = (bound[2] || bound[3] || "").replace(/^\/\//, "");
+      const host = normalizeHostname(raw);
+      if (host && isValidHostname(host)) boundHosts.add(host);
+    }
+    // 全部绑定指向同一个 host → 唯一解；出现分歧 → 有歧义，不猜。
+    if (boundHosts.size !== 1) continue;
+    addHost([...boundHosts][0]);
   }
 
-  // 形态 2：baseURL: "//host" 字面量（跳过占位默认值）。
+  // 形态 2：baseURL: "//host" 字面量（占位默认值由 addHost 统一排除）。
   const litRe = /baseURL\s*[:=]\s*(\"(\/\/[^\"]{4,80})\"|'(\/\/[^']{4,80})')/g;
   while ((match = litRe.exec(source)) !== null) {
     const raw = (match[2] || match[3] || "").replace(/^\/\//, "");
-    if (!raw || raw === "api.domain.com") continue;
+    if (!raw) continue;
     addHost(raw);
   }
 

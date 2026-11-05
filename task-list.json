@@ -267,6 +267,28 @@
         "status": "done",
         "commit": "982413e + 78ae4ac + 442f3e1",
         "completion_note": "host 交叉引用 + baseURL 侦测（召回 0%→100%，存活 68.6%）；README 中英同步；规格 AC↔实现位置回填"
+      },
+      {
+        "id": "T11",
+        "title": "代码审查缺陷修复：占位 baseURL 泄漏 / 变量绑定首匹配掩盖歧义 / 取值留痕信号混用",
+        "owner": "xiaopeng.lei",
+        "dependsOn": [
+          "T9",
+          "T10"
+        ],
+        "files": [
+          "mcp-server/src/api-command-site-scan.ts",
+          "mcp-server/src/api-command-render.ts",
+          "mcp-server/src/api-command-service.ts",
+          "mcp-server/src/api-command-types.ts",
+          "mcp-server/test/api-command-host-infer.test.mjs",
+          "mcp-server/test/api-command-composite.test.mjs"
+        ],
+        "acceptanceCriteria": [],
+        "acceptance": "独立 verifier 会话审查 T9/T10 新代码，3 个可复现缺陷全部修复：(D1) 占位默认 baseURL api.domain.com 在 `baseURL: <expr> || <var>` 形态下未被排除，裸路径被挂到占位 host，命令必然打不通；(D2) 回查变量绑定只取首个匹配，把「变量被重新赋值」这一真实歧义藏起来；(D3) 取值命中与未命中共用 overridden 留痕信号，导致告警与事实相反。修复前基线实测 6 条新用例失败，修复后全绿；真实 B 站主 bundle 复测召回未回退",
+        "status": "done",
+        "commit": "T11",
+        "completion_note": "D1：抽出 SITE_SCAN_PLACEHOLDER_BASE_HOST，两种 baseURL 形态统一排除占位默认值；D2：收齐变量全部协议相对字面量绑定，全部指向同一 host 才算唯一解，出现分歧视为歧义不猜；D3：拆成 overridden（映射赢，调用方传值未生效）与 fallback（映射未命中，退化为调用方传值）两个信号，服务层分别给出方向相反的告警。新增 8 条回归用例（6 条修复前基线失败 + 2 条收紧不放宽的反向控制用例）"
       }
     ]
   },
@@ -279,7 +301,7 @@
         "updatedAt": "2026-11-05",
         "branch": "feature/webpilot-api-command-set-s1137748852001393342",
         "baseCommit": "e4b2ec9",
-        "testResult": "npm test 309/309 pass；npm run doctor 5 pass / 0 warn / 0 fail",
+        "testResult": "npm test 317/317 pass（309 + T11 审查回归 8 条）；npm run doctor 5 pass / 3 info / 0 warn / 0 fail",
         "acceptanceEvidence": {
           "AC_1": "petstore OpenAPI 路径命中 19/19",
           "AC_2": "B 站静态推导召回 100%（35/35，loose=false 旧默认 0%）",
@@ -304,6 +326,19 @@
           "recallLooseTrue": 1,
           "survivalRate": 0.6857142857142857,
           "note": "oracle 裸路径 host 由实际探测确定；旧口径（裸路径记成扫描目标域名）已废弃"
+        },
+        "codeReview": {
+          "round": "T11",
+          "verdict": "3 个可复现缺陷，全部已修复并补回归用例",
+          "findings": [
+            "T11-D1（high）占位默认 baseURL api.domain.com 在变量形态下未被排除 → 裸路径被挂到占位 host，命令必然打不通",
+            "T11-D2（high）回查变量绑定只取首个匹配，把「变量被重新赋值」这一真实歧义藏起来 → 唯一解判据失效",
+            "T11-D3（medium）取值命中与未命中共用 overridden 信号 → 服务层告警与事实相反"
+          ],
+          "regressionTests": 8,
+          "baselineFailures": 6,
+          "realSiteRecheck": "真实 B 站主 bundle 1605288 字节：113 候选 / 48 个归属 api.bilibili.com，host 推断告警仍触发，无候选被占位 host 污染 —— 收紧未造成召回回退",
+          "evidence": "test-artifacts/test-coverage-result.v1.json -> codeReviewRounds[0]"
         }
       }
     ]
