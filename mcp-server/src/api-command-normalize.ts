@@ -14,7 +14,7 @@
 import {
   HTTP_METHODS, PARAM_NAME_PATTERN, PARAM_RESERVED_NAMES, RESPONSE_SENSITIVE_FIELDS,
   MAX_ENDPOINTS_DEFAULT, MAX_SAFE_LITERAL_LENGTH, MAX_SAFE_INTEGER_ABS,
-  MAX_HEADER_NAME_LENGTH, MAX_ERROR_MESSAGE_LENGTH, REDACTED_VALUE,
+  MAX_PERSISTED_VALUE_LENGTH, MAX_HEADER_NAME_LENGTH, MAX_ERROR_MESSAGE_LENGTH, REDACTED_VALUE,
   SAFE_LITERAL_STRING_RE, JWT_RE, EMAIL_RE, PHONE_RE,
   UUID_PATTERN, NUMERIC_SEGMENT_RE, HEX_ID_RE, HIGH_ENTROPY_SEGMENT_RE,
   HOSTNAME_PATTERN, API_SENSITIVE_HEADER_RE,
@@ -133,6 +133,52 @@ export function isSafeLiteral(value: unknown): boolean {
 export function isSafeLiteralForField(fieldName: string, value: unknown): boolean {
   if (isForbiddenParamName(fieldName)) return false;
   return isSafeLiteral(value);
+}
+
+/**
+ * 【放开·绿区】真凭据形态判定：JWT / Bearer / Basic / Cookie / Authorization / token 类 query。
+ *
+ * 与 looksLikeCredential 的刻意差别：本判定**不**把邮箱、手机号、长随机串当成凭据 ——
+ * 它们是业务样本值，本次放开就是要让它们落盘。真凭据则永远不落盘，
+ * 否则导出的命令包会把可直接使用的令牌交给别人。
+ */
+export function looksLikeAuthCredential(value: unknown): boolean {
+  if (typeof value !== "string") return false;
+  const text = value.trim();
+  if (!text) return false;
+  if (JWT_RE.test(text)) return true;
+  if (/(?:bearer|basic)\s+[a-z0-9._-]+/i.test(text)) return true;
+  if (/^(?:cookie|set-cookie|authorization)\s*:/i.test(text)) return true;
+  if (/[?&](?:token|access_token|auth|password|secret|sig|signature)=/i.test(text)) return true;
+  return false;
+}
+
+/**
+ * 【放开·绿区】可落盘的标量值判定：布尔 / 有限数 / 长度 ≤ MAX_PERSISTED_VALUE_LENGTH 的字符串。
+ *
+ * 放开前用 isSafeLiteral（≤32 字符纯小写字母数字 + 排除疑似凭据形态），
+ * 结果是真实业务值（昵称 / 订单号 / 一次性口令）**一律无法落盘**，
+ * 恒定字段只能退化成「必填参数」，命令调用方还得自己重新提供每个值。
+ * 现在允许标量样本值落盘（长度有上限），值本身仍不进入日志 / 报告 / warnings。
+ *
+ * **真凭据形态仍然拒绝落盘**（JWT / Bearer / Cookie / token 类 query）——
+ * 「放开业务样本值」不等于「把可用令牌写进可交付的文件」。
+ *
+ * isSafeLiteral 保留为严格模式开关（人工标注 allowedValues 等仍可用它）。
+ */
+export function isPersistableLiteral(value: unknown): boolean {
+  if (typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value !== "string") return false;
+  if (value.length === 0 || value.length > MAX_PERSISTED_VALUE_LENGTH) return false;
+  if (looksLikeAuthCredential(value)) return false;
+  return true;
+}
+
+/** 字段名 + 值双重判定：常量 defaultValue 落盘前必须通过（放开版）。 */
+export function isPersistableLiteralForField(fieldName: string, value: unknown): boolean {
+  if (isForbiddenParamName(fieldName)) return false;
+  return isPersistableLiteral(value);
 }
 
 /**
@@ -572,13 +618,15 @@ export function inferParams(group: EndpointGroup): ApiParam[] {
     } else if (alwaysPresent) {
       const onlyValue = entry.values[0];
       if (typeof onlyValue === "string" || typeof onlyValue === "number" || typeof onlyValue === "boolean") {
-        if (isSafeLiteralForField(finalName, onlyValue)) {
+        // 【放开·绿区】恒定字段的标量值允许落盘（长度有上限），
+        // 值同时写进 param.defaultValue；命令模板里用 {{name}} 占位，调用方可覆盖。
+        if (isPersistableLiteralForField(finalName, onlyValue)) {
           param.constant = true;
           param.defaultValue = onlyValue;
           param.required = false;
         } else {
           param.required = true;
-          param.description = `${NEEDS_REVIEW_DESCRIPTION_PREFIX}原请求恒定字段不安全，已转为必填参数，请人工提供`;
+          param.description = `${NEEDS_REVIEW_DESCRIPTION_PREFIX}原请求恒定字段超出可落盘长度，已转为必填参数，请人工提供`;
         }
       } else {
         param.required = true;

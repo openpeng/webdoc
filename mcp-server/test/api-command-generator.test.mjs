@@ -202,7 +202,7 @@ test("generateCommands 产物可通过 cache.toCommand() 白名单重建（AC-17
   }
 });
 
-test("生成物零敏感值：header 值 / 凭据 / 业务样本值不得出现在 commands / needsReview / redactedHeaders", () => {
+test("生成物零 header 值与零凭据；业务样本值只落在 param.defaultValue（放开后的新契约）", () => {
   const secret = "SECRET_SAMPLE_VALUE_8842";
   const headerValue = "AUTH_HEADER_VALUE_7788";
   const g = group({
@@ -215,27 +215,60 @@ test("生成物零敏感值：header 值 / 凭据 / 业务样本值不得出现�
     })],
   });
   const generated = generateCommands([g], ctx());
-  const text = JSON.stringify({
-    commands: generated.commands, needsReview: generated.needsReview,
+  const command = generated.commands[0];
+  const templateText = JSON.stringify({
+    request: command.request,
+    needsReview: generated.needsReview,
     redactedHeaders: generated.redactedHeaders,
+    note: command.note,
   });
-  assert.ok(!text.includes(secret), "命令定义泄漏业务样本值");
-  assert.ok(!text.includes(headerValue), "命令定义泄漏 header 值");
-  assert.ok(!text.includes("Bearer") && !text.includes("cookie:"));
+  assert.ok(!templateText.includes(secret), "请求模板 / needsReview / redactedHeaders 不得含业务样本值");
+  assert.ok(!templateText.includes(headerValue), "命令定义泄漏 header 值");
+  assert.ok(!templateText.includes("Bearer") && !templateText.includes("cookie:"));
   assert.deepEqual(generated.redactedHeaders, ["authorization", "cookie", "x-csrf-token"]);
-  assert.deepEqual(generated.commands[0].redactedHeaderNames, redactHeaderNames([
+  assert.deepEqual(command.redactedHeaderNames, redactHeaderNames([
     "Authorization", "Cookie", "x-csrf-token", "accept",
   ]));
-  // 不安全常量被转必填参数，needsReview 带固定文案
-  assert.ok(generated.needsReview.some((r) => r.reason === UNSAFE_CONSTANT_REVIEW_REASON));
+  // 【放开·绿区】恒定标量值可落盘，且**只**落在 param.defaultValue；
+  // 请求模板里必须是 {{name}} 占位符 —— 否则调用方传值会被静默忽略。
+  const defaults = command.params.filter((p) => p.defaultValue !== undefined);
+  assert.ok(defaults.length > 0, "恒定字段的值应落到 defaultValue");
+  for (const param of defaults) {
+    assert.equal(param.constant, true);
+    assert.equal(param.required, false);
+  }
+  const template = JSON.stringify(command.request);
+  assert.ok(template.includes("{{keyword}}"), "query 恒定参数必须是占位符");
+  assert.ok(template.includes("{{note}}"), "body 恒定参数必须是占位符");
+  assert.ok(!template.includes(secret), "请求模板里不得残留样本值字面量");
   for (const item of generated.needsReview) {
     assert.ok(!item.reason.includes(secret), "needsReview 理由不得拼接样本值");
     assert.equal(item.reason.includes("http"), false);
   }
-  for (const command of generated.commands) {
-    assert.ok(!JSON.stringify(command.params).includes("allowedValues"));
-    for (const param of command.params) assert.equal(param.allowedValues, undefined);
+  for (const cmd of generated.commands) {
+    assert.ok(!JSON.stringify(cmd.params).includes("allowedValues"));
+    for (const param of cmd.params) assert.equal(param.allowedValues, undefined);
   }
+});
+
+test("真凭据形态（JWT / Bearer / token 类 query）仍然拒绝落盘，转为必填参数", () => {
+  const jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+  const g = group({
+    records: [rec({
+      queryPairs: [{ name: "ref", value: jwt }],
+      bodyFields: [],
+      bodyIsJson: false,
+      headerNames: [],
+    })],
+  });
+  const generated = generateCommands([g], ctx());
+  const params = generated.commands[0].params;
+  const ref = params.find((p) => p.name === "ref");
+  assert.ok(ref, "应保留该参数位");
+  assert.equal(ref.constant, undefined);
+  assert.equal(ref.defaultValue, undefined, "JWT 绝不落盘");
+  assert.equal(ref.required, true, "真凭据字段必须转为必填参数");
+  assert.ok(!JSON.stringify(generated.commands).includes(jwt));
 });
 
 test("computeConfidence 落在 0..1，样本数与 schema 提升置信度，低置信度进 needsReview", () => {

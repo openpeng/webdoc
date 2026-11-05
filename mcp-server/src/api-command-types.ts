@@ -73,6 +73,17 @@ export const MAX_RESPONSE_FIELDS = 60;
 export const MAX_SCHEMA_FIELDS = 200;
 /** 安全字面量字符串长度上限（主理人拍板 3：≤32 字符）。 */
 export const MAX_SAFE_LITERAL_LENGTH = 32;
+/**
+ * 【放开·绿区】可落盘样本值的字符串长度上限。
+ * 放开前落盘值必须过 isSafeLiteral（≤32 字符纯小写字母数字），
+ * 真实业务值（昵称 / 订单号 / 一次性口令）一律被拦，导致命令只能带空壳参数。
+ */
+export const MAX_PERSISTED_VALUE_LENGTH = 200;
+/**
+ * 【放开·绿区】响应敏感字段是否强制打码。默认 false（不再强制 [REDACTED]）；
+ * 置 true 即回到「命中敏感字段名一律 [REDACTED] 且不纳入 responseFields」的保守模式。
+ */
+export const RESPONSE_STRICT_REDACTION_DEFAULT = false;
 /** 安全字面量「小整数」绝对值上限。 */
 export const MAX_SAFE_INTEGER_ABS = 100000;
 /** 人工备注长度上限。 */
@@ -735,6 +746,8 @@ export interface GenerateContext {
   sourceOrigin?: CommandSourceOrigin;
   /** 扫描目标域名；候选自带 host 且与之不同时，命令标记 crossHost。 */
   crossHostBaseDomain?: string;
+  /** 【放开·绿区】响应敏感字段是否强制打码；默认 false。 */
+  strictRedaction?: boolean;
 }
 export interface GenerationResult {
   commands: ApiCommand[];

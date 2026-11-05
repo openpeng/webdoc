@@ -10,6 +10,7 @@ import {
 } from "../dist/api-command-render.js";
 import { ApiCommandCache } from "../dist/api-command-cache.js";
 import { ApiCommandService } from "../dist/api-command-service.js";
+import { generateCommands } from "../dist/api-command-generator.js";
 import { ERROR_SAFE_MESSAGES, EPOCH_ISO } from "../dist/api-command-types.js";
 
 const DOMAIN = "api.example.com";
@@ -274,4 +275,79 @@ test("集成：缺必填 / 类型错误 / 写命令未确认，ApiCommandService
   assert.equal(Object.hasOwn(sentParams.options, "params"), false);
   assert.equal(Object.hasOwn(sentParams.options, "headers"), false);
   assert.equal(Object.hasOwn(sentParams.options, "confirm"), false);
+});
+
+// ---------------------------------------------------------------------------
+// T4 值落盘放开 + 常量参数可被调用方覆盖（AC-5）
+// ---------------------------------------------------------------------------
+
+const CONST_REC = (overrides = {}) => ({
+  requestId: "r1", host: DOMAIN, method: "POST", path: "/v1/order/submit",
+  pathSegments: ["v1", "order", "submit"], queryPairs: [], bodyFields: [],
+  bodyIsJson: false, status: 200, mimeType: "application/json",
+  resourceType: "xhr", timestamp: 1, headerNames: [],
+  ...overrides,
+});
+
+/** 生成一条「恒定 body 字段 + 可变 query 字段」的命令。 */
+function constantCommand() {
+  const generated = generateCommands([{
+    method: "POST", pathTemplate: "/v1/order/submit", pathParams: [], host: DOMAIN,
+    records: [CONST_REC({
+      bodyFields: [
+        { name: "nickname", value: "zhangsan", type: "string" },
+        { name: "order_no", value: "ord20240001", type: "string" },
+        { name: "otp", value: "123456", type: "string" },
+      ],
+      bodyIsJson: true,
+    })],
+  }], { domain: DOMAIN, analysisId: "an_t4", generatedBy: "1.1.1", schema: new Map(), now: NOW });
+  return generated.commands[0];
+}
+
+test("T4：恒定参数写成 {{name}} 占位符，真实值只落在 defaultValue", () => {
+  const cmd = constantCommand();
+  const body = cmd.request.bodyTemplate;
+  assert.ok(body, "应生成 bodyTemplate");
+  assert.equal(body.nickname, "{{nickname}}", "恒定参数必须是占位符，不能是字面量");
+  assert.equal(body.order_no, "{{order_no}}");
+  const nickname = cmd.params.find((p) => p.name === "nickname");
+  assert.equal(nickname.constant, true);
+  assert.equal(nickname.defaultValue, "zhangsan", "真实值落在 defaultValue");
+  assert.equal(nickname.required, false);
+  assert.ok(!JSON.stringify(cmd.request).includes("zhangsan"), "请求模板里不得残留样本值");
+});
+
+test("T4：调用方传值必须真实生效（覆盖 defaultValue），不传才回落默认值", () => {
+  const cmd = constantCommand();
+  const overridden = renderRequest(cmd, { nickname: "lisi" });
+  const body = JSON.parse(overridden.body);
+  assert.equal(body.nickname, "lisi", "调用方传值必须覆盖 defaultValue");
+  assert.equal(body.order_no, "ord20240001", "未传的恒定参数回落 defaultValue");
+
+  const fallback = renderRequest(cmd, {});
+  assert.equal(JSON.parse(fallback.body).nickname, "zhangsan");
+});
+
+test("T4：端到端 —— 恒定参数经 call_api_command 传值后下发给扩展的是调用方的值", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "webpilot-t4-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const cache = new ApiCommandCache(join(dir, "api-commands.json"));
+  const cmd = constantCommand();
+  await cache.merge(DOMAIN, [cmd], { mode: "full", overwriteManual: false });
+
+  let sentParams = null;
+  const service = new ApiCommandService(cache, async (_type, params) => {
+    sentParams = params;
+    return { success: true, status: 200, body: { ok: true }, durationMs: 5 };
+  });
+  const result = await service.call({
+    domain: DOMAIN, commandId: cmd.commandId, name: cmd.name,
+    params: { nickname: "lisi" }, confirm: true,
+  });
+  assert.equal(result.error, undefined);
+  assert.ok(sentParams);
+  assert.equal(sentParams.options.body, JSON.stringify({
+    nickname: "lisi", order_no: "ord20240001", otp: "123456",
+  }), "下发的 body 必须是调用方的值，不是分析时的旧值");
 });
