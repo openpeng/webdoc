@@ -936,6 +936,11 @@ export const SITE_SCAN_SOURCE_FAILED_WARNING = "部分数据源读取失败或�
 export const SITE_SCAN_CONSERVATIVE_RISK_WARNING = "静态推导命令默认全部按 write 保守处理；可传 trustSpec=false 保持该保守模式，trustSpec=true 时按来源声明的 method 判定";
 /** 静态推导还原出跨 host 端点（协议相对 URL）时的说明；只给条数，不回显任何 host。 */
 export const SITE_SCAN_CROSS_HOST_COMMAND_WARNING = "部分静态推导端点来自协议相对 URL，其 host 与扫描目标域名不同；命令已按各自 host 归档，执行时仍受扩展侧域名白名单约束";
+/**
+ * 跨源 host 交叉引用生效时的说明：裸路径借同批源里协议相对写法挂到了真实 host 上。
+ * 只说明机制，不回显任何 host / 路径。
+ */
+export const SITE_SCAN_HOST_INFERRED_WARNING = "部分静态推导端点为裸路径，已按同批数据源中出现的协议相对 URL 继承其真实 host（同一路径对应多个 host 时不做推断）";
 
 // ============================================================================
 // 14. BundleCollect —— 扩展侧「带登录态补采 JS bundle」（scan_site 的补充通道）
