@@ -23,6 +23,7 @@
 
 import WebSocket, { WebSocketServer } from "ws";
 import { createHash, randomBytes, timingSafeEqual } from "crypto";
+import { LOG_STRIP_KEYS } from "./api-command-types.js";
 
 const EXTENSION_PORT = Number(process.env.WEBPILOT_PORT) || 8765;
 const PROXY_PORT = Number(process.env.WEBPILOT_PROXY_PORT) || EXTENSION_PORT + 1;
@@ -129,9 +130,24 @@ type ActionLog = {
 type Pending = { resolve: (value: any) => void; reject: (error: Error) => void; timeout: NodeJS.Timeout };
 
 function safeParameters(params: Record<string, any>): Record<string, unknown> {
-  // Keep diagnostics useful without retaining typed values or arbitrary scripts.
-  const { text, script, ...safe } = params;
-  return safe;
+  // Keep diagnostics useful without retaining typed values, scripts, request/response
+  // bodies, samples, raw capture records or header values (AC-20 / 设计 7.6).
+  // 剥离集合与 api-command-types.ts::LOG_STRIP_KEYS / 扩展侧 helpers 逐字一致。
+  // 纯增强脱敏：只让 get_action_log 暴露更少的字段，对既有命令向后兼容。
+  // 新增消息把渲染后的 body / params 放在 `options` 里，故对普通对象做有界递归剥离，
+  // 保证 get_action_log 不会把 options.body 原样回给 Agent（AC-20 双保险）。
+  const strip = new Set<string>(LOG_STRIP_KEYS as readonly string[]);
+  const scrub = (value: unknown, depth: number): unknown => {
+    if (depth > 3 || value === null || typeof value !== "object" || Array.isArray(value)) return value;
+    const out: Record<string, unknown> = {};
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      if (strip.has(key)) continue;
+      out[key] = scrub(child, depth + 1);
+    }
+    return out;
+  };
+  const result = scrub(params, 0);
+  return result && typeof result === "object" ? result as Record<string, unknown> : {};
 }
 
 function backoffDelay(): number {

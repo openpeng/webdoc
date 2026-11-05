@@ -72,6 +72,7 @@ MCP Server 现已内置 WebSocket bridge。不要启动旧的 `daemon/` 包：�
 | `WEBPILOT_LEADER_HOST` | `127.0.0.1` | follower 拨号 leader 的主机；跨机共享 leader 时指向 leader 所在主机。 |
 | `WEBPILOT_GROUP_TTL_MIN` | `30` | 空闲会话标签组在被垃圾回收前的保留分钟数（leader 进程）。 |
 | `WEBPILOT_MAX_GROUPS` | `5` | 会话标签组的最大数量；最旧的空闲组优先关闭。 |
+| `WEBPILOT_API_COMMAND_DIR` | 回退到 `WEBPILOT_TASK_LOG_DIR`，再回退 `.webpilot-task-logs/` | 按精确 hostname 分组的本地 `api-commands.json` 缓存目录（API 命令集专用）。 |
 
 ## 工具列表
 
@@ -109,6 +110,45 @@ MCP Server 现已内置 WebSocket bridge。不要启动旧的 `daemon/` 包：�
 | `execute_webmcp_tool` | 按名称执行某个 WebMCP 注册工具并传入结构化输入。这是原生通道——比 DOM 自动化更快更稳。 |
 | `probe_page_capabilities` | 多维度页面能力扫描：WebMCP 工具、声明式表单、JSON-LD 动作、DOM 语义模式、网络 API 端点。用于决定最优执行策略。 |
 | `extract_iframe_text` | 提取页面中 iframe 的正文文本；同源走 DOM，跨域自动降级到网络层（见下）。 |
+| `analyze_page_apis` | 沉淀为具名、可复用的 API 命令。两种入口：抓包（`start` → 操作 UI → `stop_and_analyze`，`analyze_current` 为兼容入口）；**静态推导 `scan_site`**（直读 JS bundle / HAR / OpenAPI / 声明式命令包，无需打开页面、无需抓包、无需登录会话）。 |
+| `list_api_commands` | 列出某精确 hostname 的本地 API 命令集（自动加载入口，纯本地缓存读取，从不执行）。 |
+| `get_api_command` | 查看单条命令完整定义：`params[]` / `responseFields[]` / `responseSchema` / 健康度 / 来源。 |
+| `call_api_command` | 按持久化模板执行命令，无需打开页面、无需抓包缓冲区，复用浏览器当前会话 Cookie。写命令必须 `confirm: true`。 |
+| `update_api_command` | 人工改名 / 改参数模板 / 改响应裁剪 / 加备注 / 标记弃用，置 `manuallyEdited: true`，后续分析均保留。 |
+| `invalidate_api_commands` | 禁用、删除或清空单条命令 / 整个域名的缓存。 |
+| `get_api_command_cache` | 健康度报告：hits / misses / 连续失败 / disabled / 平均耗时，以及被跳过的不良条目。 |
+| `ai_search` | AI 搜索摘要：一次调用拿到百度「AI 智能回答」全文 + 引用来源，免开网页、免抓包。走 `chat-ws.baidu.com/baikan/conversation` 的 SSE 生成流（无需签名/token），移动站 SSR 作为兜底。 |
+
+## API 命令集（分析 → 沉淀 → 免开网页调用）
+
+七个工具把「一次性抓包」变成**按精确 hostname 隔离的本地**命令集。发现接口有两条入口，可叠加使用：
+
+1. **抓包分析（真实流量，参数与响应最准）**：`analyze_page_apis({action:"start", captureResponseBody:true})` → 在页面上操作目标功能 → `analyze_page_apis({action:"stop_and_analyze", mode:"merge"})`。报告含 `commandCount`、`needsReview[]`、`diff`、`preservedManualEdits[]`、`warnings[]`。`analyze_current` 一次性解析已有的 `start_network_capture` 缓冲区，不采样响应体，产物一律标为需人工复核。
+2. **静态推导（零 UI，整站骨架）**：`analyze_page_apis({action:"scan_site", domain:"example.com", sources:[{kind:"js", url:"https://example.com/static/app.js"}, {kind:"openapi", text:"{...}"}]})`。MCP Server 直接读取前端产物 / 规格 / 归档流量，**不经过浏览器、不 attach debugger、不依赖标签页与登录会话**，一次拿到整站接口骨架；再用 `mode:"merge"` 与真实抓包结果互补。`kind` 支持 `js` / `har` / `openapi` / `commands`，`text` 内联优先于 `url`。详见 [SiteScan 设计](docs/api-command-site-scan-design.md)。
+2.1 **登录态补采（bundle 需要会话才能取时）**：加 `collectViaExtension:true`，URL 类数据源改由扩展侧取文本——页面上下文 fetch → Service Worker fetch → 浏览器缓存（CDP `Page.getResourceContent`）三层 fallback，借用页面自身的会话，Node 直读 401 的 bundle 也能拿到；`discoverBundles:true` 还会从当前标签页自动发现已加载的 JS 并补采。取到的文本仍交给**同一个 `scanSources()`** 解析，扫描逻辑只有一份；原文只在内存流转、不落盘、不进日志。详见 [BundleCollect 设计](docs/api-command-bundle-collect-design.md)。
+3. **沉淀 / 发现**：命令存于 `WEBPILOT_API_COMMAND_DIR` 下的 `api-commands.json`，按精确 hostname 分组。再次访问同域名时，`navigate` 与 `probe_page_capabilities` 会自动追加 `apiCommands` 摘要（**只推荐、不执行，零网络请求**）。`list_api_commands(domain)` 取回精简卡片，`get_api_command` 查看完整定义，`update_api_command` 用 `manuallyEdited: true` 保护人工修正。
+4. **调用**：`call_api_command({name:"list.courses", params:{...}})` 渲染持久化模板，在扩展 service worker 中以 `credentials:'include'` 执行——Cookie 由 Chrome 自身按最终 URL 匹配，无需打开页面、无需标签页、无需抓包缓冲区。写命令（`risk:"write"`）未带 `confirm: true` 时返回脱敏 `preview` 与 `confirmationRequired: true`，**一个网络请求都不发**。
+
+**静态推导的保守默认值**：产物强制 `needsReview` + 空 `responseSchema`，且**默认全部按 `risk:"write"` 处理**（没有真实响应证据，不能假定只读）；`trustSpec:true` 时仅 `openapi` / `commands` 来源按声明方法判定。放开项均为显式入参、默认最保守：私网地址（`allowPrivateHosts`）、跨 hostname 脚本源（`allowCrossHost` + `extraHosts`）、宽松路径判定（`loosePaths`）默认全部关闭。执行侧安全闸门一行未改。
+
+**`{{param}}` 占位符**：命令模板用双花括号表示渲染期取值——`urlTemplate` / `queryTemplate` / `bodyTemplate` 中是 `{{name}}`（如 `?keyword={{keyword}}`、`{"page":{{page}}}`）；单花括号 `{id}` 只出现在 `pathTemplate` 里，是结构标识与稳定哈希输入，**调用时不替换**。通过 `call_api_command.params` 按参数名传值：query/path 值做 URL 编码，body 值保持 JSON 类型（数字不转字符串），path 值含 `/`、`?`、`#` 一律拒绝。`responseFields` 白名单决定返回哪些字段，敏感字段统一替换为 `[REDACTED]`。
+
+**绝不落盘的内容**：请求/响应 header 的**值**、Cookie、CSRF token、凭据、业务样本值一律不进缓存、报告与日志；只保留 header **字段名**（用于脱敏报告）。响应体采样默认关闭，仅在分析期间对前 20 条匹配的 XHR/fetch + JSON/text + 2xx 响应采样（单条 ≤64KB），且只驻留内存用于推导字段名与类型。`scan_site` 读取的脚本 / 规格 / HAR **原文同样只在内存流转**，产物只含路径结构、HTTP method 与字段名，独立配额（40 源 / 单源 2MB / 总计 16MB / 8s 超时）不占用也不修改上述抓包采样配额。登录态补采的 bundle 原文只在「扩展 → 消息 → 编排层局部变量」中流转，回包后即丢弃，独立配额（10 源 / 单源 2MB / 总计 8MB / 8s 超时）；`options` 白名单不含 `headers` / `cookies` / `method` / `body`，扩展侧也不提供任何请求构造入口。
+
+## AI 搜索摘要（`ai_search`）
+
+`ai_search({query:"Kubernetes 探针有哪几种", maxChars:4000, maxCitations:5})` 一次调用返回 `answer`（markdown 正文）、`citations[]`（标题 / 链接 / 来源站点）与 `via`（实际通道），**不开网页、不抓包、不需要登录态**。
+
+它的接口不是搜索页，而是驱动搜索页顶部那块「AI 智能回答」的生成流：
+
+```
+POST https://chat-ws.baidu.com/baikan/conversation?inputMethod=chat_search&llmsearch=1&word={{query}}
+→ text/event-stream，正文在 data.message.content.generator，component="markdown-yiyan" 的 data.value 逐段增量
+```
+
+实测**不需要** `k_signature` / `pmgr_token` / `k_timestamp` / `lid` / `qid`（真实页面请求里都有，但服务端不校验）；只要 body 带上 `baikan_is_high_time_demand:"1"` 与 `categoryIDs:[20]` 就有正文，缺这两项则只回骨架、`text` 全为空。返回值里的 `sseEndpoint` 就是这条模板，需要时可以自行用 `curl` 复用。
+
+兜底通道是移动站 `m.baidu.com` 搜索页里 **SSR 的 `baikan` 数据块**（`<script type="application/json" data-for="baikan">`，`component="markdown"` 的 `content` 按文档顺序拼接）——它不需要任何 token，但百度在移动站的 AI 覆盖率明显更低（同一查询桌面站有、移动站没有），因此只作兜底。详见 [AI Search 设计](docs/ai-search-design.md)。
 
 ## WebMCP 双通道
 
@@ -199,6 +239,10 @@ Agent 可调用 `set_task_plan`，步骤形如：
 - **域名白名单：** 每行一个域名（或用逗号分隔）。它作用于 Agent 控制的标签页，并通过把标签带向空白页来阻止跨域重定向。空列表表示不限制域名。
 - **只读模式：** 允许观察、截图、等待与导航；阻止点击与输入，包括坐标点击。
 - **紧急停止：** 断开 bridge、关闭自动重连并拒绝新的远程命令。点击 **Connect** 可主动恢复。
+
+对 `call_api_command`，扩展侧还会**独立于 MCP 客户端**（完全不读 `confirm`）追加校验：目标 URL 必须 http(s)、hostname 必须与命令所属域名精确相等、且通过域名白名单；只读模式拒绝 `risk:"write"` 命令；重定向用 `redirect:'manual'` + fail-closed（`REDIRECT_BLOCKED`），不逐跳跟随。`confirm` 只是 server 侧防误触发闸门，**不是安全边界**。
+
+**已知风险（存量行为，本次未改）**：存量 `replay_api_request` 仍会透传 `authorization` / `x-csrf-token` 等敏感 header。修改 `REPLAY_FORBIDDEN_HEADERS` 会破坏依赖该行为的既有用户，因此本次为保护既有行为未修改，已列入 Roadmap「存量安全加固」。新 `call_api_command` 通道**从源头不接收 header**——任何注入的 `headers` / `confirm` / `overrides` / `tabId` 字段都会被白名单重建丢弃。
 
 ## 会话标签组
 

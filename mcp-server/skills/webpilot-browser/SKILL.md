@@ -25,6 +25,8 @@ Use the smallest reliable tool path:
 - **One interaction:** Call `get_page_info`, choose a locator, act with `click` or `type`, then call `wait_for` or `get_page_info` to confirm the resulting state.
 - **Multi-step work:** Use the task loop below instead of chaining raw actions.
 - **Repeated routine:** After a completed, parameterized task plan, save it as a workflow. Use `recommend_workflows` only to discover matching prior workflows; it does not execute them.
+- **Data from a site's own API (preferred when a persisted command exists):** Call `list_api_commands(domain)` **first** — it is a pure local cache read, works without opening the page, and never executes anything. If it hits, use `call_api_command`. Only if there is no usable command should you run `analyze_page_apis` (start → operate the UI → stop_and_analyze). See "Per-domain API command set" below.
+- **Need an overview answer, not a specific page:** Call `ai_search({query})` first. One call returns a synthesized answer plus cited sources without opening any page, tab, or login session — much cheaper than `navigate` → `get_page_text` → read several results. Use the real browser only when you need a specific site's own content, or when `ai_search` returns `found:false`.
 - **Exceptional inspection:** Do not use arbitrary page JavaScript. `execute_js` is disabled; use `inspect`, `probe_selector`, page text, adapters, or screenshots instead.
 
 ## WebMCP native channel (dual-channel)
@@ -38,17 +40,63 @@ WebPilot supports a dual-channel architecture: prefer WebMCP native tools when a
 
 **Decision flow:**
 ```
+list_api_commands(domain)          ← try this FIRST (local, no page needed)
+  → usable command found? → call_api_command (params, confirm for write)
+  → not found / empty     → analyze_page_apis(start → operate UI → stop_and_analyze)
+                            → list_api_commands again → call_api_command
 probe_page_capabilities
   → webmcp.count > 0?     → use execute_webmcp_tool (native channel)
   → declarativeForms?     → browser automation on the form
   → domPatterns match?    → browser automation (click/type)
-  → apiEndpoints?         → consider direct API call if appropriate
+  → apiEndpoints?         → hint only; NOT a parsing source (methods are XHR/fetch pseudo-values)
   → fallback              → standard get_page_info + click/type loop
 ```
+
+## Per-domain API command set
+
+Seven dedicated tools turn captured XHR/fetch traffic into a local, per-hostname command set:
+
+| Tool | When to use |
+| --- | --- |
+| `list_api_commands` | **First stop on any site.** Pure local cache read; `autoLoaded`, `cacheHit`, `stale[]`, `warnings[]`. Requires no open page and executes nothing. |
+| `get_api_command` | Inspect one command's `params[]`, `responseFields[]`, `responseSchema`, `risk`, `health`, `manuallyEdited` before calling. |
+| `call_api_command` | Execute by `commandId` or `name`; pass values in `params`. No page/tab/capture buffer needed. |
+| `analyze_page_apis` | Only when `list_api_commands` misses. `start` → operate the UI → `stop_and_analyze`; `analyze_current` parses an existing capture buffer (always flagged for review, empty `responseSchema`). For whole-site coverage without touching the UI, use `scan_site` with `sources[]` (JS/HAR/OpenAPI/declarative set); if those bundles need a login session (plain read returns 401), add `collectViaExtension:true` — or `discoverBundles:true` to auto-discover the current tab's loaded scripts — and the extension fetches the text with the page's own session (page context → service worker → browser cache). Parsing stays on the MCP side, identical in both cases. |
+| `update_api_command` | Rename / edit params / narrow `responseFields` / annotate / deprecate. Sets `manuallyEdited:true`, preserved by later `merge` and `full`. |
+| `invalidate_api_commands` | Disable / delete one command, or clear a whole hostname. |
+| `get_api_command_cache` | Inspect hits / misses / consecutiveFailures / disabled / average latency and skipped-invalid entries. |
+
+- `navigate` and `probe_page_capabilities` automatically append an `apiCommands` summary. **It is a recommendation only — never an execution, and it makes zero network requests.** You still decide whether to call anything.
+- `{{param}}` (double braces) in `urlTemplate` / `queryTemplate` / `bodyTemplate` is filled from `call_api_command.params`; `{id}` (single braces) in `pathTemplate` is only a structural marker and is never substituted at call time. Query/path values are URL-encoded; body values keep their JSON type; a path value containing `/`, `?`, or `#` is refused.
+- **Write commands:** a command with `risk:"write"` returns `confirmationRequired:true` plus a redacted `preview` and sends **no request** unless you pass `confirm:true`. Confirm with the user before doing so (see "Start safely"). `confirm` is only a mis-click gate; the extension independently enforces the domain allowlist, exact hostname match, read-only mode and emergency stop.
+- **Error handling:** `authRequired:true` / `AUTH_REQUIRED` means the login session likely expired — ask the user to log in manually, do not retry blindly (it does not disable the command). `DRIFTED` means the response shape changed — consider re-running `analyze_page_apis`. `REDIRECT_BLOCKED` is fail-closed; do not try to follow the redirect yourself.
+- **Credentials discipline:** the cache stores only header **field names**, never values; no cookies, CSRF tokens, credentials, or business sample values are persisted. Real enum values are not recorded (only `enumCount`). Never copy internal hostnames, endpoint paths, enum values, or business data into workflows, adapters, or this Skill — the cache is a local runtime asset, not a distributable one. `apiEndpoints` from `probe_page_capabilities` is based on `performance.getEntriesByType('resource')` and its `method` is an `XHR`/`fetch` pseudo-value: **never use it as a parsing source**; real methods come from CDP `Network.requestWillBeSent`.
+
+## Search-engine AI summary (`ai_search`)
+
+`ai_search({query, maxChars?, maxCitations?, timeoutMs?})` returns:
+
+- `answer` — the AI summary as cleaned Markdown (Baidu's private `:ml-*` markers and `==` highlights already stripped);
+- `citations[]` — `{title, url, source}`, deduplicated (`source` is the site name, e.g. `腾讯云`);
+- `sections[]` — per-block fragments when the fallback channel produced them;
+- `via` — `baikan-sse` (primary stream), `extension:page|worker|cache`, or `node`;
+- `warnings[]` — read these before concluding "no answer".
+
+Decision rules:
+
+- **`found:false` is a normal result, not an error.** Baidu does not generate a summary for every query. If `warnings[]` says the query has no summary, refine the question (longer / more specific / phrased as a question) rather than retrying the same string.
+- **Latency is 2–13 s** because the primary channel is a *generative* stream. Do not fire many queries in parallel to save time — concurrency raises the chance of tripping Baidu's rate limiting, which can block for tens of minutes. Run them sequentially.
+- **Partial answers are kept.** If `warnings[]` mentions the stream did not finish, you got a truncated answer; it is still usable, or re-call with a larger `timeoutMs`.
+- **Do not reuse as a site API.** This tool is stateless and writes no cache; it is not part of the per-domain command set. For a specific site's own API, use `list_api_commands` → `call_api_command`.
+- `sseEndpoint` / `urlTemplate` in the response are reusable templates (`{{query}}` placeholder) if you need the raw stream.
 
 ## Bulk data export (paginated lists)
 
 Exporting N rows from an admin list page is fastest via the list API, not page-by-page DOM scraping:
+
+**Prefer the persisted command path first:** `list_api_commands(domain)` → `call_api_command({name, params:{page, size}})`. Only fall back to the manual capture/replay sequence below if no command exists yet; in that case use `analyze_page_apis` to sediment one for next time.
+
+Manual sequence (legacy / one-off, when no persisted command exists):
 
 1. `probe_page_capabilities` to confirm the channel: if `webmcp.count > 0`, prefer `execute_webmcp_tool`; otherwise continue below.
 2. `start_network_capture` (optionally with `urlContains` scoped to the site's API host) before touching the page.
@@ -133,6 +181,11 @@ Structured page:   extract_with_best_adapter -> inspect fallback/evidence if any
 New task:          start_task -> observe -> run_task_step -> verify -> repeat
 WebMCP native:     get_webmcp_health -> list_webmcp_tools -> execute_webmcp_tool
 Capability scan:   probe_page_capabilities -> choose best channel
-Bulk export:       start_network_capture -> trigger query -> replay_api_request (size/page override)
+Site API (first):  list_api_commands(domain) -> call_api_command(params)
+Overview answer:   ai_search(query) -> use answer + citations; fall back to browser only if found:false
+Site API (new):    analyze_page_apis(start -> operate UI -> stop_and_analyze) -> list_api_commands -> call_api_command
+Bulk export:       list_api_commands -> call_api_command (page/size params)
+Bulk export (one-off): start_network_capture -> trigger query -> replay_api_request (size/page override)
+Cache health:      get_api_command_cache(domain?) -> hits/misses/consecutiveFailures/disabled
 Troubleshoot:      get_page_info / screenshot -> get_action_log -> revise locator or wait
 ```
