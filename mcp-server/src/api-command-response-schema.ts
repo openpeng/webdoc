@@ -161,13 +161,19 @@ export function deriveResponseSchema(samples: ResponseBodySample[]): ResponseSch
   };
 }
 
-/** 从 schema 生成响应字段白名单：排除敏感字段与非标量中间节点，绝不含任何值。 */
-export function deriveResponseFields(schema: ResponseSchema): string[] {
+/**
+ * 从 schema 生成响应字段白名单：排除非标量中间节点，绝不含任何值。
+ *
+ * 【放开·绿区】strictRedaction=false（默认）时，敏感字段名也纳入白名单 ——
+ * 否则即使执行侧不打码，字段也永远回不来。strictRedaction=true 即回到
+ * 「命中敏感字段黑名单的字段不纳入 responseFields」的保守模式。
+ */
+export function deriveResponseFields(schema: ResponseSchema, strictRedaction = false): string[] {
   if (!schema || !Array.isArray(schema.fields)) return [];
   const out: string[] = [];
   for (const field of schema.fields) {
     if (!field || typeof field.path !== "string") continue;
-    if (field.redacted === true) continue;
+    if (strictRedaction && field.redacted === true) continue;
     if (field.type === "object" || field.type === "array") continue;
     if (!RESPONSE_FIELD_PATTERN.test(field.path)) continue;
     out.push(field.path);
@@ -194,7 +200,8 @@ function segmentKey(segment: string): { key: string; isArray: boolean } {
 
 /**
  * 按白名单点路径提取单个值。
- * 数组段取前 arrayLimit 条，超出回调 onTruncate；命中敏感字段名则统一 [REDACTED]。
+ * 数组段取前 arrayLimit 条，超出回调 onTruncate；
+ * 命中敏感字段名时，strictRedaction=true 才统一 [REDACTED]，默认（false）原样放行。
  * 只返回字段名与脱敏占位，绝不回显被掩码的原值。
  */
 function extractPath(
@@ -205,6 +212,7 @@ function extractPath(
   redactedFields: string[],
   fullPath: string,
   onTruncate: () => void,
+  strictRedaction = false,
 ): unknown {
   if (!isPlainObject(current) || index >= segments.length) return undefined;
   const { key, isArray } = segmentKey(segments[index]);
@@ -219,10 +227,10 @@ function extractPath(
     for (const item of raw.slice(0, arrayLimit)) {
       const value = isLast
         ? (typeof item === "object" && item !== null ? undefined : item)
-        : extractPath(item, segments, index + 1, arrayLimit, redactedFields, fullPath, onTruncate);
+        : extractPath(item, segments, index + 1, arrayLimit, redactedFields, fullPath, onTruncate, strictRedaction);
       if (value !== undefined) items.push(value);
     }
-    if (isSensitiveFieldName(key)) {
+    if (strictRedaction && isSensitiveFieldName(key)) {
       redactedFields.push(fullPath);
       return items.length > 0 ? items.map(() => REDACTED_VALUE) : undefined;
     }
@@ -231,13 +239,13 @@ function extractPath(
 
   if (isLast) {
     if (typeof raw === "object" && raw !== null) return undefined;
-    if (isSensitiveFieldName(key)) {
+    if (strictRedaction && isSensitiveFieldName(key)) {
       redactedFields.push(fullPath);
       return REDACTED_VALUE;
     }
     return raw;
   }
-  return extractPath(raw, segments, index + 1, arrayLimit, redactedFields, fullPath, onTruncate);
+  return extractPath(raw, segments, index + 1, arrayLimit, redactedFields, fullPath, onTruncate, strictRedaction);
 }
 
 /** 把提取到的值写回结果对象的对应路径（支持 [] 数组段）。 */
@@ -284,6 +292,7 @@ export function redactAndProject(
   fields: string[],
   maxBodyChars: number,
   maxArraySamples?: number,
+  strictRedaction = false,
 ): ProjectResult {
   const limit = clampBodyChars(maxBodyChars);
   const arrayLimit = clampArraySamples(maxArraySamples);
@@ -298,7 +307,7 @@ export function redactAndProject(
     const out: Record<string, unknown> = {};
     for (const path of paths) {
       const segments = path.split(".");
-      const value = extractPath(source, segments, 0, arrayLimit, redactedFields, path, onTruncate);
+      const value = extractPath(source, segments, 0, arrayLimit, redactedFields, path, onTruncate, strictRedaction);
       if (value !== undefined) setAtPath(out, segments, value);
     }
     return out;

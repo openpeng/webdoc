@@ -30,6 +30,7 @@ import {
   SITE_SCAN_SOURCE_FAILED_WARNING, SITE_SCAN_CONSERVATIVE_RISK_WARNING,
   SITE_SCAN_CROSS_HOST_COMMAND_WARNING,
   SITE_SCAN_DEFAULT_LOOSE, SITE_SCAN_DEFAULT_TRUST_SPEC,
+  RESPONSE_STRICT_REDACTION_DEFAULT,
   BUNDLE_COLLECT_MAX_SOURCES, BUNDLE_COLLECT_DEFAULT_SOURCES,
   BUNDLE_COLLECT_MAX_SOURCE_BYTES,
   BUNDLE_COLLECT_NO_EXTENSION_WARNING, BUNDLE_COLLECT_FAILED_WARNING,
@@ -130,6 +131,10 @@ export interface CallArgs {
   confirm?: boolean;
   tabId?: number;
   timeoutMs?: number;
+  /** 【放开·绿区】响应敏感字段是否强制打码；缺省取 RESPONSE_STRICT_REDACTION_DEFAULT（false）。 */
+  strictRedaction?: boolean;
+  /** 【放开·绿区】附加请求头（Cookie / Authorization 等凭据头一律剔除）。 */
+  headers?: Record<string, string>;
 }
 
 export interface UpdateArgs {
@@ -1322,10 +1327,14 @@ export class ApiCommandService {
       return result;
     }
 
-    // 响应裁剪：白名单 + 敏感字段 [REDACTED] + 数组 ≤5 + maxBodyChars 截断。
+    // 响应裁剪：白名单 + （可选）敏感字段 [REDACTED] + 数组 ≤5 + maxBodyChars 截断。
     const fieldsOverride = stringArray(args.fields);
     const fields = fieldsOverride.length > 0 ? fieldsOverride : command.responseFields;
-    const projected = redactAndProject(reply.body, fields, maxBodyChars);
+    // 【放开·绿区】敏感字段默认不打码；传 strictRedaction=true 即回到保守模式。
+    const strictRedaction = args.strictRedaction === undefined
+      ? RESPONSE_STRICT_REDACTION_DEFAULT
+      : args.strictRedaction === true;
+    const projected = redactAndProject(reply.body, fields, maxBodyChars, undefined, strictRedaction);
 
     // 结构漂移检测（true = 一致）：只标 drifted，不自动禁用、不阻断返回。
     if (!reply.truncated && reply.body && typeof reply.body === "object"

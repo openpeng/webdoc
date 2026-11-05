@@ -29,7 +29,7 @@ import {
 } from "./api-command-types.js";
 import {
   normalizeHostname, isValidHostname, isSafeLiteral, isSensitiveFieldName,
-  looksLikeCredential, sanitizeErrorMessage, redactHeaderNames,
+  isPersistableLiteral, looksLikeCredential, sanitizeErrorMessage, redactHeaderNames,
 } from "./api-command-normalize.js";
 import type {
   ApiCommand, ApiParam, ApiCommandCacheFile, DomainBucket, CacheLoadDiagnostics,
@@ -174,11 +174,12 @@ function rebuildRequestTemplate(
   if (parsed.hostname.toLowerCase() !== host) {
     return failRebuild(diag, host, commandId, "request.urlTemplate 的 host 与所属 hostname 不一致（外域 URL）");
   }
-  // 外域 / 字面凭据：query 值只允许 {{param}} 占位符或安全字面量。
-  for (const [, value] of parsed.searchParams.entries()) {
+  // 外域 / 字面凭据：query 值只允许 {{param}} 占位符或可落盘标量；
+  // 字段名命中敏感黑名单（token / password / secret …）时一律拒绝。
+  for (const [key, value] of parsed.searchParams.entries()) {
     if (PLACEHOLDER_ONLY_RE.test(value)) continue;
-    if (value.length > 64 || looksLikeCredential(value) || !isSafeLiteral(value)) {
-      return failRebuild(diag, host, commandId, "request.urlTemplate query 含疑似凭据或不安全字面量");
+    if (isSensitiveFieldName(key) || !isPersistableLiteral(value)) {
+      return failRebuild(diag, host, commandId, "request.urlTemplate query 含敏感字段字面量或超长值");
     }
   }
   for (const segment of parsed.pathname.split("/").filter(Boolean)) {
@@ -218,12 +219,19 @@ function rebuildBodyTemplate(
       return failRebuild(diag, host, commandId, "bodyTemplate 键名不符合参数名规范");
     }
     if (typeof value === "string") {
-      if (PLACEHOLDER_ONLY_RE.test(value) || isSafeLiteral(value)) { out[key] = value; continue; }
-      return failRebuild(diag, host, commandId, "bodyTemplate 含不安全字面量或疑似凭据");
+      if (PLACEHOLDER_ONLY_RE.test(value)) { out[key] = value; continue; }
+      // 字面量值：字段名命中敏感黑名单（token / password / secret …）时一律拒绝，
+      // 否则凭据会被写进可交付的命令包。
+      if (isSensitiveFieldName(key) || !isPersistableLiteral(value)) {
+        return failRebuild(diag, host, commandId, "bodyTemplate 含敏感字段字面量或超长值");
+      }
+      out[key] = value; continue;
     }
     if (typeof value === "number" || typeof value === "boolean") {
-      if (isSafeLiteral(value)) { out[key] = value; continue; }
-      return failRebuild(diag, host, commandId, "bodyTemplate 含不安全数值字面量");
+      if (isSensitiveFieldName(key) || !isPersistableLiteral(value)) {
+        return failRebuild(diag, host, commandId, "bodyTemplate 含敏感字段字面量或超长值");
+      }
+      out[key] = value; continue;
     }
     if (value === null) { out[key] = null; continue; }
     return failRebuild(diag, host, commandId, "bodyTemplate 不支持嵌套结构或函数字段");
@@ -243,8 +251,13 @@ function rebuildQueryTemplate(
     if (!PARAM_NAME_PATTERN.test(key)) {
       return failRebuild(diag, host, commandId, "queryTemplate 键名不符合参数名规范");
     }
-    if (typeof value !== "string" || !(PLACEHOLDER_ONLY_RE.test(value) || isSafeLiteral(value))) {
-      return failRebuild(diag, host, commandId, "queryTemplate 含不安全字面量或疑似凭据");
+    if (typeof value !== "string") {
+      return failRebuild(diag, host, commandId, "queryTemplate 值必须是字符串");
+    }
+    if (PLACEHOLDER_ONLY_RE.test(value)) { out[key] = value; continue; }
+    // 字面量值：敏感字段名（token / password / secret …）一律拒绝，其余标量按可落盘判据。
+    if (isSensitiveFieldName(key) || !isPersistableLiteral(value)) {
+      return failRebuild(diag, host, commandId, "queryTemplate 含敏感字段字面量或超长值");
     }
     out[key] = value;
   }
@@ -305,10 +318,11 @@ function rebuildParams(
       if (allowed.length > 0) param.allowedValues = allowed;
     }
     if (item.defaultValue !== undefined) {
-      if (isSafeLiteral(item.defaultValue)) {
+      // 【放开·绿区】标量样本值允许落盘（长度有上限）；超长 / 非标量一律丢弃并转必填参数。
+      if (isPersistableLiteral(item.defaultValue)) {
         param.defaultValue = item.defaultValue as string | number | boolean;
       } else {
-        // 不安全 defaultValue 绝不落盘：丢弃并转为必填参数，由调用方现场提供。
+        // 超出可落盘范围的 defaultValue 绝不落盘：丢弃并转为必填参数，由调用方现场提供。
         param.required = true;
       }
     }

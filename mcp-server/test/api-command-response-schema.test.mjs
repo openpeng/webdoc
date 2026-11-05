@@ -95,7 +95,7 @@ test("空样本 / 非 JSON body / 截断 JSON / 空 bodyText 一律跳过且零�
   assert.equal(mixed.sampleCount, 1);
 });
 
-test("deriveResponseFields 输出点路径、排除敏感字段与容器类型、上限 60", () => {
+test("deriveResponseFields 输出点路径、排除容器类型、上限 60；敏感字段默认纳入、严格模式排除", () => {
   const schema = {
     fields: [
       { path: "code", type: "number", array: false },
@@ -107,7 +107,10 @@ test("deriveResponseFields 输出点路径、排除敏感字段与容器类型�
     ],
     depthLimited: false, sampleCount: 2,
   };
-  assert.deepEqual(deriveResponseFields(schema), ["code", "data.items[].id"]);
+  // 【放开·绿区】默认纳入敏感字段（否则即使执行侧不打码，字段也永远回不来）。
+  assert.deepEqual(deriveResponseFields(schema), ["code", "data.items[].id", "data.token"]);
+  // 严格模式：命中敏感字段黑名单的字段不纳入白名单。
+  assert.deepEqual(deriveResponseFields(schema, true), ["code", "data.items[].id"]);
   assert.deepEqual(deriveResponseFields(null), []);
   assert.deepEqual(deriveResponseFields({ fields: [] }), []);
   const many = { fields: Array.from({ length: 100 }, (_, i) => ({
@@ -131,23 +134,33 @@ test("redactAndProject 白名单裁剪：fields 为空时 fail-closed 返回空�
   assert.deepEqual(redactAndProject(data, ["bad..path"], 50000).data, {});
 });
 
-test("redactAndProject 敏感字段 → [REDACTED]，redactedFields 只放路径、绝不回显原值（AC-09/20）", () => {
+test("redactAndProject 敏感字段：默认放行（放开），strictRedaction=true 才 [REDACTED]（AC-09/20）", () => {
   const data = {
     code: 0,
     user: { name: "张三", token: "SECRET_TOKEN_VALUE_6655", password: "SECRET_PWD_VALUE" },
     total: 2,
   };
-  const result = redactAndProject(data,
-    ["code", "user.name", "user.token", "user.password", "total"], 50000);
-  const text = JSON.stringify(result);
+  const fields = ["code", "user.name", "user.token", "user.password", "total"];
+
+  // 【放开·绿区】默认不再强制打码：敏感字段原样返回。
+  const relaxed = redactAndProject(data, fields, 50000);
+  assert.equal(relaxed.data.user.token, "SECRET_TOKEN_VALUE_6655");
+  assert.equal(relaxed.data.user.password, "SECRET_PWD_VALUE");
+  assert.deepEqual(relaxed.redactedFields, []);
+  assert.equal(relaxed.data.code, 0); // 运行期业务数据允许含业务值
+  assert.equal(relaxed.data.user.name, "张三");
+
+  // 严格模式（开关回退）：敏感字段一律 [REDACTED]，redactedFields 只放路径、绝不回显原值。
+  const strict = redactAndProject(data, fields, 50000, undefined, true);
+  const text = JSON.stringify(strict);
   assert.ok(!text.includes("SECRET_TOKEN_VALUE_6655"));
   assert.ok(!text.includes("SECRET_PWD_VALUE"));
-  assert.equal(result.data.user.token, REDACTED_VALUE);
-  assert.equal(result.data.user.password, REDACTED_VALUE);
-  assert.equal(result.data.code, 0); // 运行期业务数据允许含业务值
-  assert.equal(result.data.user.name, "张三");
-  assert.deepEqual(result.redactedFields.sort(), ["user.password", "user.token"]);
-  for (const entry of result.redactedFields) {
+  assert.equal(strict.data.user.token, REDACTED_VALUE);
+  assert.equal(strict.data.user.password, REDACTED_VALUE);
+  assert.equal(strict.data.code, 0);
+  assert.equal(strict.data.user.name, "张三");
+  assert.deepEqual(strict.redactedFields.sort(), ["user.password", "user.token"]);
+  for (const entry of strict.redactedFields) {
     assert.ok(!entry.includes("SECRET"));
     assert.match(entry, /^[a-zA-Z0-9_\-.\[\]]+$/);
   }
@@ -281,13 +294,18 @@ test("顶层数组无 fields：返回空数组而非空对象（形状不能误�
   assert.equal(result.data.length, 0);
 });
 
-test("顶层数组投影仍受数组上限与敏感字段约束", () => {
+test("顶层数组投影仍受数组上限与敏感字段约束（strictRedaction 严格模式）", () => {
   const list = Array.from({ length: 9 }, (_, i) => ({ id: i, password: `pw${i}` }));
-  const result = redactAndProject(list, ["id", "password"], 50000);
+  const result = redactAndProject(list, ["id", "password"], 50000, undefined, true);
   assert.ok(result.data.length <= 5, "数组上限应生效");
   assert.equal(result.truncated, true);
   assert.ok(result.redactedFields.includes("password"));
-  assert.ok(!JSON.stringify(result.data).includes("pw0"), "敏感字段不得回显原值");
+  assert.ok(!JSON.stringify(result.data).includes("pw0"), "严格模式下敏感字段不得回显原值");
+
+  // 【放开·绿区】默认（strictRedaction=false）敏感字段原样放行。
+  const relaxed = redactAndProject(list, ["id", "password"], 50000);
+  assert.deepEqual(relaxed.redactedFields, []);
+  assert.equal(relaxed.data[0].password, "pw0");
 });
 
 test("顶层标量数组：无法按字段投影时原样保留元素", () => {

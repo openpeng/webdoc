@@ -170,30 +170,34 @@ export function toRenderPath(pathTemplate: string): string {
   return pathTemplate.replace(/\{([a-z0-9_]{1,64})\}/g, (_match, name: string) => `{{${name}}}`);
 }
 
+/**
+ * query 模板：恒定参数也写成 `{{name}}` 占位符，真值只落在 param.defaultValue。
+ *
+ * 【功能修复】放开前恒定参数被直接写成字面量（`out[param.name] = String(param.defaultValue)`），
+ * 于是调用方传 `params.nickname="lisi"` 被**静默忽略**，实际发出的仍是分析时的旧值
+ * （实测发出 zhangsan）。改成占位符后，renderRequest() 优先用调用方提供的值，
+ * 调用方不传时才回落 defaultValue。
+ */
 function buildQueryTemplate(params: ApiParam[]): Record<string, string> {
   const out: Record<string, string> = {};
   for (const param of params) {
     if (param.location !== "query") continue;
-    if (param.constant && param.defaultValue !== undefined) {
-      out[param.name] = String(param.defaultValue); // 仅安全字面量
-    } else {
-      out[param.name] = `{{${param.name}}}`;
-    }
+    out[param.name] = `{{${param.name}}}`;
   }
   return out;
 }
 
+/**
+ * body 模板：恒定参数同样写成 `{{name}}` 占位符（number / boolean 也在渲染时按调用方给的类型回填）。
+ * 与 query 一致，保证「调用方传值一定生效」。
+ */
 function buildBodyTemplate(group: EndpointGroup, params: ApiParam[]): Record<string, unknown> | null {
   const hasJsonBody = group.records.some((rec) => rec.bodyIsJson && rec.bodyFields.length > 0);
   if (!hasJsonBody) return null;
   const out: Record<string, unknown> = {};
   for (const param of params) {
     if (param.location !== "body") continue;
-    if (param.constant && param.defaultValue !== undefined) {
-      out[param.name] = param.defaultValue; // 保留 number / boolean 类型，绝不转字符串
-    } else {
-      out[param.name] = `{{${param.name}}}`;
-    }
+    out[param.name] = `{{${param.name}}}`;
   }
   return Object.keys(out).length > 0 ? out : null;
 }
@@ -303,6 +307,7 @@ export function generateCommands(groups: EndpointGroup[], ctx: GenerateContext):
     || ctx?.sourceOrigin === "spec" || ctx?.sourceOrigin === "manual"
     ? ctx.sourceOrigin
     : "capture";
+  const strictRedaction = ctx?.strictRedaction === true;
   const schemaMap = ctx?.schema instanceof Map ? ctx.schema : new Map<string, ResponseSchema>();
 
   const commands: ApiCommand[] = [];
@@ -328,7 +333,7 @@ export function generateCommands(groups: EndpointGroup[], ctx: GenerateContext):
       : emptyResponseSchema();
     const hasListResponse = schema.fields.some((field) => field.array || field.path.includes("[]"));
     const params = inferParams(group);
-    const responseFields = deriveResponseFields(schema);
+    const responseFields = deriveResponseFields(schema, strictRedaction);
     const risk = classifyRisk(group.method, group);
     const confidence = computeConfidence(group, params, schema);
     const request = buildRequest(group, params, effectiveHost, scheme);
