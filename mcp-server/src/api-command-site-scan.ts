@@ -27,6 +27,7 @@ import {
   SITE_SCAN_CROSS_HOST_WARNING,
   SITE_SCAN_PRIVATE_HOST_WARNING,
   SITE_SCAN_SOURCE_FAILED_WARNING,
+  SITE_SCAN_HOST_INFERRED_WARNING,
   TELEMETRY_PATH_KEYWORDS,
   HTTP_METHODS,
 } from "./api-command-types.js";
@@ -196,6 +197,62 @@ export function splitProtocolRelativeUrl(rawPath: unknown): { path: string; host
   // host 不合法（空串 / 含路径分隔符）时不做任何猜测，按原样返回交由上层丢弃。
   if (!host || !isValidHostname(host)) return { path: rawPath };
   return { path, host };
+}
+
+/**
+ * 侦测前端 HTTP 客户端的 **baseURL** 常量。
+ *
+ * 实测（B 站首页 bundle）：接口路径在源码里绝大多数是**裸相对路径**
+ * （如 "/x/kv-frontend/namespace/data"），真正的主机藏在请求客户端的 baseURL 里：
+ *
+ *   tf = function(){ this.baseURL = "//api.domain.com"; ... }          // 默认占位
+ *   nf = function(e){ var t = function(n){ var r, a = "//api.bilibili.com", ...
+ *              r = e.call(this, { baseURL: !s && n.baseURL || a, ... }) } // 真实 baseURL
+ *
+ * 裸路径若挂到「扫描目标域名」就必然 404（实测 www.bilibili.com 404 / api.bilibili.com 200），
+ * 所以静态推导必须把客户端的 baseURL 认出来。
+ *
+ * 识别的两种写法（都要求 baseURL 指向**协议相对 URL**，即 //host）：
+ *  1. baseURL: <表达式> || <变量>  —— 该变量在同文件里被赋成 "//host"；
+ *  2. baseURL: "//host" 直接字面量（占位默认值 api.domain.com 除外）。
+ *
+ * 纪律：
+ *  - 纯函数、无 IO；只认协议相对 URL（绝对 URL 自带主机，不需要推断）；
+ *  - 命中多个不同 host 时**不推断**（有歧义），由调用方保留扫描目标域名；
+ *  - 只回 host，不回路径 / 参数 / 任何样本值。
+ */
+export function detectBaseUrlHosts(text: string): string[] {
+  const source = String(text || "").slice(0, SITE_SCAN_MAX_TEXT_CHARS);
+  if (!source) return [];
+  const hosts = new Set<string>();
+  const addHost = (raw: string) => {
+    const host = normalizeHostname(raw);
+    if (host && isValidHostname(host)) hosts.add(host);
+  };
+
+  // 形态 1：baseURL: <expr> || <var>，再回查 <var> 的字面量绑定。
+  const orRe = /baseURL\s*:\s*[^,}\n]{1,80}?\|\|\s*([A-Za-z_$][\w$]*)/g;
+  let match: RegExpExecArray | null;
+  while ((match = orRe.exec(source)) !== null) {
+    const name = match[1];
+    if (!name) continue;
+    const bindRe = new RegExp(
+      "\\b" + name.replace(/\$/g, "\\$") + "\\s*=\\s*(\"(\\/\\/[^\"]{4,80})\"|'(\\/\\/[^']{4,80})')",
+    );
+    const bound = bindRe.exec(source);
+    if (!bound) continue;
+    addHost((bound[2] || bound[3] || "").replace(/^\/\//, ""));
+  }
+
+  // 形态 2：baseURL: "//host" 字面量（跳过占位默认值）。
+  const litRe = /baseURL\s*[:=]\s*(\"(\/\/[^\"]{4,80})\"|'(\/\/[^']{4,80})')/g;
+  while ((match = litRe.exec(source)) !== null) {
+    const raw = (match[2] || match[3] || "").replace(/^\/\//, "");
+    if (!raw || raw === "api.domain.com") continue;
+    addHost(raw);
+  }
+
+  return [...hosts];
 }
 
 /**
@@ -591,6 +648,60 @@ export interface ScanSourcesOptions extends ScanParseOptions {
  * 统一扫描入口（纯函数）。`sources` 里的 text 已由编排层从 url 读取并校验完毕；
  * 本函数不做任何 IO。返回 candidates / 计数 / 固定安全 warnings。
  */
+/**
+ * 跨源 **host 交叉引用**：把裸路径挂到 bundle 里已知的真实 host 上。
+ *
+ * 实测（B 站首页）：bundle 里同一个接口会以两种形态出现 ——
+ *  - "/x/web-interface/nav"（裸路径，host 不明）
+ *  - "//api.bilibili.com/x/web-interface/nav"（协议相对，host 明确）
+ *
+ * 裸路径若默认挂到「扫描目标域名」（www.bilibili.com）就必然 404 ——
+ * 实测 www.bilibili.com 同路径返回 404、api.bilibili.com 返回 200。
+ * 因此这里在**同一批扫描源内**做一次纯交叉引用：某条路径若在别处出现过协议相对写法，
+ * 就继承那个 host。
+ *
+ * 纪律：
+ *  - 只在**唯一** host 时继承 —— 一条路径对应多个 host 说明有歧义，不猜（保持扫描目标域名）；
+ *  - 纯函数，不做任何 IO；
+ *  - 只作用于 js 源（HAR / OpenAPI / 命令包的 host 本来就是明确的）。
+ */
+function applyHostCrossReference(
+  collected: Array<{ kind: SiteScanKind; candidates: SiteScanCandidate[]; text: string }>,
+  baseUrlHosts: string[],
+): number {
+  const hostByPath = new Map<string, Set<string>>();
+  for (const { kind, candidates } of collected) {
+    if (kind !== "js") continue;
+    for (const candidate of candidates) {
+      if (!candidate.host) continue;
+      const hosts = hostByPath.get(candidate.pathTemplate);
+      if (hosts) hosts.add(candidate.host);
+      else hostByPath.set(candidate.pathTemplate, new Set([candidate.host]));
+    }
+  }
+  let inferred = 0;
+  for (const { kind, candidates } of collected) {
+    if (kind !== "js") continue;
+    for (const candidate of candidates) {
+      if (candidate.host) continue;
+      const hosts = hostByPath.get(candidate.pathTemplate);
+      // 路径自身有唯一 host 证据 → 继承它。
+      if (hosts && hosts.size === 1) {
+        candidate.host = [...hosts][0];
+        inferred += 1;
+        continue;
+      }
+      // 路径本身有多个 host 证据 → 有歧义，不猜。
+      if (hosts && hosts.size > 1) continue;
+      // 路径没有任何 host 证据，但客户端 baseURL 唯一 → 挂到 baseURL 主机上。
+      if (baseUrlHosts.length !== 1) continue;
+      candidate.host = baseUrlHosts[0];
+      inferred += 1;
+    }
+  }
+  return inferred;
+}
+
 export function scanSources(
   sources: Array<{ kind: SiteScanKind; text?: string }>,
   opts: ScanSourcesOptions,
@@ -603,6 +714,7 @@ export function scanSources(
       : SITE_SCAN_MAX_ENDPOINTS,
   ));
   const merged = new Map<string, SiteScanCandidate>();
+  const collected: Array<{ kind: SiteScanKind; candidates: SiteScanCandidate[]; text: string }> = [];
   let sourcesRead = 0;
   let bytesRead = 0;
 
@@ -620,6 +732,17 @@ export function scanSources(
       case "commands": candidates = parseCommandSetText(text, { loose: opts.loose, maxCandidates: perSource }); break;
       default: break;
     }
+    collected.push({ kind: source.kind, candidates, text });
+  }
+
+  // 跨源 host 交叉引用：裸路径继承同批源里协议相对写法给出的真实 host。
+  const baseUrlHosts = [...new Set(collected.flatMap(({ kind, text }) => (
+    kind === "js" ? detectBaseUrlHosts(text ?? "") : []
+  )))];
+  const hostInferred = applyHostCrossReference(collected, baseUrlHosts);
+  if (hostInferred > 0) warnings.push(SITE_SCAN_HOST_INFERRED_WARNING);
+
+  for (const { candidates } of collected) {
     for (const candidate of candidates) {
       const key = candidateKey(candidate.method, candidate.pathTemplate, candidate.host);
       if (!merged.has(key)) merged.set(key, candidate);
