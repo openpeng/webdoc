@@ -36,6 +36,7 @@ import type {
 } from "./api-command-types.js";
 import {
   normalizeHostname, isSensitiveFieldName, sanitizeParamName, templatePath,
+  isValidHostname,
 } from "./api-command-normalize.js";
 
 // ===========================================================================
@@ -176,20 +177,57 @@ function bodyNamesFrom(windowText: string): string[] {
 }
 
 /**
+ * 拆分协议相对 URL（`//host/path`）。
+ *
+ * 放开前这类字面量被整体当成「路径」，于是 host 被拼进了 urlTemplate 的路径部分
+ * （实测产出 `https://api.bilibili.com/le3-api.game.bilibili.com/...`），
+ * 而真实接口其实在 `le3-api.game.bilibili.com` 上 —— 这是 404 误报的主要来源。
+ * 现在把 host 还原成独立字段，path 只保留 pathname。
+ */
+export function splitProtocolRelativeUrl(rawPath: unknown): { path: string; host?: string } {
+  if (typeof rawPath !== "string" || !rawPath.startsWith("//")) {
+    return { path: typeof rawPath === "string" ? rawPath : "" };
+  }
+  const rest = rawPath.slice(2);
+  const slash = rest.indexOf("/");
+  const rawHost = slash >= 0 ? rest.slice(0, slash) : rest;
+  const path = slash >= 0 ? rest.slice(slash) : "/";
+  const host = normalizeHostname(rawHost);
+  // host 不合法（空串 / 含路径分隔符）时不做任何猜测，按原样返回交由上层丢弃。
+  if (!host || !isValidHostname(host)) return { path: rawPath };
+  return { path, host };
+}
+
+/**
  * 依据调用点上下文推断 HTTP method；无法确定时保守取 GET。
- * before 取「紧邻字面量之前」的源码并取**最后一个** `.verb(`（避免被上一条语句污染），
- * after 优先看 `fetch(url, { method:'POST' })` 这类显式声明。
+ *
+ * 优先级：显式声明 > 紧邻调用动词 > GET。
+ * - 显式声明：`fetch(url, {method:'POST'})`、`axios({method:'POST'})`、`$.ajax({type:'POST'})`、
+ *   对象字面量里的 `method:` / `type:` 字段。
+ * - 调用动词：`axios.post(` / `request.post(` 等 `.verb(` 形式；**只认紧邻本次字面量的那一个**，
+ *   跨语句（出现 `;` `}` 换行）的不算 —— 否则上一条语句的 `.post(` 会把本次的 GET 误判成 POST。
  */
 function inferMethod(before: string, after: string): HttpMethod {
-  const explicit = /method\s*[:=]\s*['"`](get|post|put|patch|delete|head|options)['"`]/i.exec(after);
+  const explicit = /(?:method|type)\s*[:=]\s*['"`](get|post|put|patch|delete|head|options)['"`]/i.exec(after);
   if (explicit) {
     const verb = explicit[1].toUpperCase();
     if ((HTTP_METHODS as readonly string[]).includes(verb)) return verb as HttpMethod;
   }
   const callRe = /\.\s*(get|post|put|patch|delete|head)\s*\(/gi;
+  // 最后一个语句边界（分号 / 右花括号 / 换行）—— 边界**之前**的动词属于上一条语句，
+  // 不能拿来判定本次调用的 method（实测会把真实的 GET 误判成 POST）。
+  const boundary = Math.max(
+    before.lastIndexOf(";"),
+    before.lastIndexOf("}"),
+    before.lastIndexOf("\n"),
+    before.lastIndexOf("\r"),
+  );
   let last: string | undefined;
   let match: RegExpExecArray | null;
-  while ((match = callRe.exec(before)) !== null) last = match[1];
+  while ((match = callRe.exec(before)) !== null) {
+    if (match.index <= boundary) continue;
+    last = match[1];
+  }
   if (last) {
     const verb = last.toUpperCase();
     if ((HTTP_METHODS as readonly string[]).includes(verb)) return verb as HttpMethod;
@@ -255,8 +293,9 @@ function isApiPath(rawPath: string, loose: boolean): boolean {
   return false;
 }
 
-function candidateKey(method: HttpMethod, pathTemplate: string): string {
-  return `${method}\u0000${pathTemplate}`;
+function candidateKey(method: HttpMethod, pathTemplate: string, host?: string): string {
+  // host 参与去重键：同一路径挂在不同 host 上是**不同接口**（静态推导的跨 host 还原）。
+  return `${method}\u0000${host ?? ""}\u0000${pathTemplate}`;
 }
 
 // ===========================================================================
@@ -281,10 +320,12 @@ export function scanJsText(text: string, opts: ScanParseOptions = {}): SiteScanC
   let match: RegExpExecArray | null;
   while ((match = STRING_LITERAL_RE.exec(source)) !== null) {
     const rawPath = match[2];
-    if (!isApiPath(rawPath, opts.loose === true)) continue;
-    const pathTemplate = toPathTemplate(rawPath);
+    // 协议相对 URL（//host/path）先拆出 host，path 只保留 pathname。
+    const split = splitProtocolRelativeUrl(rawPath);
+    if (!isApiPath(split.path, opts.loose === true)) continue;
+    const pathTemplate = toPathTemplate(split.path);
     if (!pathTemplate) continue;
-    const queryPart = rawPath.includes("?") ? rawPath.slice(rawPath.indexOf("?")) : "";
+    const queryPart = split.path.includes("?") ? split.path.slice(split.path.indexOf("?")) : "";
     const literalEnd = match.index + match[0].length;
     const before = source.slice(Math.max(0, match.index - 100), match.index);
     const after = source.slice(literalEnd, Math.min(source.length, literalEnd + 180));
@@ -295,8 +336,9 @@ export function scanJsText(text: string, opts: ScanParseOptions = {}): SiteScanC
       queryNames: queryNamesFrom(queryPart),
       bodyNames: method === "GET" || method === "HEAD" ? [] : bodyNamesFrom(after),
       origin: "js",
+      ...(split.host ? { host: split.host } : {}),
     };
-    const key = candidateKey(method, pathTemplate);
+    const key = candidateKey(method, pathTemplate, split.host);
     if (!found.has(key)) found.set(key, candidate);
     if (found.size >= limit) break;
   }
@@ -525,7 +567,7 @@ export function scanSources(
       default: break;
     }
     for (const candidate of candidates) {
-      const key = candidateKey(candidate.method, candidate.pathTemplate);
+      const key = candidateKey(candidate.method, candidate.pathTemplate, candidate.host);
       if (!merged.has(key)) merged.set(key, candidate);
       if (merged.size >= perSource) break;
     }
@@ -552,6 +594,10 @@ export function toScanRecords(candidates: SiteScanCandidate[], domain: string): 
   const list = Array.isArray(candidates) ? candidates : [];
   list.forEach((candidate, index) => {
     if (!candidate || !host) return;
+    // 候选自带 host（协议相对 URL 还原）时以它为准 —— 这正是「host 前缀丢失」误报的修复点：
+    // 同一个 path 挂在不同 host 上是不同接口，必须落到各自的 host，否则渲染后必然 404。
+    const recordHost = candidate.host ? normalizeHostname(candidate.host) : host;
+    if (!recordHost) return;
     for (const variant of [0, 1]) {
       const concretePath = candidate.pathTemplate.replace(
         /\{(?:id|id_\d+)\}/g,
@@ -567,7 +613,7 @@ export function toScanRecords(candidates: SiteScanCandidate[], domain: string): 
       }));
       out.push({
         requestId: `scan_${index}_${variant}`,
-        host,
+        host: recordHost,
         method: candidate.method,
         path: concretePath,
         pathSegments: concretePath.split("/").filter(Boolean),

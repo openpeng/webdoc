@@ -28,7 +28,7 @@ import {
 import { deriveResponseFields, emptyResponseSchema } from "./api-command-response-schema.js";
 import type {
   HttpMethod, Risk, EndpointGroup, ApiCommand, ApiParam, RequestTemplate,
-  ResponseSchema, ReviewItem, GenerateContext, GenerationResult,
+  ResponseSchema, ReviewItem, GenerateContext, GenerationResult, CommandSourceOrigin,
 } from "./api-command-types.js";
 
 // ---------------------------------------------------------------------------
@@ -299,6 +299,10 @@ export function generateCommands(groups: EndpointGroup[], ctx: GenerateContext):
   const scheme: "http" | "https" = ctx?.scheme === "http" ? "http" : "https";
   const forceEmpty = ctx?.emptyResponseSchema === true;
   const forceReview = ctx?.forceNeedsReview === true;
+  const sourceOrigin: CommandSourceOrigin = ctx?.sourceOrigin === "scan"
+    || ctx?.sourceOrigin === "spec" || ctx?.sourceOrigin === "manual"
+    ? ctx.sourceOrigin
+    : "capture";
   const schemaMap = ctx?.schema instanceof Map ? ctx.schema : new Map<string, ResponseSchema>();
 
   const commands: ApiCommand[] = [];
@@ -308,7 +312,11 @@ export function generateCommands(groups: EndpointGroup[], ctx: GenerateContext):
 
   for (const group of Array.isArray(groups) ? groups : []) {
     if (!group || !Array.isArray(group.records) || group.records.length === 0) continue;
-    const commandId = stableCommandId(domain, group.method, group.pathTemplate);
+    // 有效 host：静态推导的候选可能自带 host（协议相对 URL 还原），
+    // 它才是命令真正要打的目标；缺省才回落到扫描目标域名。
+    const effectiveHost = normalizeHostname(group.host || "") || domain;
+    const crossHost = !!domain && effectiveHost !== domain;
+    const commandId = stableCommandId(effectiveHost, group.method, group.pathTemplate);
     const key = endpointKey(group.method, group.pathTemplate);
     const candidateSchema = forceEmpty ? undefined : schemaMap.get(key);
     const schema: ResponseSchema = candidateSchema
@@ -323,7 +331,7 @@ export function generateCommands(groups: EndpointGroup[], ctx: GenerateContext):
     const responseFields = deriveResponseFields(schema);
     const risk = classifyRisk(group.method, group);
     const confidence = computeConfidence(group, params, schema);
-    const request = buildRequest(group, params, domain, scheme);
+    const request = buildRequest(group, params, effectiveHost, scheme);
 
     // 命名 + 冲突逐级消歧：限定词 → 路径短哈希后缀（强制进 needsReview）。
     const verb = deriveVerb(group.method, group.pathTemplate, hasListResponse);
@@ -362,7 +370,7 @@ export function generateCommands(groups: EndpointGroup[], ctx: GenerateContext):
     commands.push({
       commandId,
       name,
-      domain,
+      domain: effectiveHost,
       risk,
       confidence,
       schemaVersion: SCHEMA_VERSION,
@@ -373,7 +381,13 @@ export function generateCommands(groups: EndpointGroup[], ctx: GenerateContext):
       responseFields,
       responseSchema: schema,
       redactedHeaderNames: commandRedactedHeaders,
-      source: { analysisId, analyzedAt: now, generatedBy },
+      source: {
+        analysisId,
+        analyzedAt: now,
+        generatedBy,
+        origin: sourceOrigin,
+        ...(crossHost ? { crossHost: true } : {}),
+      },
       health: {
         hits: 0, misses: 0, consecutiveFailures: 0, disabled: false, totalDurationMs: 0,
       },

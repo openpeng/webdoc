@@ -250,7 +250,7 @@ export const REQUEST_TEMPLATE_ALLOWED_KEYS = ["method", "urlTemplate", "pathTemp
 export const API_PARAM_ALLOWED_KEYS = ["name", "location", "type", "required", "description", "enumCount", "allowedValues", "constant", "defaultValue"] as const;
 export const SCHEMA_FIELD_ALLOWED_KEYS = ["path", "type", "array", "isPagination", "redacted"] as const;
 export const RESPONSE_SCHEMA_ALLOWED_KEYS = ["fields", "depthLimited", "sampleCount"] as const;
-export const SOURCE_ALLOWED_KEYS = ["analysisId", "analyzedAt", "generatedBy"] as const;
+export const SOURCE_ALLOWED_KEYS = ["analysisId", "analyzedAt", "generatedBy", "origin", "crossHost"] as const;
 export const HEALTH_ALLOWED_KEYS = [
   "hits", "misses", "consecutiveFailures", "disabled", "totalDurationMs",
   "lastSuccessAt", "lastFailureAt", "lastError", "drifted", "authRequired",
@@ -481,12 +481,35 @@ export interface ApiCommand {
   responseFields: string[];       // 白名单点路径
   responseSchema: ResponseSchema;
   redactedHeaderNames: string[];  // 字段名清单，无值
-  source: { analysisId: string; analyzedAt: string; generatedBy: string };
+  source: ApiCommandSource;
   health: CommandHealth;
   analyzedAt: string;
   lastVerifiedAt: string;
   createdAt: string;
   updatedAt: string;
+}
+
+/**
+ * 命令来源标注：让「这条命令是怎么来的」可追溯、可审查、可交付。
+ * - capture：真实抓包观测（最可信）
+ * - scan：静态推导（前端代码 / 规格 / 归档流量，未经真实响应验证）
+ * - spec：来自 OpenAPI / 声明式命令包等权威规格
+ * - manual：人工录入或人工修正
+ */
+export const COMMAND_SOURCE_ORIGINS = ["capture", "scan", "spec", "manual"] as const;
+export type CommandSourceOrigin = typeof COMMAND_SOURCE_ORIGINS[number];
+
+export interface ApiCommandSource {
+  analysisId: string;
+  analyzedAt: string;
+  generatedBy: string;
+  /** 来源类型；旧缓存缺失时按 capture 兜底（历史命令均来自抓包）。 */
+  origin?: CommandSourceOrigin;
+  /**
+   * 跨 host 标记：静态推导从协议相对 URL（//host/path）还原出候选自带 host，
+   * 且该 host 与调用方传入的 domain 不同时置 true。执行时仍走扩展侧域名白名单。
+   */
+  crossHost?: boolean;
 }
 
 /** 对外精简视图（analyze / list 返回）。 */
@@ -708,6 +731,10 @@ export interface GenerateContext {
   scheme?: "http" | "https";
   forceNeedsReview?: boolean;
   emptyResponseSchema?: boolean;
+  /** 来源标注：capture（抓包）/ scan（静态推导）/ spec（规格）/ manual（人工）。 */
+  sourceOrigin?: CommandSourceOrigin;
+  /** 扫描目标域名；候选自带 host 且与之不同时，命令标记 crossHost。 */
+  crossHostBaseDomain?: string;
 }
 export interface GenerationResult {
   commands: ApiCommand[];
@@ -757,6 +784,11 @@ export interface SiteScanCandidate {
   queryNames: string[];
   bodyNames: string[];
   origin: SiteScanKind;
+  /**
+   * 候选自带 host：来源是协议相对 URL（//host/path）时还原出的精确 hostname。
+   * 缺省表示与扫描目标域名同源。
+   */
+  host?: string;
 }
 
 export interface SiteScanResult {
@@ -792,6 +824,8 @@ export const SITE_SCAN_PRIVATE_HOST_WARNING = "已按 allowPrivateHosts=false �
 export const SITE_SCAN_CROSS_HOST_WARNING = "已按同源策略跳过跨 hostname 的数据源；如需 CDN 脚本，必须同时传 allowCrossHost=true 并在 extraHosts 中列出该 hostname（两者是「总开关 + 精确白名单」的双重确认，缺一不可）";
 export const SITE_SCAN_SOURCE_FAILED_WARNING = "部分数据源读取失败或超过配额，已跳过";
 export const SITE_SCAN_CONSERVATIVE_RISK_WARNING = "静态推导命令默认全部按 write 保守处理；可传 trustSpec=false 保持该保守模式，trustSpec=true 时按来源声明的 method 判定";
+/** 静态推导还原出跨 host 端点（协议相对 URL）时的说明；只给条数，不回显任何 host。 */
+export const SITE_SCAN_CROSS_HOST_COMMAND_WARNING = "部分静态推导端点来自协议相对 URL，其 host 与扫描目标域名不同；命令已按各自 host 归档，执行时仍受扩展侧域名白名单约束";
 
 // ============================================================================
 // 14. BundleCollect —— 扩展侧「带登录态补采 JS bundle」（scan_site 的补充通道）

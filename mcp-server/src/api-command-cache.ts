@@ -24,7 +24,7 @@ import {
   RESPONSE_FIELD_PATTERN, PATH_TEMPLATE_PATTERN, PLACEHOLDER_ONLY_RE,
   COMMAND_ALLOWED_KEYS, COMMAND_FORBIDDEN_KEYS, REQUEST_TEMPLATE_ALLOWED_KEYS,
   API_PARAM_ALLOWED_KEYS, SCHEMA_FIELD_ALLOWED_KEYS, RESPONSE_SCHEMA_ALLOWED_KEYS,
-  PARAM_RESERVED_NAMES,
+  PARAM_RESERVED_NAMES, COMMAND_SOURCE_ORIGINS,
   ERROR_SAFE_MESSAGES, STALE_MANUAL_WARNING, NO_CACHE_LIST_WARNING,
 } from "./api-command-types.js";
 import {
@@ -35,7 +35,7 @@ import type {
   ApiCommand, ApiParam, ApiCommandCacheFile, DomainBucket, CacheLoadDiagnostics,
   CacheReport, CommandCard, CommandSummary, ListResult, AnalysisDiff, AnalysisMode,
   RequestTemplate, ResponseSchema, SchemaField, CommandHealth, Risk, HttpMethod,
-  ApiErrorCode,
+  ApiErrorCode, CommandSourceOrigin,
 } from "./api-command-types.js";
 
 // ===========================================================================
@@ -360,10 +360,16 @@ function rebuildResponseSchema(
 
 function rebuildSource(raw: any): ApiCommand["source"] {
   const source = raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+  const originRaw = typeof source.origin === "string" ? source.origin : "";
+  const origin = (COMMAND_SOURCE_ORIGINS as readonly string[]).includes(originRaw)
+    ? originRaw as CommandSourceOrigin
+    : "capture";
   return {
     analysisId: typeof source.analysisId === "string" ? source.analysisId.slice(0, 128) : "",
     analyzedAt: isoOr(source.analyzedAt, EPOCH_ISO),
     generatedBy: typeof source.generatedBy === "string" ? source.generatedBy.slice(0, 64) : GENERATED_BY,
+    origin,
+    ...(source.crossHost === true ? { crossHost: true } : {}),
   };
 }
 
