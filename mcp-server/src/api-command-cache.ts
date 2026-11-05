@@ -24,7 +24,8 @@ import {
   RESPONSE_FIELD_PATTERN, PATH_TEMPLATE_PATTERN, PLACEHOLDER_ONLY_RE,
   COMMAND_ALLOWED_KEYS, COMMAND_FORBIDDEN_KEYS, REQUEST_TEMPLATE_ALLOWED_KEYS,
   API_PARAM_ALLOWED_KEYS, SCHEMA_FIELD_ALLOWED_KEYS, RESPONSE_SCHEMA_ALLOWED_KEYS,
-  PARAM_RESERVED_NAMES, COMMAND_SOURCE_ORIGINS,
+  PARAM_RESERVED_NAMES, COMMAND_SOURCE_ORIGINS, COMMAND_STEP_ALLOWED_KEYS,
+  MAX_COMPOSITE_STEPS, MAX_JSONPATH_LENGTH, MAX_JSONPATH_SEGMENTS,
   ERROR_SAFE_MESSAGES, STALE_MANUAL_WARNING, NO_CACHE_LIST_WARNING,
   CACHE_WRITE_SKIPPED_WARNING, CACHE_LOAD_FAILED_WARNING,
 } from "./api-command-types.js";
@@ -34,11 +35,12 @@ import {
   sanitizeRequestHeaders,
 } from "./api-command-normalize.js";
 import { stableCommandId } from "./api-command-generator.js";
+import { parseJsonPath, isStepValueMapping } from "./api-command-render.js";
 import type {
   ApiCommand, ApiParam, ApiCommandCacheFile, DomainBucket, CacheLoadDiagnostics,
   CacheReport, CommandCard, CommandSummary, ListResult, AnalysisDiff, AnalysisMode,
   RequestTemplate, ResponseSchema, SchemaField, CommandHealth, Risk, HttpMethod,
-  ApiErrorCode, CommandSourceOrigin,
+  ApiErrorCode, CommandSourceOrigin, CommandStep,
 } from "./api-command-types.js";
 
 // ===========================================================================
@@ -381,6 +383,154 @@ function rebuildParams(
   return { ok: true, value: out };
 }
 
+/**
+ * 【复合命令】重建单步的 params。
+ *
+ * 每一步的入参有两种写法：
+ *  - **字面量**：`{"page": 1}` —— 直接透传给子命令；
+ *  - **取值映射**：`{"orderId": {"from": "$.data.order.id"}}` —— 运行时从**上一步响应**取值。
+ *
+ * 字面量允许标量与浅层 JSON（body 参数需要对象），但：
+ *  - 键名必须符合参数名规范、不得命中敏感字段名；
+ *  - 深度 / 节点数有上限（防把整份响应塞进命令集）；
+ *  - 值必须过 isPersistableLiteral（真凭据形态一律不落盘）。
+ */
+function rebuildStepParams(
+  raw: any, host: string, commandId: string, diag: CacheLoadDiagnostics,
+): Rebuild<Record<string, unknown>> {
+  if (raw === undefined || raw === null) return { ok: true, value: {} };
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    return failRebuild(diag, host, commandId, "steps 条目 params 必须是对象");
+  }
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
+    if (!PARAM_NAME_PATTERN.test(key)) {
+      return failRebuild(diag, host, commandId, "steps 条目 params 参数名不符合规范");
+    }
+    if (isSensitiveFieldName(key)) {
+      return failRebuild(diag, host, commandId, "steps 条目 params 参数名命中敏感字段名");
+    }
+    // 取值映射：{"from": "<jsonpath>"}；路径必须是合法 JSONPath 子集。
+    if (isStepValueMapping(value)) {
+      const path = value.from;
+      if (path.length > MAX_JSONPATH_LENGTH) {
+        return failRebuild(diag, host, commandId, "steps 条目取值路径超长");
+      }
+      const parsed = parseJsonPath(path);
+      if (!parsed.ok) {
+        return failRebuild(diag, host, commandId, `steps 条目取值路径非法（${parsed.reason ?? "语法错误"}）`);
+      }
+      if (parsed.segments.length > MAX_JSONPATH_SEGMENTS) {
+        return failRebuild(diag, host, commandId, "steps 条目取值路径段数超限");
+      }
+      out[key] = { from: path };
+      continue;
+    }
+    if (!isPersistableStepValue(value, 0)) {
+      return failRebuild(diag, host, commandId, "steps 条目 params 含不可落盘的值");
+    }
+    out[key] = value;
+  }
+  return { ok: true, value: out };
+}
+
+/** 复合命令单步入参的深度上限（body 参数需要对象，但不许无限嵌套）。 */
+const MAX_STEP_VALUE_DEPTH = 4;
+/** 复合命令单步入参的节点数上限（防把整份响应塞进命令集）。 */
+const MAX_STEP_VALUE_NODES = 50;
+
+/**
+ * 复合命令单步入参的可落盘判定：标量按 isPersistableLiteral；对象 / 数组按
+ * 深度 + 节点数有界递归，键名须合法且不命中敏感字段名。
+ */
+function isPersistableStepValue(value: unknown, depth: number): boolean {
+  if (depth > MAX_STEP_VALUE_DEPTH) return false;
+  if (value === null) return true;
+  if (Array.isArray(value)) {
+    if (value.length > MAX_STEP_VALUE_NODES) return false;
+    return value.every((item) => isPersistableStepValue(item, depth + 1));
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length > MAX_STEP_VALUE_NODES) return false;
+    for (const [key, item] of entries) {
+      if (!PARAM_NAME_PATTERN.test(key)) return false;
+      if (isSensitiveFieldName(key)) return false;
+      if (!isPersistableStepValue(item, depth + 1)) return false;
+    }
+    return true;
+  }
+  return isPersistableLiteral(value);
+}
+
+/**
+ * 【复合命令】重建 steps：逐字段白名单重建，未知键一律丢弃，禁止键直接跳过整条命令。
+ *
+ * 纪律与顶层一致：
+ *  - 步数 ≤ MAX_COMPOSITE_STEPS；
+ *  - 每步必须给出 name 或 commandId（二选一）；
+ *  - name 匹配 COMMAND_NAME_PATTERN、commandId 匹配 COMMAND_ID_PATTERN；
+ *  - params 里的字面量必须可落盘，取值映射的路径必须是合法 JSONPath 子集；
+ *  - risk 只能是 read / write；note 不超长、不含疑似凭据。
+ */
+function rebuildSteps(
+  raw: any, host: string, commandId: string, diag: CacheLoadDiagnostics,
+): Rebuild<CommandStep[]> {
+  if (raw === undefined || raw === null) return { ok: true, value: [] };
+  if (!Array.isArray(raw)) {
+    return failRebuild(diag, host, commandId, "steps 必须是数组");
+  }
+  if (raw.length > MAX_COMPOSITE_STEPS) {
+    return failRebuild(diag, host, commandId, `steps 超过最大步数 ${MAX_COMPOSITE_STEPS}`);
+  }
+  const out: CommandStep[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      return failRebuild(diag, host, commandId, "steps 含非对象条目");
+    }
+    const forbidden = hasForbiddenKeys(item as Record<string, unknown>, COMMAND_STEP_ALLOWED_KEYS);
+    if (forbidden) {
+      return failRebuild(diag, host, commandId, `steps 含禁止字段 ${forbidden}，已跳过该命令`);
+    }
+    const name = typeof item.name === "string" ? item.name.trim() : "";
+    const stepCommandId = typeof item.commandId === "string" ? item.commandId.trim() : "";
+    if (!name && !stepCommandId) {
+      return failRebuild(diag, host, commandId, "steps 条目必须给出 name 或 commandId");
+    }
+    if (name && !COMMAND_NAME_PATTERN.test(name)) {
+      return failRebuild(diag, host, commandId, "steps 条目 name 不符合命名规范");
+    }
+    if (stepCommandId && !COMMAND_ID_PATTERN.test(stepCommandId)) {
+      return failRebuild(diag, host, commandId, "steps 条目 commandId 格式非法");
+    }
+    const paramsRebuild = rebuildStepParams(item.params, host, commandId, diag);
+    if (!paramsRebuild.ok) return { ok: false };
+    let risk: Risk | undefined;
+    if (item.risk !== undefined) {
+      if (!(RISKS as readonly string[]).includes(item.risk)) {
+        return failRebuild(diag, host, commandId, "steps 条目 risk 必须为 read 或 write");
+      }
+      risk = item.risk as Risk;
+    }
+    let note: string | undefined;
+    if (typeof item.note === "string" && item.note.trim()) {
+      const candidate = item.note.trim();
+      if (candidate.length > MAX_NOTE_LENGTH || looksLikeCredential(candidate)) {
+        return failRebuild(diag, host, commandId, "steps 条目 note 超长或含疑似凭据");
+      }
+      note = candidate;
+    }
+    out.push({
+      ...(name ? { name } : {}),
+      ...(stepCommandId ? { commandId: stepCommandId } : {}),
+      ...(Object.keys(paramsRebuild.value).length > 0 ? { params: paramsRebuild.value } : {}),
+      ...(risk ? { risk } : {}),
+      ...(note ? { note } : {}),
+    });
+  }
+  return { ok: true, value: out };
+}
+
 function rebuildResponseSchema(
   raw: any, host: string, commandId: string, diag: CacheLoadDiagnostics,
 ): Rebuild<ResponseSchema> {
@@ -512,6 +662,8 @@ export function toCommand(
   if (!paramsRebuild.ok) return undefined;
   const schemaRebuild = rebuildResponseSchema(raw.responseSchema, host, commandId, diag);
   if (!schemaRebuild.ok) return undefined;
+  const stepsRebuild = rebuildSteps(raw.steps, host, commandId, diag);
+  if (!stepsRebuild.ok) return undefined;
 
   return {
     commandId,
@@ -534,6 +686,7 @@ export function toCommand(
     lastVerifiedAt: isoOr(raw.lastVerifiedAt, EPOCH_ISO),
     createdAt: isoOr(raw.createdAt, EPOCH_ISO),
     updatedAt: isoOr(raw.updatedAt, EPOCH_ISO),
+    ...(stepsRebuild.value.length > 0 ? { steps: stepsRebuild.value } : {}),
   };
 }
 

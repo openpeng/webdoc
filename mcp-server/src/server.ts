@@ -1004,7 +1004,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     },
     {
       name: "import_api_commands",
-      description: "导入他人交付的 API 命令集（export_api_commands 的产物）。每条命令都过白名单重建；urlTemplate 的主机改写为目标域名；同名命令按 overwrite 决定覆盖或跳过。",
+      description: "导入他人交付的 API 命令集（export_api_commands 的产物）。每条命令都过白名单重建；urlTemplate 的主机改写为目标域名；同名命令按 overwrite 决定覆盖或跳过。复合命令（steps 多步编排）随包导入，steps 的取值路径必须是合法 JSONPath 子集。",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -1043,7 +1043,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     },
     {
       name: "call_api_command",
-      description: "按持久化命令模板执行 API 调用（免开网页、无需抓包缓冲区，自动携带当前浏览器会话 Cookie）。写命令 risk=write 必须 confirm:true，否则返回 confirmationRequired 预览且零网络请求。",
+      description: "按持久化命令模板执行 API 调用（免开网页、无需抓包缓冲区，自动携带当前浏览器会话 Cookie）。写命令 risk=write 必须 confirm:true，否则返回 confirmationRequired 预览且零网络请求。复合命令（含 steps 的命令集条目）按序执行多个子命令，上一步响应按 JSONPath（$.data.order.id）注入下一步参数；返回 stepResults 逐步结果。",
       inputSchema: {
         type: "object" as const,
         properties: {

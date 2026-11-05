@@ -175,7 +175,7 @@ const COMMAND_ALLOWED_KEYS = [
   'commandId', 'name', 'domain', 'risk', 'confidence', 'schemaVersion',
   'manuallyEdited', 'deprecated', 'note', 'request', 'params', 'responseFields',
   'responseSchema', 'redactedHeaderNames', 'source', 'health',
-  'analyzedAt', 'lastVerifiedAt', 'createdAt', 'updatedAt'
+  'analyzedAt', 'lastVerifiedAt', 'createdAt', 'updatedAt', 'steps'
 ];
 const COMMAND_FORBIDDEN_KEYS = [
   'computed', 'script', 'eval', 'function', 'headers', 'cookie', 'authorization',

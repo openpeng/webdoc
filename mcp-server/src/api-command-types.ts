@@ -248,13 +248,23 @@ export const COMMAND_ALLOWED_KEYS = [
   "commandId", "name", "domain", "risk", "confidence", "schemaVersion",
   "manuallyEdited", "deprecated", "note", "request", "params", "responseFields",
   "responseSchema", "redactedHeaderNames", "source", "health",
-  "analyzedAt", "lastVerifiedAt", "createdAt", "updatedAt",
+  "analyzedAt", "lastVerifiedAt", "createdAt", "updatedAt", "steps",
 ] as const;
 
 /** (a) 明确禁止的可执行 / 凭据类字段：出现即跳过整条命令（AC-17）。 */
 export const COMMAND_FORBIDDEN_KEYS = [
   "computed", "script", "eval", "function", "headers", "cookie", "authorization",
   "token", "secret", "csrf", "prototype", "constructor", "__proto__",
+] as const;
+
+/**
+ * (a) 复合命令**单步**允许的键：逐字段白名单重建，未知键一律丢弃。
+ *
+ * 与顶层 `COMMAND_ALLOWED_KEYS` 同源同纪律：steps 里绝不允许出现可执行字段
+ * （script / eval / computed …），也不允许夹带凭据。
+ */
+export const COMMAND_STEP_ALLOWED_KEYS = [
+  "name", "commandId", "params", "risk", "note",
 ] as const;
 
 export const REQUEST_TEMPLATE_ALLOWED_KEYS = ["method", "urlTemplate", "pathTemplate", "bodyTemplate", "queryTemplate", "headers"] as const;
@@ -531,7 +541,39 @@ export interface ApiCommand {
   lastVerifiedAt: string;
   createdAt: string;
   updatedAt: string;
+  /** 【复合命令】多步编排：按序执行的子命令链；有 steps 时 request 仅为占位模板。 */
+  steps?: CommandStep[];
 }
+
+/**
+ * 复合命令的一步。
+ *
+ * 入参 `params` 支持两种写法：
+ *  - **字面量**：`{"page": 1}` —— 直接传给子命令；
+ *  - **取值映射**：`{"orderId": {"from": "$.data.order.id"}}` ——
+ *    从**上一步的响应**按 JSONPath 取值后注入（2026-11-05 用户拍板：JSONPath + 显式映射表）。
+ *
+ * `from` 只接受 JSONPath 子集（`$` 根 + `.name` / `["name"]` + `[n]` / `[*]`），
+ * 不支持过滤表达式、脚本与通配递归 —— 避免变成可执行表达式。
+ */
+export interface CommandStep {
+  /** 子命令名（<verb>.<resource>）或 commandId，二选一。 */
+  name?: string;
+  commandId?: string;
+  /** 该步入参：字面量或 {"from": "<jsonpath>"} 取值映射。 */
+  params?: Record<string, unknown>;
+  /** 该步的风险覆盖（缺省按子命令自身的 risk 判定）。 */
+  risk?: Risk;
+  /** 该步的 notes（审计用，不含值）。 */
+  note?: string;
+}
+
+/** 复合命令允许的最大步数（防御超长编排）。 */
+export const MAX_COMPOSITE_STEPS = 5;
+/** 单条 JSONPath 的最大长度。 */
+export const MAX_JSONPATH_LENGTH = 256;
+/** JSONPath 允许的段数上限。 */
+export const MAX_JSONPATH_SEGMENTS = 16;
 
 /**
  * 命令来源标注：让「这条命令是怎么来的」可追溯、可审查、可交付。
@@ -673,7 +715,26 @@ export interface ExecuteResult {
   authRequired: boolean;
   confirmationRequired?: boolean;
   preview?: { method: HttpMethod; urlTemplate: string; paramNames: string[]; risk: Risk };
+  /** 【复合命令】各步执行结果（按序）；单命令调用时不存在。 */
+  stepResults?: CompositeStepResult[];
   warnings: string[];
+  error?: { code: ApiErrorCode; message: string };
+}
+
+/**
+ * 【复合命令】单步执行结果。
+ *
+ * 只含结构信息与已裁剪的数据，绝不含原始入参值（AC-20）。
+ */
+export interface CompositeStepResult {
+  index: number;
+  name: string;
+  commandId: string;
+  method: HttpMethod;
+  urlTemplate: string;
+  status: number | null;
+  durationMs: number;
+  data?: unknown;
   error?: { code: ApiErrorCode; message: string };
 }
 
