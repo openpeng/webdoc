@@ -117,6 +117,12 @@ const STATIC_SUFFIX_RE = /\.(?:js|mjs|cjs|jsx|ts|tsx|css|scss|map|png|jpe?g|gif|
 const API_PATH_HINT_RE = /^\/(?:api|rest|rpc|graphql|v\d+(?:\.\d+)?|service|services|internal|ajax|data|query|gateway|web|app|open|interface|interface_v\d+|cgi|mtop|zuul|bff)(?:\/|$)/i;
 /** 常见业务动作词，用于放宽判定。 */
 const ACTION_SEGMENT_RE = /\/(?:list|detail|info|search|query|create|add|update|edit|delete|remove|save|submit|page|pages|export|import|upload|download|batch|count|tree|options|config|status|submit)\b/i;
+/**
+ * 【放开·绿区】loose 模式下允许的「短前缀首段」（≤4 位小写字母 / 数字）。
+ * 现代站点大量使用 `/x/...`、`/pgc/...`、`/bapis/...` 这类非标准前缀，
+ * 它们既不匹配 API_PATH_HINT_RE，也常常只有 2 段，只靠「≥3 段」规则会整片漏掉。
+ */
+const LOOSE_SHORT_PREFIX_RE = /^[a-z0-9]{1,4}$/i;
 /** 埋点 / 监控按「路径段」精确匹配：避免 /log 误杀 /login。 */
 const TELEMETRY_SEGMENTS = new Set(
   TELEMETRY_PATH_KEYWORDS.map((keyword) => String(keyword).replace(/^\//, "").toLowerCase()),
@@ -239,7 +245,13 @@ function isApiPath(rawPath: string, loose: boolean): boolean {
   const path = String(rawPath || "").split(/[?#]/)[0];
   if (API_PATH_HINT_RE.test(path)) return true;
   if (TEMPLATE_EXPR_TEST_RE.test(rawPath)) return true;
-  if (loose && (ACTION_SEGMENT_RE.test(path) || path.split("/").filter(Boolean).length >= 3)) return true;
+  if (!loose) return false;
+  if (ACTION_SEGMENT_RE.test(path)) return true;
+  const segments = path.split("/").filter(Boolean);
+  if (segments.length >= 3) return true;
+  // 【放开·绿区】2 段 + 首段是短标识符（x / pgc / api / v1 …）：覆盖现代站点的
+  // 单层前缀接口（/x/nav、/pgc/list），这类路径既不匹配高置信前缀也常不足 3 段。
+  if (segments.length === 2 && LOOSE_SHORT_PREFIX_RE.test(segments[0])) return true;
   return false;
 }
 

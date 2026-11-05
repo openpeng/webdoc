@@ -257,27 +257,27 @@ test("ApiCommandService.scanSite 完全不依赖扩展消息", async () => {
   });
 });
 
-test("scan_site 默认全部按 write 保守处理；trustSpec=true 才按规格方法判定", async () => {
-  await withCache(async (cache) => {
-    const service = new ApiCommandService(cache, async () => { throw new Error("不应调用"); });
-    const conservative = await service.analyze({
-      action: "scan_site", domain: "example.com",
-      sources: [{ kind: "openapi", text: OPENAPI }],
-    });
-    assert.ok(conservative.warnings.includes(SITE_SCAN_CONSERVATIVE_RISK_WARNING));
-    const listed = await cache.list("example.com", { includeDisabled: true });
-    assert.ok(listed.commands.length > 0);
-    assert.ok(listed.commands.every((card) => card.risk === "write"), "默认必须全部 write");
-  });
+test("scan_site 默认按 method 判定 risk；trustSpec=false 才回退全量 write 保守模式", async () => {
   await withCache(async (cache) => {
     const service = new ApiCommandService(cache, async () => { throw new Error("不应调用"); });
     const trusted = await service.analyze({
-      action: "scan_site", domain: "example.com", trustSpec: true,
+      action: "scan_site", domain: "example.com",
       sources: [{ kind: "openapi", text: OPENAPI }],
     });
     assert.ok(!trusted.warnings.includes(SITE_SCAN_CONSERVATIVE_RISK_WARNING));
     const listed = await cache.list("example.com", { includeDisabled: true });
-    assert.ok(listed.commands.some((card) => card.risk === "read"), "trustSpec 下 GET 应为 read");
+    assert.ok(listed.commands.length > 0);
+    assert.ok(listed.commands.some((card) => card.risk === "read"), "默认下 GET 应为 read");
+  });
+  await withCache(async (cache) => {
+    const service = new ApiCommandService(cache, async () => { throw new Error("不应调用"); });
+    const conservative = await service.analyze({
+      action: "scan_site", domain: "example.com", trustSpec: false,
+      sources: [{ kind: "openapi", text: OPENAPI }],
+    });
+    assert.ok(conservative.warnings.includes(SITE_SCAN_CONSERVATIVE_RISK_WARNING));
+    const listed = await cache.list("example.com", { includeDisabled: true });
+    assert.ok(listed.commands.every((card) => card.risk === "write"), "trustSpec=false 必须全部 write");
   });
 });
 
@@ -481,4 +481,86 @@ test("端到端：带 servers 的规格生成命令，urlTemplate 含完整前�
     generated.commands[0].request.urlTemplate,
     "https://petstore3.swagger.io/api/v3/pet/findByStatus?status={{status}}",
   );
+});
+
+// ---------------------------------------------------------------------------
+// T1 静态推导放开（AC-1 / AC-2）
+// ---------------------------------------------------------------------------
+
+// 现代站点常见的「短前缀 + 1 段」路径：既不匹配高置信前缀，也不满足「≥3 段」规则。
+const MODERN_BUNDLE = `
+const nav = '/x/nav';
+const items = '/pgc/items';
+fetch('/x/web-interface/nav');
+axios.post('/x/vip/ads/materials', { id: 1 });
+`;
+
+test("T1：loosePaths 默认放开 —— 2 段短前缀路径也能发现端点（保守模式下为 0）", async () => {
+  await withCache(async (cache) => {
+    const service = new ApiCommandService(cache, async () => { throw new Error("不应调用"); });
+    const relaxed = await service.analyze({
+      action: "scan_site", domain: "example.com",
+      sources: [{ kind: "js", text: MODERN_BUNDLE }],
+    });
+    assert.ok(relaxed.endpointCount >= 2, `默认应发现现代站点端点，实际 ${relaxed.endpointCount}`);
+    assert.ok(
+      relaxed.commands.some((card) => card.pathTemplate === "/x/nav"),
+      "应发现 /x/nav 这类短前缀路径",
+    );
+  });
+  await withCache(async (cache) => {
+    const service = new ApiCommandService(cache, async () => { throw new Error("不应调用"); });
+    const strict = await service.analyze({
+      action: "scan_site", domain: "example.com", loosePaths: false,
+      sources: [{ kind: "js", text: MODERN_BUNDLE }],
+    });
+    assert.equal(strict.endpointCount, 0, "loosePaths=false 必须回到保守模式（产出 0）");
+  });
+});
+
+test("T1：静态推导 risk 按 method 判定（GET→read，其余→write）", async () => {
+  await withCache(async (cache) => {
+    const service = new ApiCommandService(cache, async () => { throw new Error("不应调用"); });
+    const report = await service.analyze({
+      action: "scan_site", domain: "example.com",
+      sources: [{ kind: "js", text: MODERN_BUNDLE }],
+    });
+    const listed = await cache.list("example.com", { includeDisabled: true });
+    const get = listed.commands.find((card) => card.pathTemplate === "/x/nav");
+    const post = listed.commands.find((card) => card.pathTemplate === "/x/vip/ads/materials");
+    assert.equal(get?.risk, "read", "GET 应为 read");
+    assert.equal(post?.risk, "write", "POST 应为 write");
+    assert.ok(report.commandCount > 0);
+  });
+});
+
+test("T1：needsReview 降为每条命令 1 条来源标注", async () => {
+  await withCache(async (cache) => {
+    const service = new ApiCommandService(cache, async () => { throw new Error("不应调用"); });
+    const report = await service.analyze({
+      action: "scan_site", domain: "example.com",
+      sources: [{ kind: "js", text: MODERN_BUNDLE }],
+    });
+    assert.ok(report.needsReview.length > 0);
+    assert.equal(
+      report.needsReview.length,
+      new Set(report.needsReview.map((item) => item.commandId)).size,
+      "每条命令只应有 1 条 needsReview",
+    );
+    assert.ok(report.needsReview.every((item) => item.reason === SITE_SCAN_REVIEW_REASON));
+  });
+});
+
+test("T1：报告标注输入来源层级 bundleSource", async () => {
+  await withCache(async (cache) => {
+    const service = new ApiCommandService(cache, async () => { throw new Error("不应调用"); });
+    const inline = await service.analyze({
+      action: "scan_site", domain: "example.com",
+      sources: [{ kind: "js", text: MODERN_BUNDLE }],
+    });
+    assert.equal(inline.bundleSource, "inline");
+
+    const none = await service.analyze({ action: "scan_site", domain: "example.com" });
+    assert.equal(none.bundleSource, "none");
+  });
 });
