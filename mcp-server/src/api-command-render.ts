@@ -11,10 +11,11 @@
  */
 import {
   PARAM_PLACEHOLDER_RE, PLACEHOLDER_ONLY_RE, ERROR_SAFE_MESSAGES, HTTP_METHODS,
+  MAX_COMPOSITE_STEPS, MAX_JSONPATH_LENGTH, MAX_JSONPATH_SEGMENTS,
 } from "./api-command-types.js";
 import { normalizeHostname, sanitizeRequestHeaders } from "./api-command-normalize.js";
 import type {
-  ApiCommand, ApiErrorCode, ApiParam, ExecuteResult, HttpMethod, ParamType,
+  ApiCommand, ApiErrorCode, ApiParam, ExecuteResult, HttpMethod, ParamType, CommandStep, Risk,
 } from "./api-command-types.js";
 
 /** 可预期的渲染 / 参数错误，携带统一错误码，编排层据此返回结构化错误。 */
@@ -226,4 +227,240 @@ export function renderRequest(
     ...(body !== undefined ? { body } : {}),
     ...(Object.keys(headers).length > 0 ? { headers } : {}),
   };
+}
+
+// ===========================================================================
+// 复合命令（多步编排）：JSONPath 取值 + 显式映射表
+//
+// 语法（2026-11-05 主理人拍板）：
+//   取值路径 = JSONPath 子集：$ 根 + .name / ["name"] + [n] / [*]
+//   依赖声明 = 显式映射表：{"orderId": {"from": "$.data.order.id"}}
+//
+// 刻意**不支持**过滤表达式（?()）、脚本（()）、递归下降（..）——
+// 它们会把取值路径变成可执行表达式，等于给命令集开后门。
+// ===========================================================================
+
+/** JSONPath 子集的一段。 */
+export type JsonPathSegment =
+  | { kind: "property"; name: string }
+  | { kind: "index"; index: number }
+  | { kind: "wildcard" };
+
+export interface JsonPathParse {
+  ok: boolean;
+  segments: JsonPathSegment[];
+  /** 失败原因（仅用于诊断，绝不含响应值）。 */
+  reason?: string;
+}
+
+/** 允许出现在 `.name` 里的字符：字母 / 数字 / 下划线 / 连字符。 */
+const JSONPATH_NAME_RE = /^[A-Za-z0-9_-]+$/;
+
+/**
+ * 解析 JSONPath 子集。
+ *
+ * 语法：`$` 根，随后任意个 `.name` / `["name"]` / `[n]` / `[*]`。
+ * 任何过滤 / 脚本 / 递归 / 切片写法一律拒绝（fail-closed）。
+ */
+export function parseJsonPath(path: string): JsonPathParse {
+  const fail = (reason: string): JsonPathParse => ({ ok: false, segments: [], reason });
+  if (typeof path !== "string" || path.length === 0) return fail("取值路径为空");
+  if (path.length > MAX_JSONPATH_LENGTH) return fail("取值路径超长");
+  if (path[0] !== "$") return fail("取值路径必须以 $ 开头");
+
+  const segments: JsonPathSegment[] = [];
+  let i = 1;
+  while (i < path.length) {
+    const ch = path[i];
+    if (ch === ".") {
+      // `.name`；`..` 递归下降与 `.*` 通配都拒绝。
+      if (path[i + 1] === ".") return fail("不支持递归下降 ..");
+      if (path[i + 1] === "*") return fail("不支持通配属性 .*");
+      let j = i + 1;
+      while (j < path.length && path[j] !== "." && path[j] !== "[") j++;
+      const name = path.slice(i + 1, j);
+      if (!name || !JSONPATH_NAME_RE.test(name)) return fail("属性名非法");
+      segments.push({ kind: "property", name });
+      i = j;
+      continue;
+    }
+    if (ch === "[") {
+      const end = path.indexOf("]", i + 1);
+      if (end < 0) return fail("取值路径缺少 ]");
+      const inner = path.slice(i + 1, end).trim();
+      if (inner === "*") {
+        segments.push({ kind: "wildcard" });
+      } else if (/^\d+$/.test(inner)) {
+        segments.push({ kind: "index", index: Number(inner) });
+      } else if (
+        (inner.startsWith('"') && inner.endsWith('"') && inner.length >= 2)
+        || (inner.startsWith("'") && inner.endsWith("'") && inner.length >= 2)
+      ) {
+        const name = inner.slice(1, -1);
+        if (!name) return fail("属性名非法");
+        segments.push({ kind: "property", name });
+      } else {
+        // 过滤表达式 (?...)、切片 (..)、脚本 (...) 一律拒绝。
+        return fail("只支持 [n] 与 [*]");
+      }
+      i = end + 1;
+      continue;
+    }
+    return fail("取值路径含非法字符");
+  }
+  if (segments.length > MAX_JSONPATH_SEGMENTS) return fail("取值路径段数超限");
+  return { ok: true, segments };
+}
+
+/**
+ * 按 JSONPath 子集取值。
+ *
+ * 返回 `found=false` 表示路径不存在（调用方据此报 MISSING_PARAMS）；
+ * `[*]` 一律展开为数组（命中 0 个时 found=false，命中 1 个也仍是数组）。
+ */
+export function evalJsonPath(root: unknown, path: string): { found: boolean; value?: unknown } {
+  const parsed = parseJsonPath(path);
+  if (!parsed.ok) return { found: false };
+  return evalSegments(root, parsed.segments);
+}
+
+/** 从指定段开始继续求值。 */
+function evalSegments(root: unknown, segments: JsonPathSegment[]): { found: boolean; value?: unknown } {
+  if (segments.length === 0) return { found: true, value: root };
+  const [head, ...tail] = segments;
+  if (head.kind === "property") {
+    if (root === null || typeof root !== "object" || Array.isArray(root)) return { found: false };
+    const record = root as Record<string, unknown>;
+    if (!Object.prototype.hasOwnProperty.call(record, head.name)) return { found: false };
+    return evalSegments(record[head.name], tail);
+  }
+  if (head.kind === "index") {
+    if (!Array.isArray(root) || head.index >= root.length) return { found: false };
+    return evalSegments(root[head.index], tail);
+  }
+  // wildcard：展开数组元素，结果恒为数组（JSONPath 语义）。
+  if (!Array.isArray(root)) return { found: false };
+  const collected: unknown[] = [];
+  for (const item of root) {
+    const nested = evalSegments(item, tail);
+    if (nested.found) collected.push(nested.value);
+  }
+  if (collected.length === 0) return { found: false };
+  return { found: true, value: collected };
+}
+
+/** 一条取值映射：`{"from": "<jsonpath>"}`。 */
+export interface StepValueMapping {
+  from: string;
+}
+
+/** 判断一个 step param 值是否为取值映射（`{"from": "<jsonpath>"}`）。 */
+export function isStepValueMapping(value: unknown): value is StepValueMapping {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record);
+  if (keys.length !== 1 || keys[0] !== "from") return false;
+  return typeof record.from === "string";
+}
+
+export interface CompositeStepPlan {
+  /** 步骤下标（0 起）。 */
+  index: number;
+  /** 子命令名（<verb>.<resource>）或 commandId，二选一。 */
+  name?: string;
+  commandId?: string;
+  /** 该步的固定入参（不含取值映射）。 */
+  literalParams: Record<string, unknown>;
+  /** 该步的取值映射：参数名 → JSONPath。 */
+  mappings: Array<{ param: string; path: string }>;
+  /** 该步风险覆盖（缺省按子命令自身 risk 判定）。 */
+  risk?: Risk;
+  /** 审计备注（不含值）。 */
+  note?: string;
+}
+
+/**
+ * 解析复合命令的步骤结构：把每步的 `params` 拆成「固定值」与「取值映射」两类。
+ *
+ * - 固定值直接透传给子命令；
+ * - 取值映射 `{"from": "<jsonpath>"}` 的值在**运行时**从上一步响应里取；
+ *   本函数只负责校验路径语法并登记，不做任何 IO。
+ */
+export function resolveCompositeSteps(command: ApiCommand): CompositeStepPlan[] {
+  const rawSteps = Array.isArray(command.steps) ? command.steps : [];
+  // 防御超长编排：只处理前 MAX_COMPOSITE_STEPS 步（缓存层已按同样上限拒收非法条目）。
+  const steps = rawSteps.slice(0, MAX_COMPOSITE_STEPS);
+  return steps.map((step, index) => {
+    const literalParams: Record<string, unknown> = {};
+    const mappings: Array<{ param: string; path: string }> = [];
+    const raw = step && typeof step.params === "object" && !Array.isArray(step.params)
+      ? step.params as Record<string, unknown>
+      : {};
+    for (const [key, value] of Object.entries(raw)) {
+      if (isStepValueMapping(value)) {
+        mappings.push({ param: key, path: value.from });
+        continue;
+      }
+      literalParams[key] = value;
+    }
+    return {
+      index,
+      ...(typeof step?.name === "string" && step.name ? { name: step.name } : {}),
+      ...(typeof step?.commandId === "string" && step.commandId ? { commandId: step.commandId } : {}),
+      literalParams,
+      mappings,
+      ...(step?.risk ? { risk: step.risk } : {}),
+      ...(typeof step?.note === "string" && step.note ? { note: step.note } : {}),
+    };
+  });
+}
+
+/**
+ * 把上一步响应里的取值注入下一步参数。
+ *
+ * 取值优先级（最具体 → 最泛化）：
+ *  1. **取值映射**：步骤作者显式声明的运行时依赖，最具体 —— 路径命中即以此为准；
+ *  2. **调用方传值**（baseParams）：覆盖步骤字面量（与 defaultValue 语义一致：调用方传值优先）；
+ *  3. **步骤字面量**：最泛化，等同于该步的默认值。
+ *
+ * - 路径未命中且调用方也给了该参数 → 用调用方的值（记入 overridden，**不静默**）；
+ * - 路径未命中且调用方没给 → 记入 missing（调用方据此报 MISSING_PARAMS，**不发任何请求**）。
+ */
+export function applyStepMappings(
+  plan: CompositeStepPlan,
+  previousResponse: unknown,
+  baseParams: Record<string, unknown>,
+): { params: Record<string, unknown>; missing: string[]; overridden: string[] } {
+  const params: Record<string, unknown> = { ...plan.literalParams };
+  const missing: string[] = [];
+  const overridden: string[] = [];
+  // 来自取值映射的参数：调用方传值不得覆盖（流程的连线是权威的）。
+  const fromMapping = new Set<string>();
+
+  for (const mapping of plan.mappings) {
+    const result = evalJsonPath(previousResponse, mapping.path);
+    const callerProvided = Object.prototype.hasOwnProperty.call(baseParams, mapping.param);
+    if (result.found) {
+      params[mapping.param] = result.value;
+      fromMapping.add(mapping.param);
+      // 调用方也传了同名参数：映射优先，但必须留痕（不静默忽略）。
+      if (callerProvided) overridden.push(mapping.param);
+      continue;
+    }
+    if (callerProvided) {
+      // 取值路径未命中 → 退化用调用方传值，并留痕。
+      params[mapping.param] = baseParams[mapping.param];
+      fromMapping.add(mapping.param);
+      overridden.push(mapping.param);
+      continue;
+    }
+    missing.push(mapping.param);
+  }
+
+  // 调用方传值覆盖步骤字面量（映射槽位除外）。
+  for (const [key, value] of Object.entries(baseParams)) {
+    if (fromMapping.has(key)) continue;
+    params[key] = value;
+  }
+  return { params, missing, overridden };
 }

@@ -42,6 +42,7 @@ import type {
   ListResult, ExecuteResult, CommandCard, CommandSummary, CacheReport,
   RawCapturedRecord, ResponseBodySample, ResponseSchema, NormalizedRecord,
   Risk, ReviewItem, GenerateContext, SiteScanKind, SiteScanSource,
+  CompositeStepResult,
 } from "./api-command-types.js";
 import { ApiCommandCache } from "./api-command-cache.js";
 import type { CommandPatch, ExportResult, ImportResult } from "./api-command-cache.js";
@@ -54,6 +55,10 @@ import {
 } from "./api-command-response-schema.js";
 import { generateCommands } from "./api-command-generator.js";
 import { validateParams, renderRequest, previewFor, RenderError } from "./api-command-render.js";
+import {
+  resolveCompositeSteps, applyStepMappings,
+} from "./api-command-render.js";
+import type { CompositeStepPlan } from "./api-command-render.js";
 import { scanSources, toScanRecords, checkScanUrl, extractFinishedCommands } from "./api-command-site-scan.js";
 import { rewriteCommandHost, toCommand } from "./api-command-cache.js";
 import {
@@ -1376,6 +1381,11 @@ export class ApiCommandService {
       return result;
     }
 
+    // 【复合命令】多步编排走独立分支：预检 → 逐步行取 → 结果汇总。
+    if (command.steps && command.steps.length > 0) {
+      return this.callComposite(command, args, domain);
+    }
+
     // 闸门 1（server 侧，仅防误触发）：写命令未显式确认 → 零网络请求。
     if (command.risk === "write" && args.confirm !== true) {
       return this.errorResult(command, "CONFIRMATION_REQUIRED", {
@@ -1522,6 +1532,376 @@ export class ApiCommandService {
       cacheHit: true,
       authRequired: false,
       warnings,
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // 【复合命令】多步编排（JSONPath 取值 + 显式映射表）
+  // -------------------------------------------------------------------------
+
+  /**
+   * 复合命令调用：按序执行子命令，上一步响应按 JSONPath 注入下一步参数。
+   *
+   * 关键纪律：
+   *  - **预检零请求**：子命令缺失 / 写操作未确认 / 步骤静态参数不合法，全部在发请求前拦下；
+   *  - **取值失败零请求**：某步的取值路径未命中上一步响应 → 该步不发请求，报 MISSING_PARAMS；
+   *  - **风险只升不降**：步骤自述的 risk 不能把子命令的 write 降级成 read；
+   *  - 每步各自记一次缓存健康度（真正被调用的是子命令）。
+   */
+  private async callComposite(
+    command: ApiCommand, args: CallArgs, domain: string,
+  ): Promise<ExecuteResult> {
+    const plans = resolveCompositeSteps(command);
+    if (plans.length === 0) {
+      const result = this.errorResult(command, "INVALID_PARAMS");
+      result.warnings = ["复合命令没有可用步骤；未发送任何请求"];
+      return result;
+    }
+
+    // ---- 预检 1：解析全部子命令（零网络请求）----
+    const resolved: Array<{ plan: CompositeStepPlan; child: ApiCommand }> = [];
+    for (const plan of plans) {
+      const child = await this.cache.get(domain, { commandId: plan.commandId, name: plan.name });
+      if (!child) {
+        const result = this.errorResult(command, "COMMAND_NOT_FOUND");
+        result.warnings = [
+          `第 ${plan.index + 1} 步引用的子命令不存在（${plan.commandId ?? plan.name}）；未发送任何请求`,
+        ];
+        return result;
+      }
+      if (child.steps && child.steps.length > 0) {
+        const result = this.errorResult(command, "INVALID_PARAMS");
+        result.warnings = [`第 ${plan.index + 1} 步引用了另一个复合命令，不支持嵌套；未发送任何请求`];
+        return result;
+      }
+      resolved.push({ plan, child });
+    }
+
+    // ---- 预检 2：写操作确认闸门（零网络请求）----
+    // 风险只升不降：子命令是 write 就一定是 write，步骤自述的 read 不能把它降级。
+    const writeSteps = resolved.filter(({ plan, child }) =>
+      plan.risk === "write" || child.risk === "write");
+    if (command.risk === "write" || writeSteps.length > 0) {
+      if (args.confirm !== true) {
+        const result = this.errorResult(command, "CONFIRMATION_REQUIRED", {
+          confirmationRequired: true,
+          cacheHit: true,
+          preview: previewFor(command),
+        });
+        result.warnings = [
+          writeSteps.length > 0
+            ? `复合命令含 ${writeSteps.length} 个写操作步骤，未确认；未发送任何请求`
+            : "复合命令被标记为写操作，未确认；未发送任何请求",
+        ];
+        return result;
+      }
+    }
+
+    // ---- 预检 3：调用方传值按「所有步骤声明的参数并集」收口 ----
+    const callerParams = this.collectCompositeParams(resolved, args.params);
+    const ignored = Object.keys(asRecord(args.params)).filter((key) => !(key in callerParams));
+    const warnings: string[] = [];
+    if (ignored.length > 0) {
+      warnings.push(`参数 ${ignored.join(", ")} 未被任何步骤声明，已忽略`);
+    }
+
+    // ---- 预检 4：静态参数校验（零网络请求）----
+    for (const { plan, child } of resolved) {
+      const staticParams = this.staticStepParams(plan, callerParams, child);
+      const declared = new Set(child.params.map((param) => param.name));
+      const unknown = Object.keys(staticParams).filter((key) => !declared.has(key));
+      if (unknown.length > 0) {
+        const result = this.errorResult(command, "INVALID_PARAMS");
+        result.warnings = [
+          `第 ${plan.index + 1} 步的固定参数 ${unknown.join(", ")} 不被子命令声明；未发送任何请求`,
+        ];
+        return result;
+      }
+      // 必填缺失检查：由取值映射供给的参数不算缺失（要等上一步响应才知道）。
+      const mappingSlots = new Set(plan.mappings.map((mapping) => mapping.param));
+      const missing = child.params
+        .filter((param) => param.required
+          && !(param.constant === true && param.defaultValue !== undefined)
+          && !Object.prototype.hasOwnProperty.call(staticParams, param.name)
+          && !mappingSlots.has(param.name))
+        .map((param) => param.name);
+      if (missing.length > 0) {
+        const result = this.errorResult(command, "MISSING_PARAMS");
+        result.warnings = [
+          `第 ${plan.index + 1} 步缺少必填参数：${missing.join(", ")}；未发送任何请求`,
+        ];
+        return result;
+      }
+    }
+
+    // ---- 执行：按序跑，每步独立记账 ----
+    const stepResults: CompositeStepResult[] = [];
+    const startedAt = Date.now();
+    let previousResponse: unknown;
+    let lastData: unknown;
+    let lastStatus: number | null = null;
+    let lastContentType: string | undefined;
+    let lastTruncated = false;
+
+    for (const { plan, child } of resolved) {
+      const callerForChild = this.filterParamsForCommand(callerParams, child);
+      const mapped = applyStepMappings(plan, previousResponse, callerForChild);
+      if (mapped.missing.length > 0) {
+        const result = this.errorResult(command, "MISSING_PARAMS", { stepResults });
+        result.request.durationMs = Date.now() - startedAt;
+        result.warnings = [
+          `第 ${plan.index + 1} 步取值失败：${mapped.missing.join(", ")}（取值路径未命中上一步响应）；该步未发送任何请求`,
+          ...(stepResults.length > 0 ? [`前 ${stepResults.length} 步已执行完成`] : []),
+          ...warnings,
+        ];
+        return result;
+      }
+      if (mapped.overridden.length > 0) {
+        warnings.push(
+          `第 ${plan.index + 1} 步的 ${mapped.overridden.join(", ")} 由取值映射决定，调用方传值未生效`,
+        );
+      }
+
+      // 运行时再校验一次（映射取到的值类型可能不符子命令约束）。
+      const validation = validateParams(child, mapped.params);
+      if (validation.missingParams.length > 0) {
+        const result = this.errorResult(command, "MISSING_PARAMS", { stepResults });
+        result.request.durationMs = Date.now() - startedAt;
+        result.warnings = [
+          `第 ${plan.index + 1} 步缺少必填参数：${validation.missingParams.join(", ")}；该步未发送任何请求`,
+          ...warnings,
+        ];
+        return result;
+      }
+      if (validation.invalidParams.length > 0) {
+        const result = this.errorResult(command, "INVALID_PARAMS", { stepResults });
+        result.request.durationMs = Date.now() - startedAt;
+        result.warnings = [
+          `第 ${plan.index + 1} 步参数类型或取值不符合约束：${validation.invalidParams.join(", ")}；该步未发送任何请求`,
+          ...warnings,
+        ];
+        return result;
+      }
+
+      const outcome = await this.executeCommandRequest(child, domain, mapped.params, args);
+      stepResults.push({
+        index: plan.index,
+        name: child.name,
+        commandId: child.commandId,
+        method: child.request.method,
+        urlTemplate: child.request.urlTemplate,
+        status: outcome.status,
+        durationMs: outcome.durationMs,
+        ...(outcome.data !== undefined ? { data: outcome.data } : {}),
+        ...(outcome.error ? { error: outcome.error } : {}),
+      });
+      if (outcome.error) {
+        const result = this.errorResult(command, outcome.error.code, { stepResults });
+        result.request.durationMs = Date.now() - startedAt;
+        result.status = outcome.status;
+        result.warnings = [
+          `第 ${plan.index + 1} 步执行失败：${outcome.error.message}`,
+          ...(stepResults.length > 1 ? [`前 ${stepResults.length - 1} 步已执行完成`] : []),
+          ...warnings,
+        ];
+        return result;
+      }
+      previousResponse = outcome.body;
+      lastData = outcome.data;
+      lastStatus = outcome.status;
+      lastContentType = outcome.contentType;
+      lastTruncated = outcome.truncated;
+    }
+
+    const durationMs = Date.now() - startedAt;
+    return {
+      commandId: command.commandId,
+      name: command.name,
+      request: {
+        method: command.request.method,
+        urlTemplate: command.request.urlTemplate,  // 模板，非真实 URL（AC-20）
+        durationMs,
+      },
+      status: lastStatus,
+      ...(lastContentType ? { contentType: lastContentType } : {}),
+      data: lastData,
+      truncated: lastTruncated,
+      cacheHit: true,
+      authRequired: false,
+      stepResults,
+      warnings,
+    };
+  }
+
+  /** 调用方传值按「所有步骤声明的参数并集」收口：未声明的参数一律不传。 */
+  private collectCompositeParams(
+    resolved: Array<{ plan: CompositeStepPlan; child: ApiCommand }>,
+    raw: Record<string, unknown> | undefined,
+  ): Record<string, unknown> {
+    const allowed = new Set<string>();
+    for (const { child } of resolved) {
+      for (const param of child.params) allowed.add(param.name);
+    }
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(asRecord(raw))) {
+      if (allowed.has(key)) out[key] = value;
+    }
+    return out;
+  }
+
+  /** 某一步的静态参数：调用方传值（该子命令声明过的）+ 步骤固定值。 */
+  private staticStepParams(
+    plan: CompositeStepPlan,
+    callerParams: Record<string, unknown>,
+    child: ApiCommand,
+  ): Record<string, unknown> {
+    const callerForChild = this.filterParamsForCommand(callerParams, child);
+    return { ...callerForChild, ...plan.literalParams };
+  }
+
+  /** 只保留该子命令声明过的参数（跨步骤共享参数按需取用）。 */
+  private filterParamsForCommand(
+    callerParams: Record<string, unknown>, child: ApiCommand,
+  ): Record<string, unknown> {
+    const declared = new Set(child.params.map((param) => param.name));
+    const out: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(callerParams)) {
+      if (declared.has(key)) out[key] = value;
+    }
+    return out;
+  }
+
+  /**
+   * 单条命令的「渲染 → 发送 → 分类 → 记账」链路（复合命令各步复用）。
+   *
+   * 与单命令路径保持一致：只下发渲染结果，绝不传原始 params / headers / confirm；
+   * 401/403 → AUTH_REQUIRED；4xx/5xx → HTTP_ERROR；扩展 fail-closed → 按 errorCode 归类。
+   */
+  private async executeCommandRequest(
+    command: ApiCommand,
+    domain: string,
+    params: Record<string, unknown>,
+    args: CallArgs,
+  ): Promise<{
+    status: number | null;
+    durationMs: number;
+    body: unknown;
+    data: unknown;
+    truncated: boolean;
+    contentType?: string;
+    error?: { code: ApiErrorCode; message: string };
+  }> {
+    let rendered: { url: string; method: ApiCommand["request"]["method"]; body?: string; headers?: Record<string, string> };
+    try {
+      rendered = renderRequest(command, params, args.headers);
+    } catch (err) {
+      if (err instanceof RenderError) {
+        return {
+          status: null, durationMs: 0, body: undefined, data: undefined, truncated: false,
+          error: { code: err.code, message: ERROR_SAFE_MESSAGES[err.code] },
+        };
+      }
+      return {
+        status: null, durationMs: 0, body: undefined, data: undefined, truncated: false,
+        error: { code: "INVALID_PARAMS", message: ERROR_SAFE_MESSAGES.INVALID_PARAMS },
+      };
+    }
+
+    const maxBodyChars = clampBodyChars(
+      typeof args.maxBodyChars === "number" ? args.maxBodyChars : MAX_BODY_CHARS_DEFAULT,
+    );
+    const timeoutMs = clampTimeoutMs(args.timeoutMs);
+    const options: Record<string, unknown> = {
+      url: rendered.url,
+      method: rendered.method,
+      hostname: normalizeHostname(command.domain),
+      risk: command.risk,
+      maxBodyChars,
+      timeoutMs,
+    };
+    if (rendered.body !== undefined) options.body = rendered.body;
+    if (rendered.headers && Object.keys(rendered.headers).length > 0) options.headers = rendered.headers;
+    const sendParams: Record<string, unknown> = { options };
+    if (typeof args.tabId === "number") sendParams.tabId = args.tabId;
+
+    const startedAt = Date.now();
+    let reply: Record<string, unknown>;
+    try {
+      reply = asRecord(await this.send(MSG.COMMAND_EXECUTE, sendParams));
+    } catch (err) {
+      const classified = classifyExtensionError(err);
+      await this.cache.recordFailure(domain, command.commandId, classified.code, classified.message);
+      return {
+        status: null, durationMs: Date.now() - startedAt, body: undefined, data: undefined,
+        truncated: false, error: classified,
+      };
+    }
+
+    const durationMs = typeof reply.durationMs === "number" && Number.isFinite(reply.durationMs)
+      ? Math.max(0, Math.floor(reply.durationMs))
+      : Date.now() - startedAt;
+    const status = typeof reply.status === "number" && Number.isFinite(reply.status)
+      ? Math.floor(reply.status)
+      : null;
+
+    if (reply.authRequired === true || status === 401 || status === 403) {
+      await this.cache.recordFailure(domain, command.commandId, "AUTH_REQUIRED", ERROR_SAFE_MESSAGES.AUTH_REQUIRED);
+      return {
+        status, durationMs, body: reply.body, data: undefined, truncated: false,
+        error: { code: "AUTH_REQUIRED", message: ERROR_SAFE_MESSAGES.AUTH_REQUIRED },
+      };
+    }
+    if (status !== null && status >= 400) {
+      await this.cache.recordFailure(domain, command.commandId, "HTTP_ERROR", `HTTP ${status}`);
+      return {
+        status, durationMs, body: reply.body, data: undefined, truncated: false,
+        error: { code: "HTTP_ERROR", message: ERROR_SAFE_MESSAGES.HTTP_ERROR },
+      };
+    }
+    if (reply.success === false) {
+      const code = typeof reply.errorCode === "string"
+        && (API_ERROR_CODES as readonly string[]).includes(reply.errorCode)
+        ? reply.errorCode as ApiErrorCode
+        : "NETWORK_ERROR";
+      await this.cache.recordFailure(domain, command.commandId, code, ERROR_SAFE_MESSAGES[code]);
+      return {
+        status, durationMs, body: reply.body, data: undefined, truncated: false,
+        error: { code, message: ERROR_SAFE_MESSAGES[code] },
+      };
+    }
+
+    const fieldsOverride = stringArray(args.fields);
+    const fields = fieldsOverride.length > 0 ? fieldsOverride : command.responseFields;
+    const strictRedaction = args.strictRedaction === undefined
+      ? RESPONSE_STRICT_REDACTION_DEFAULT
+      : args.strictRedaction === true;
+    const projected = redactAndProject(reply.body, fields, maxBodyChars, undefined, strictRedaction);
+
+    // 结构漂移检测：只标 drifted，不自动禁用、不阻断返回。
+    if (!reply.truncated && reply.body && typeof reply.body === "object"
+      && command.responseSchema.fields.length > 0) {
+      try {
+        const actual = deriveResponseSchema([{
+          requestId: "", contentType: typeof reply.contentType === "string" ? reply.contentType : "",
+          status: status ?? 0, bodyText: JSON.stringify(reply.body), truncated: false,
+        }]);
+        if (!compareSchema(actual, command.responseSchema)) {
+          await this.cache.markDrifted(domain, command.commandId);
+        }
+      } catch {
+        // 漂移检测失败不影响主链路。
+      }
+    }
+
+    await this.cache.recordSuccess(domain, command.commandId, durationMs);
+
+    return {
+      status,
+      durationMs,
+      body: reply.body,
+      data: projected.data,
+      truncated: projected.truncated || reply.truncated === true,
+      ...(typeof reply.contentType === "string" ? { contentType: reply.contentType } : {}),
     };
   }
 }

@@ -210,6 +210,27 @@ test("缓存白名单与禁止字段清单两侧 parity（AC-17）", () => {
   assert.ok(!T.COMMAND_ALLOWED_KEYS.includes("allowedValues"));
 });
 
+test("T9：复合命令 steps 契约 —— 顶层允许键含 steps，单步白名单无执行/凭据字段", () => {
+  // 两端逐字同步：扩展侧也必须认识 steps（尽管编排全在 Node 侧，扩展永不接收 steps）
+  assert.ok(T.COMMAND_ALLOWED_KEYS.includes("steps"));
+  assert.ok(H.COMMAND_ALLOWED_KEYS.includes("steps"));
+  same(H.COMMAND_ALLOWED_KEYS, T.COMMAND_ALLOWED_KEYS);
+
+  // 单步白名单：只允许结构 / 参数 / 审计字段，绝不含可执行或凭据字段
+  assert.deepEqual([...T.COMMAND_STEP_ALLOWED_KEYS], ["name", "commandId", "params", "risk", "note"]);
+  for (const bad of ["computed", "script", "eval", "function", "headers", "cookie",
+                     "authorization", "token", "secret", "csrf"]) {
+    assert.ok(!T.COMMAND_STEP_ALLOWED_KEYS.includes(bad), `单步白名单不得含 ${bad}`);
+  }
+  // 单步白名单必须是顶层白名单的子集（不引入顶层之外的字段面）
+  for (const key of T.COMMAND_STEP_ALLOWED_KEYS) {
+    assert.ok(T.COMMAND_ALLOWED_KEYS.includes(key), `单步白名单的 ${key} 必须在顶层白名单内`);
+  }
+  // 步数 / 取值路径上限是 Node 侧纯函数常量（扩展不参与）
+  assert.equal(T.MAX_COMPOSITE_STEPS, 5);
+  assert.ok(T.MAX_JSONPATH_LENGTH > 0 && T.MAX_JSONPATH_SEGMENTS > 0);
+});
+
 test("EXECUTE_OPTIONS_FORBIDDEN_KEYS / LOG_STRIP_KEYS / 日志与 header 白名单两侧 parity（AC-22/20）", () => {
   for (const name of ["START_OPTIONS_ALLOWED_KEYS", "FILTER_ALLOWED_KEYS",
                       "STOP_OPTIONS_ALLOWED_KEYS", "EXECUTE_OPTIONS_ALLOWED_KEYS",
