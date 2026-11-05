@@ -19,8 +19,8 @@ import { formatElementLine, formatPageTree } from "./page-format.js";
 import { htmlToMarkdown, type HtmlToMarkdownOptions } from "./html-to-markdown.js";
 import { ApiCommandCache } from "./api-command-cache.js";
 import { ApiCommandService, ServiceError } from "./api-command-service.js";
-import type { AnalyzeAction } from "./api-command-service.js";
-import type { CommandSummary, SiteScanSource } from "./api-command-types.js";
+import { toAnalyzeArgs } from "./api-command-args.js";
+import type { CommandSummary } from "./api-command-types.js";
 
 const MAX_ACTION_LOG_ENTRIES = 100;
 
@@ -1890,32 +1890,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
       // ===== 7 个独立具名 API 命令集工具（与上面 inputSchema 一一对应）=====
       case "analyze_page_apis":
-        return apiToolCall(() => apiCommandService.analyze({
-          action: args.action as AnalyzeAction,
-          domain: typeof args.domain === "string" ? args.domain : undefined,
-          analysisId: typeof args.analysisId === "string" ? args.analysisId : undefined,
-          tabId: typeof args.tabId === "number" ? args.tabId : undefined,
-          filter: args.filter && typeof args.filter === "object" && !Array.isArray(args.filter)
-            ? args.filter as { urlContains?: string; mimeType?: string }
-            : undefined,
-          includeStaticAssets: args.includeStaticAssets === true,
-          maxEndpoints: typeof args.maxEndpoints === "number" ? args.maxEndpoints : undefined,
-          captureResponseBody: args.captureResponseBody === true,
-          mode: args.mode === "full" ? "full" : args.mode === "merge" ? "merge" : undefined,
-          overwriteManual: args.overwriteManual === true,
-          sources: Array.isArray(args.sources) ? args.sources as SiteScanSource[] : undefined,
-          allowPrivateHosts: args.allowPrivateHosts === true,
-          allowCrossHost: args.allowCrossHost === true,
-          extraHosts: Array.isArray(args.extraHosts)
-            ? args.extraHosts.filter((item): item is string => typeof item === "string") : undefined,
-          trustSpec: args.trustSpec === true,
-          loosePaths: args.loosePaths === true,
-          scanTimeoutMs: typeof args.scanTimeoutMs === "number" ? args.scanTimeoutMs : undefined,
-          collectViaExtension: args.collectViaExtension === true,
-          discoverBundles: args.discoverBundles === true,
-          bundleMaxSources: typeof args.bundleMaxSources === "number" ? args.bundleMaxSources : undefined,
-          bundleUseBrowserCache: args.bundleUseBrowserCache !== false,
-        }));
+        // 入参归一化走纯函数层：可选开关的「未传」必须原样透传成 undefined，
+        // 否则编排层的默认值（loosePaths / trustSpec / discoverBundles 默认放开）
+        // 在 MCP 工具层永远走不到 —— 详见 api-command-args.ts 的注释。
+        return apiToolCall(() => apiCommandService.analyze(toAnalyzeArgs(args)));
 
       case "export_api_commands":
         return apiToolCall(async () => apiCommandService.exportCommands({
