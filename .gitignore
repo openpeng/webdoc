@@ -11,6 +11,9 @@ dist/
 .vscode/
 .idea/
 
+# WorkBuddy 本地工作区数据（memory 日志等，不入库）
+.workbuddy/
+
 # 业务数据导出产物（含真实业务数据，禁止入库）
 cpa-courses-*.*
 course_list_export.csv
