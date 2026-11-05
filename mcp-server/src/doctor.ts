@@ -16,6 +16,7 @@ import {
 } from "./definitions.js";
 import { validateAdapter } from "./adapters.js";
 import { validatePresetWorkflow } from "./task-runtime.js";
+import { ApiCommandCache, defaultApiCommandCacheFile } from "./api-command-cache.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -84,13 +85,44 @@ async function checkBridgePorts() {
 }
 
 async function checkEnvironment() {
-  const dirVars = ["WEBPILOT_ADAPTER_DIR", "WEBPILOT_WORKFLOW_DEF_DIR", "WEBPILOT_WORKFLOW_DIR", "WEBPILOT_TASK_LOG_DIR", "WEBPILOT_SELECTOR_CACHE_DIR"];
+  const dirVars = ["WEBPILOT_ADAPTER_DIR", "WEBPILOT_WORKFLOW_DEF_DIR", "WEBPILOT_WORKFLOW_DIR", "WEBPILOT_TASK_LOG_DIR", "WEBPILOT_SELECTOR_CACHE_DIR", "WEBPILOT_API_COMMAND_DIR"];
   const set = Object.keys(process.env).filter(key => key.startsWith("WEBPILOT_")).sort();
   if (set.length === 0) { report("PASS", "环境变量", "未设置 WEBPILOT_* 变量，使用全部默认值"); return; }
   report("INFO", "环境变量", `已设置: ${set.join(", ")}`);
   for (const name of dirVars) {
     const value = process.env[name]?.trim();
     if (value && !(await exists(value))) report("WARN", name, `目录不存在: ${value}`, "确认路径拼写，或移除该变量以使用默认位置");
+  }
+}
+
+// 新增（AC-27）：列出 API 命令缓存文件的加载状态、被跳过的条目与新环境变量目录。
+// 纯只读自检，不产生 FAIL，不改动任何既有检查项的语义。
+async function checkApiCommandCache() {
+  const file = defaultApiCommandCacheFile();
+  const dir = process.env.WEBPILOT_API_COMMAND_DIR?.trim()
+    || "默认回退目录（WEBPILOT_TASK_LOG_DIR / .webpilot-task-logs）";
+  if (!(await exists(file))) {
+    report("INFO", "API 命令缓存", "尚未生成缓存文件（api-commands.json）", `缓存目录=${dir}；调用 analyze_page_apis 后自动生成，可用 WEBPILOT_API_COMMAND_DIR 指定目录`);
+    return;
+  }
+  const cache = new ApiCommandCache(file);
+  await cache.ensureLoaded();
+  const diagnostics = cache.diagnostics();
+  const cacheReport = await cache.report();
+  const skipped = diagnostics.skippedInvalid;
+  const hintParts: string[] = [];
+  for (const item of skipped) {
+    hintParts.push(`${item.host}/${item.commandId || "unknown"}: ${item.reason}`);
+  }
+  for (const entry of diagnostics.errors) {
+    if (/schemaVersion|JSON|version|结构非法/.test(entry.error)) hintParts.push(entry.error);
+  }
+  if (diagnostics.backupFile) hintParts.push(`损坏文件已备份为 ${diagnostics.backupFile}`);
+  const detail = `已加载：域名 ${cacheReport.domains.length} 个、命令 ${cacheReport.perCommand.length} 条；跳过条目 ${skipped.length} 条、加载告警 ${diagnostics.errors.length} 条；缓存目录=${dir}`;
+  if (skipped.length > 0 || diagnostics.backupFile) {
+    report("WARN", "API 命令缓存", detail, hintParts.slice(0, 20).join("; ") || "存在被跳过的缓存条目，请检查缓存文件");
+  } else {
+    report("PASS", "API 命令缓存", detail);
   }
 }
 
@@ -103,6 +135,7 @@ async function main() {
   await checkDefinitions();
   await checkBridgePorts();
   await checkEnvironment();
+  await checkApiCommandCache();
   for (const check of checks) {
     console.log(`[${check.level}] ${check.name}: ${check.detail}`);
     if (check.hint) console.log(`       ↳ ${check.hint}`);

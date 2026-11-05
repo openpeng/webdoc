@@ -931,6 +931,11 @@
       declarativeForms: [],
       structuredData: [],
       domPatterns: [],
+      // 【回归澄清】apiEndpoints 仅由 performance.getEntriesByType('resource') 嗅探而来，
+      // 其 method 是 'XHR' / 'fetch' 这类 initiatorType 伪值，不是真实 HTTP method。
+      // 它只用于「能力探测时判断页面是否发过 XHR/fetch」，绝不可作为 API 命令解析数据源：
+      // 真实 method / query / body / 响应字段一律来自 CDP Network.requestWillBeSent 等事件
+      // （见 analyze_page_apis → apiAnalysisStart → apiAnalysisListener）。
       apiEndpoints: []
     };
 
@@ -1127,6 +1132,8 @@
       pathPrefixes[prefix].methods.add(entry.method);
       pathPrefixes[prefix].totalDuration += entry.duration;
     }
+    // 注意：这里的 methods 是 initiatorType 伪值（'XHR' / 'fetch'），仅作能力探测提示。
+    // 需要真实 HTTP method / 参数结构 / 响应 schema 时请用 analyze_page_apis，不要用本字段解析。
     result.apiEndpoints = Object.values(pathPrefixes)
       .map(g => ({ prefix: g.prefix, count: g.count, methods: [...g.methods], sampleUrl: g.sampleUrl, avgDurationMs: Math.round(g.totalDuration / g.count) }))
       .sort((a, b) => b.count - a.count)

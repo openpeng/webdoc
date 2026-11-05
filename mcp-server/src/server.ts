@@ -17,6 +17,10 @@ import { BrowserBridge } from "./bridge.js";
 import { SelectorCache, isCacheableSelector, isValidIntent } from "./selector-cache.js";
 import { formatElementLine, formatPageTree } from "./page-format.js";
 import { htmlToMarkdown, type HtmlToMarkdownOptions } from "./html-to-markdown.js";
+import { ApiCommandCache } from "./api-command-cache.js";
+import { ApiCommandService, ServiceError } from "./api-command-service.js";
+import type { AnalyzeAction } from "./api-command-service.js";
+import type { CommandSummary, SiteScanSource } from "./api-command-types.js";
 
 const MAX_ACTION_LOG_ENTRIES = 100;
 
@@ -143,6 +147,60 @@ const sendToExtension = (type: string, params: Record<string, any>): Promise<any
 const taskRuntime = new TaskRuntime(sendToExtension);
 const adapterRegistry = new AdapterRegistry(sendToExtension);
 const selectorCache = new SelectorCache();
+// API 命令集单例：缓存 Repository 懒加载（构造不读盘），7 个 case 共用同一实例，
+// 避免每次工具调用重复 new 导致缓存状态分裂（T03 / AC-11）。
+const apiCommandCache = new ApiCommandCache();
+const apiCommandService = new ApiCommandService(apiCommandCache, sendToExtension);
+
+/**
+ * 7 个 API 命令集工具的统一回包：结构化 JSON 文本 + isError。
+ * 业务可预期错误（ServiceError）优先返回结构化 `{error:{code,message}}`，
+ * 不抛未处理异常；其余异常交给 CallToolRequestSchema 既有 catch 统一处理。
+ */
+function apiToolResult<T>(value: T): { content: Array<{ type: "text"; text: string }> } {
+  return { content: [{ type: "text", text: JSON.stringify(value, null, 2) }] };
+}
+
+async function apiToolCall<T>(fn: () => Promise<T>): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
+  try {
+    return apiToolResult(await fn());
+  } catch (err) {
+    if (err instanceof ServiceError) {
+      return {
+        content: [{ type: "text", text: JSON.stringify({ error: { code: err.code, message: err.message } }, null, 2) }],
+        isError: true,
+      };
+    }
+    throw err;
+  }
+}
+
+/** Q11：纯本地缓存读取的极简摘要（零网络请求、零自动执行），失败一律静默降级为空。 */
+async function autoLoadApiCommands(url: unknown): Promise<CommandSummary[]> {
+  if (typeof url !== "string" || !url) return [];
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host ? await apiCommandService.autoLoadSummary(host) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Q11 navigate 追加的一行文本：只列命令名 / method / risk / 可用状态，绝不含真实 URL 或参数值。 */
+function formatApiCommandLine(summaries: CommandSummary[]): string {
+  if (summaries.length === 0) return "可用 API 命令: 无（可调用 analyze_page_apis 分析该域名接口；此处只推荐、不执行）";
+  const preview = summaries.slice(0, 6)
+    .map((item) => `${item.name}[${item.method}/${item.risk}]${item.available ? "" : "(不可用)"}`)
+    .join(", ");
+  const more = summaries.length > 6 ? ` 等共 ${summaries.length} 条` : "";
+  return `可用 API 命令（只推荐、不执行）: ${preview}${more}；调用 list_api_commands 查看全部`;
+}
+
+/** 7 个工具的 domain 缺省解析：当前标签 hostname（getURL 是本地扩展查询，非站点网络请求）。 */
+async function resolveDomainArg(args: Record<string, any>): Promise<string> {
+  if (typeof args.domain === "string" && args.domain.trim()) return args.domain.trim();
+  return apiCommandService.resolveDomain(typeof args.tabId === "number" ? args.tabId : undefined);
+}
 
 // click/type 的 (站点, intent) 缓存流程：命中时用缓存定位符直接执行（零观察），
 // 失败或未命中时回退显式 selector，成功后用耐久定位符回写缓存。
@@ -886,6 +944,154 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         required: ["action"],
       },
     },
+
+    // ===== 按域名的 API 命令集（7 个独立具名工具，snake_case，Q1）=====
+    {
+      name: "analyze_page_apis",
+      description: "页面 API 分析并沉淀为可复用命令：action=start 启动抓包 → 用户/Agent 操作页面 → action=stop_and_analyze 产出报告并写入域名级缓存；analyze_current 为兼容入口（解析现有抓包缓冲区）；scan_site 为静态推导入口：直接读取 JS bundle / HAR / OpenAPI / 声明式命令包，无需打开页面、无需抓包、无需登录会话，一次拿到整站接口骨架（产物强制需人工复核、默认按 write 保守处理）。bundle 受登录态保护时加 collectViaExtension=true（或 discoverBundles=true 自动发现）由扩展侧借页面会话取文本，扫描仍走同一套解析。",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          action: { type: "string", enum: ["start", "stop_and_analyze", "analyze_current", "scan_site"], description: "分析动作" },
+          domain: { type: "string", description: "精确 hostname（缺省按当前标签域名）" },
+          analysisId: { type: "string", description: "start 返回的关联键，stop_and_analyze 时回传" },
+          tabId: { type: "number" },
+          filter: { type: "object", description: "可选 {urlContains, mimeType} 过滤" },
+          includeStaticAssets: { type: "boolean", description: "默认 false，排除静态资源" },
+          maxEndpoints: { type: "number", description: "默认 20，端点数上限" },
+          captureResponseBody: { type: "boolean", description: "Q8 响应体采样，默认 false；仅分析期间限量采样" },
+          mode: { type: "string", enum: ["full", "merge"], description: "默认 merge；full 会移除未观测到的非人工条目" },
+          overwriteManual: { type: "boolean", description: "默认 false，人工修正条目始终保留" },
+          sources: {
+            type: "array",
+            description: "scan_site 专用数据源：[{kind:\"js\"|\"har\"|\"openapi\"|\"commands\", url?:string, text?:string}]。url 仅 http(s)、默认同源且拒绝私网；text 优先，便于离线复现",
+            items: {
+              type: "object",
+              properties: {
+                kind: { type: "string", enum: ["js", "har", "openapi", "commands"] },
+                url: { type: "string" },
+                text: { type: "string" },
+              },
+              required: ["kind"],
+            },
+          },
+          allowPrivateHosts: { type: "boolean", description: "scan_site 黄区开关：允许内网/回环地址数据源，默认 false（SSRF 风险）" },
+          allowCrossHost: { type: "boolean", description: "scan_site 黄区开关：允许跨 hostname 脚本源（CDN），默认 false，需同时给 extraHosts" },
+          extraHosts: { type: "array", items: { type: "string" }, description: "allowCrossHost=true 时显式放行的精确 hostname 白名单" },
+          trustSpec: { type: "boolean", description: "默认 false：静态推导命令一律按 write 保守处理；置 true 时 openapi/commands 来源按声明方法判定 risk" },
+          loosePaths: { type: "boolean", description: "放宽 JS 路径判定（接受非标准 API 前缀），默认 false，会增加误报" },
+          scanTimeoutMs: { type: "number", description: "单个远端数据源读取超时，默认 8000，clamp 100..30000" },
+          collectViaExtension: { type: "boolean", description: "scan_site 绿区开关：URL 类数据源改由扩展侧借页面登录态取文本（Node 直读 401 时用），默认 false" },
+          discoverBundles: { type: "boolean", description: "scan_site 绿区开关：从 tabId 对应页面自动发现已加载的 JS bundle 并补采，默认 false（隐含 collectViaExtension）" },
+          bundleMaxSources: { type: "number", description: "bundle 补采条数上限，默认 6，clamp 1..10" },
+          bundleUseBrowserCache: { type: "boolean", description: "是否允许 CDP 读浏览器缓存里已加载过的原始字节兜底，默认 true" },
+        },
+        required: ["action"],
+      },
+    },
+    {
+      name: "list_api_commands",
+      description: "列出某精确 hostname 的可用 API 命令（自动加载入口，纯本地缓存读取）。返回精简 CommandCard、stale[] 与 warnings[]。",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          domain: { type: "string", description: "精确 hostname（缺省按当前标签域名）" },
+          includeDisabled: { type: "boolean", description: "默认 false，禁用/弃用条目视同未命中" },
+          keyword: { type: "string" },
+          risk: { type: "string", enum: ["read", "write"] },
+        },
+      },
+    },
+    {
+      name: "get_api_command",
+      description: "查看单条 API 命令完整定义（params[] / responseFields[] / responseSchema / health / source / schemaVersion / manuallyEdited）。",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          domain: { type: "string" },
+          commandId: { type: "string", description: "与 name 二选一" },
+          name: { type: "string", description: "如 list.courses" },
+          tabId: { type: "number" },
+        },
+      },
+    },
+    {
+      name: "call_api_command",
+      description: "按持久化命令模板执行 API 调用（免开网页、无需抓包缓冲区，自动携带当前浏览器会话 Cookie）。写命令 risk=write 必须 confirm:true，否则返回 confirmationRequired 预览且零网络请求。",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          domain: { type: "string" },
+          commandId: { type: "string", description: "与 name 二选一" },
+          name: { type: "string" },
+          params: { type: "object", description: "命令参数，键对应 {{param}} 占位符名" },
+          fields: { type: "array", items: { type: "string" }, description: "响应字段白名单覆盖（点路径）" },
+          maxBodyChars: { type: "number", description: "默认 50000，clamp 1000..500000" },
+          confirm: { type: "boolean", description: "写命令必须显式为 true（仅防误触发，非安全边界）" },
+          tabId: { type: "number", description: "可省略；显式传时沿用跨组拒绝" },
+          timeoutMs: { type: "number", description: "默认 10000，clamp 100..25000" },
+        },
+      },
+    },
+    {
+      name: "update_api_command",
+      description: "人工修正命令（改名 / 改参数模板 / 改响应裁剪 / 加备注 / 标记弃用），置 manuallyEdited=true，后续 full/merge 均保留。",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          domain: { type: "string" },
+          commandId: { type: "string" },
+          name: { type: "string" },
+          params: { type: "array", items: { type: "object" } },
+          responseFields: { type: "array", items: { type: "string" } },
+          note: { type: "string" },
+          deprecated: { type: "boolean" },
+          tabId: { type: "number" },
+        },
+        required: ["commandId"],
+      },
+    },
+    {
+      name: "invalidate_api_commands",
+      description: "使缓存失效：action=disable / delete（单命令）/ clear_domain（整域名）。",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          domain: { type: "string" },
+          commandId: { type: "string", description: "disable/delete 时需要" },
+          action: { type: "string", enum: ["disable", "delete", "clear_domain"] },
+          tabId: { type: "number" },
+        },
+        required: ["action"],
+      },
+    },
+    {
+      name: "get_api_command_cache",
+      description: "缓存健康度报告：domains[] / perCommand{hits,misses,consecutiveFailures,disabled,averageDurationMs,lastSuccessAt,lastError} / skippedInvalid[] / errors[] / schemaVersion。",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          domain: { type: "string", description: "省略则返回全部域名" },
+        },
+      },
+    },
+    {
+      name: "ai_search",
+      description: "AI 搜索摘要：一次调用拿到全网 AI 答案（百度 baikan）+ 引用来源，免开网页、免抓包。"
+        + "底层接口等价于 `GET https://m.baidu.com/s?word={query}`（urlTemplate 里回显），"
+        + "但会直接从页面的 baikan 数据块提取结构化答案与引用，不返回 2MB 原始 HTML。"
+        + "注意：并非每个查询都有 AI 摘要，found=false 属正常结果（换更具体的问法）。",
+      inputSchema: {
+        type: "object" as const,
+        properties: {
+          query: { type: "string", description: "搜索词 / 问题，1..200 字符" },
+          maxChars: { type: "number", description: "答案截断上限，默认 8000，clamp 200..30000" },
+          maxCitations: { type: "number", description: "引用条数上限，默认 10，clamp 0..20" },
+          timeoutMs: { type: "number", description: "单次取页超时，默认 15000" },
+        },
+        required: ["query"],
+      },
+    },
   ]),
   };
 });
@@ -902,7 +1108,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       case "navigate":
         result = await sendToExtension("navigate", { url: args.url, tabId: args.tabId });
         return {
-          content: [{ type: "text", text: `导航成功: ${result.title}\nURL: ${result.url}\n标签页ID: ${result.tabId}` }],
+          // Q11：原有文本前缀一字不动，仅追加一行纯本地缓存摘要（零网络请求、零自动执行）。
+          content: [{ type: "text", text: `导航成功: ${result.title}\nURL: ${result.url}\n标签页ID: ${result.tabId}\n${formatApiCommandLine(await autoLoadApiCommands(result?.url))}` }],
         };
 
       case "get_page_info": {
@@ -1635,11 +1842,110 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
           case "probe":
             result = await sendToExtension("probeCapabilities", { tabId: args.tabId });
-            return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }] };
+            // Q11：在 JSON.stringify 之前追加 result.apiCommands，原有字段语义与前缀不变。
+            return {
+              content: [{
+                type: "text",
+                text: JSON.stringify({
+                  ...result,
+                  apiCommands: await autoLoadApiCommands(result?.url),
+                }, null, 2),
+              }],
+            };
           default:
             throw new Error(`Unknown webmcp action: ${action}`);
         }
       }
+
+      // ===== 7 个独立具名 API 命令集工具（与上面 inputSchema 一一对应）=====
+      case "analyze_page_apis":
+        return apiToolCall(() => apiCommandService.analyze({
+          action: args.action as AnalyzeAction,
+          domain: typeof args.domain === "string" ? args.domain : undefined,
+          analysisId: typeof args.analysisId === "string" ? args.analysisId : undefined,
+          tabId: typeof args.tabId === "number" ? args.tabId : undefined,
+          filter: args.filter && typeof args.filter === "object" && !Array.isArray(args.filter)
+            ? args.filter as { urlContains?: string; mimeType?: string }
+            : undefined,
+          includeStaticAssets: args.includeStaticAssets === true,
+          maxEndpoints: typeof args.maxEndpoints === "number" ? args.maxEndpoints : undefined,
+          captureResponseBody: args.captureResponseBody === true,
+          mode: args.mode === "full" ? "full" : args.mode === "merge" ? "merge" : undefined,
+          overwriteManual: args.overwriteManual === true,
+          sources: Array.isArray(args.sources) ? args.sources as SiteScanSource[] : undefined,
+          allowPrivateHosts: args.allowPrivateHosts === true,
+          allowCrossHost: args.allowCrossHost === true,
+          extraHosts: Array.isArray(args.extraHosts)
+            ? args.extraHosts.filter((item): item is string => typeof item === "string") : undefined,
+          trustSpec: args.trustSpec === true,
+          loosePaths: args.loosePaths === true,
+          scanTimeoutMs: typeof args.scanTimeoutMs === "number" ? args.scanTimeoutMs : undefined,
+          collectViaExtension: args.collectViaExtension === true,
+          discoverBundles: args.discoverBundles === true,
+          bundleMaxSources: typeof args.bundleMaxSources === "number" ? args.bundleMaxSources : undefined,
+          bundleUseBrowserCache: args.bundleUseBrowserCache !== false,
+        }));
+
+      case "list_api_commands":
+        return apiToolCall(async () => apiCommandService.list({
+          domain: await resolveDomainArg(args),
+          includeDisabled: args.includeDisabled === true,
+          keyword: typeof args.keyword === "string" ? args.keyword : undefined,
+          risk: args.risk === "read" || args.risk === "write" ? args.risk : undefined,
+        }));
+
+      case "get_api_command":
+        return apiToolCall(async () => apiCommandService.get({
+          domain: await resolveDomainArg(args),
+          commandId: typeof args.commandId === "string" ? args.commandId : undefined,
+          name: typeof args.name === "string" ? args.name : undefined,
+        }));
+
+      case "call_api_command":
+        return apiToolCall(async () => apiCommandService.call({
+          domain: await resolveDomainArg(args),
+          commandId: typeof args.commandId === "string" ? args.commandId : undefined,
+          name: typeof args.name === "string" ? args.name : undefined,
+          params: args.params && typeof args.params === "object" && !Array.isArray(args.params)
+            ? args.params as Record<string, unknown>
+            : {},
+          fields: Array.isArray(args.fields) ? args.fields as string[] : undefined,
+          maxBodyChars: typeof args.maxBodyChars === "number" ? args.maxBodyChars : undefined,
+          confirm: args.confirm === true,
+          tabId: typeof args.tabId === "number" ? args.tabId : undefined,
+          timeoutMs: typeof args.timeoutMs === "number" ? args.timeoutMs : undefined,
+        }));
+
+      case "update_api_command":
+        return apiToolCall(async () => apiCommandService.update({
+          domain: await resolveDomainArg(args),
+          commandId: typeof args.commandId === "string" ? args.commandId : "",
+          name: typeof args.name === "string" ? args.name : undefined,
+          params: Array.isArray(args.params) ? args.params : undefined,
+          responseFields: Array.isArray(args.responseFields) ? args.responseFields : undefined,
+          note: typeof args.note === "string" ? args.note : undefined,
+          deprecated: typeof args.deprecated === "boolean" ? args.deprecated : undefined,
+        }));
+
+      case "invalidate_api_commands":
+        return apiToolCall(async () => apiCommandService.invalidate({
+          domain: await resolveDomainArg(args),
+          commandId: typeof args.commandId === "string" ? args.commandId : undefined,
+          action: args.action === "disable" || args.action === "delete" ? args.action : "clear_domain",
+        }));
+
+      case "get_api_command_cache":
+        return apiToolCall(() => apiCommandService.cacheReport(
+          typeof args.domain === "string" && args.domain.trim() ? args.domain.trim() : undefined,
+        ));
+
+      case "ai_search":
+        return apiToolCall(() => apiCommandService.aiSearch({
+          query: typeof args.query === "string" ? args.query : "",
+          maxChars: typeof args.maxChars === "number" ? args.maxChars : undefined,
+          maxCitations: typeof args.maxCitations === "number" ? args.maxCitations : undefined,
+          timeoutMs: typeof args.timeoutMs === "number" ? args.timeoutMs : undefined,
+        }));
 
       default:
         throw new Error(`Unknown tool: ${name}`);

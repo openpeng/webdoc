@@ -1,0 +1,397 @@
+// 域名级缓存 Repository 测试：持久化/重启命中、损坏备份、注入条目跳过、
+// schemaVersion、full/merge 人工修正保护、失败状态机、健康度报告、写失败不阻断
+// （AC-11/13/14/15/16/17/18/19/20/27）。
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, readFile, writeFile, rm, access } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  ApiCommandCache, toCommand, defaultApiCommandCacheFile,
+} from "../dist/api-command-cache.js";
+import { generateCommands } from "../dist/api-command-generator.js";
+import {
+  ERROR_SAFE_MESSAGES, STALE_MANUAL_WARNING, CACHE_FILE_NAME,
+} from "../dist/api-command-types.js";
+
+const DOMAIN = "api.example.com";
+const NOW = "2026-01-01T00:00:00.000Z";
+
+const baseRec = (overrides = {}) => ({
+  requestId: "r1", host: DOMAIN, method: "GET", path: "/v1/users/1",
+  pathSegments: ["v1", "users", "1"], queryPairs: [], bodyFields: [],
+  bodyIsJson: false, status: 200, mimeType: "application/json",
+  resourceType: "xhr", timestamp: 1, headerNames: [],
+  ...overrides,
+});
+
+// 用真实生成器产出两条合法命令，避免手写结构与白名单重建规则漂移
+function makeCommands() {
+  return generateCommands([
+    { method: "GET", pathTemplate: "/v1/users/{id}", pathParams: ["id"], host: DOMAIN,
+      records: [baseRec()] },
+    { method: "GET", pathTemplate: "/v1/orders", pathParams: [], host: DOMAIN,
+      records: [baseRec({ path: "/v1/orders", pathSegments: ["v1", "orders"] })] },
+  ], { domain: DOMAIN, analysisId: "an_cache", generatedBy: "1.1.1",
+       schema: new Map(), now: NOW }).commands;
+}
+
+const withTemp = async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "webpilot-apicache-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  return { dir, file: join(dir, CACHE_FILE_NAME) };
+};
+const writeRaw = (file, obj) => writeFile(file, JSON.stringify(obj, null, 2), "utf8");
+const bucket = (commands, host = DOMAIN) => ({
+  version: 1, generatedBy: "1.1.1", updatedAt: NOW,
+  domains: { [host]: { host, updatedAt: NOW, commands } },
+});
+// 复制合法命令并改写 commandId；用 defineProperty 制造 own __proto__ / constructor 键
+const clone = (base, id, mutate = () => {}) => {
+  const c = JSON.parse(JSON.stringify(base));
+  c.commandId = id;
+  mutate(c);
+  return c;
+};
+const ownKey = (obj, key, value) => Object.defineProperty(obj, key, {
+  value, enumerable: true, writable: true, configurable: true,
+});
+
+test("落盘 JSON → 新实例加载仍命中（AC-11）", async (t) => {
+  const { file } = await withTemp(t);
+  const commands = makeCommands();
+  const cache = new ApiCommandCache(file);
+  const merged = await cache.merge(DOMAIN, commands, { mode: "full", overwriteManual: false });
+  assert.equal(merged.diff.added, 2);
+
+  const raw = JSON.parse(await readFile(file, "utf8"));
+  assert.equal(raw.version, 1);
+  assert.equal(raw.generatedBy, "1.1.1");
+  assert.equal(raw.domains[DOMAIN].commands.length, 2);
+  assert.ok(raw.domains[DOMAIN].commands.every((c) => c.domain === DOMAIN));
+
+  const reloaded = new ApiCommandCache(file);
+  const listed = await reloaded.list(DOMAIN);
+  assert.equal(listed.cacheHit, true, "重启/重载后必须仍命中缓存");
+  assert.equal(listed.total, 2);
+  assert.equal(listed.autoLoaded, true);
+  const one = await reloaded.get(DOMAIN, { commandId: commands[0].commandId });
+  assert.equal(one.commandId, commands[0].commandId);
+  assert.equal(one.request.pathTemplate, "/v1/users/{id}");
+  assert.equal((await reloaded.get(DOMAIN, { name: commands[1].name })).commandId, commands[1].commandId);
+});
+
+test("损坏 JSON → 备份 *.corrupt-<ts> 后重建空缓存，不崩溃（AC-16）", async (t) => {
+  const { file } = await withTemp(t);
+  const cache1 = new ApiCommandCache(file);
+  await cache1.merge(DOMAIN, [makeCommands()[0]], { mode: "full", overwriteManual: false });
+  const broken = "{ this is not json";
+  await writeFile(file, broken, "utf8");
+
+  const cache2 = new ApiCommandCache(file);
+  await assert.doesNotReject(() => cache2.ensureLoaded());
+  const diag = cache2.diagnostics();
+  assert.ok(diag.backupFile, "必须生成损坏文件备份");
+  assert.match(diag.backupFile, /\.corrupt-\d+$/);
+  assert.equal(await readFile(diag.backupFile, "utf8"), broken);
+  await assert.rejects(() => access(file), "原文件应已被 rename 走");
+  assert.ok(diag.errors.some((e) => e.error.includes("JSON 解析失败")));
+
+  const listed = await cache2.list(DOMAIN);
+  assert.equal(listed.cacheHit, false);
+  assert.equal(listed.total, 0);
+  assert.ok(listed.warnings.some((w) => w.includes("缓存加载告警")));
+  // 重建后可正常写入
+  const again = await cache2.merge(DOMAIN, [makeCommands()[1]], { mode: "merge", overwriteManual: false });
+  assert.equal(again.diff.added, 1);
+});
+
+test("注入条目（外域 URL / 字面凭据 / 可执行字段 / 原型键）被跳过并计入 skippedInvalid[]（AC-17）", async (t) => {
+  const { file } = await withTemp(t);
+  const good = makeCommands()[0];
+  const bad = [
+    clone(good, "cmd_0000000001", (c) => { c.request.urlTemplate = "https://evil.example.net/v1/users/{{id}}"; }),
+    clone(good, "cmd_0000000002", (c) => { c.request.bodyTemplate = { token: "eyJhbGciOi.x.y" }; }),
+    clone(good, "cmd_0000000003", (c) => { c.note = "Bearer abcdefghijklmnopqrstuvwxyz"; }),
+    clone(good, "cmd_0000000004", (c) => { c.computed = "() => 1"; }),
+    clone(good, "cmd_0000000005", (c) => { c.script = "alert(1)"; }),
+    clone(good, "cmd_0000000006", (c) => { c.headers = { authorization: "SECRET_HEADER" }; }),
+    clone(good, "cmd_0000000007", (c) => { c.eval = "1+1"; }),
+    clone(good, "cmd_0000000008", (c) => ownKey(c, "__proto__", { polluted: true })),
+    clone(good, "cmd_0000000009", (c) => ownKey(c, "constructor", { polluted: true })),
+    clone(good, "cmd_0000000010", (c) => { c.prototype = { polluted: true }; }),
+    clone(good, "cmd_0000000011", (c) => { c.request.queryTemplate = { token: "SECRET_QUERY_VALUE" }; }),
+    clone(good, "cmd_0000000012", (c) => {
+      c.request.urlTemplate = `https://${DOMAIN}/v1/users/{{id}}?token=SECRET_QUERY_VALUE_2`;
+    }),
+  ];
+  await writeRaw(file, bucket([good, ...bad]));
+  const cache = new ApiCommandCache(file);
+  await cache.ensureLoaded();
+  const diag = cache.diagnostics();
+  assert.equal(diag.skippedInvalid.length, bad.length,
+    `应跳过 ${bad.length} 条注入条目，实际 ${diag.skippedInvalid.length}`);
+  assert.ok(diag.skippedInvalid.every((s) => s.host === DOMAIN && typeof s.reason === "string"));
+  assert.equal(diag.errors.length >= bad.length, true);
+  assert.ok(await cache.get(DOMAIN, { commandId: good.commandId }), "正常条目必须保留");
+  for (const injected of bad) {
+    assert.equal(await cache.get(DOMAIN, { commandId: injected.commandId }), undefined);
+  }
+  // 原型注入不得污染全局对象
+  assert.equal(Object.prototype.polluted, undefined);
+  assert.equal({}.polluted, undefined);
+  assert.equal({}.constructor, Object);
+  // 未知字段不跳过整条，但必须被白名单重建丢弃
+  const withUnknown = clone(good, "cmd_0000000013", (c) => { c.mysteryField = "SHOULD_BE_DROPPED"; });
+  await writeRaw(file, bucket([withUnknown]));
+  const cache2 = new ApiCommandCache(file);
+  await cache2.ensureLoaded();
+  const rebuilt = await cache2.get(DOMAIN, { commandId: "cmd_0000000013" });
+  assert.ok(rebuilt);
+  assert.equal(Object.hasOwn(rebuilt, "mysteryField"), false);
+  assert.equal(cache2.diagnostics().skippedInvalid.length, 0);
+});
+
+test("schemaVersion 高于支持版本跳过、低于标 needsMigration（AC-18）", async (t) => {
+  const { file } = await withTemp(t);
+  const [a, b] = makeCommands();
+  await writeRaw(file, bucket([
+    { ...a, commandId: "cmd_aaaaaaaaaa", schemaVersion: 2 },
+    { ...b, commandId: "cmd_bbbbbbbbbb", schemaVersion: 0 },
+    { ...a, commandId: "cmd_cccccccccc", schemaVersion: 1 },
+  ]));
+  const cache = new ApiCommandCache(file);
+  await cache.ensureLoaded();
+  assert.equal(await cache.get(DOMAIN, { commandId: "cmd_aaaaaaaaaa" }), undefined);
+  assert.ok(cache.diagnostics().skippedInvalid.some((s) => s.reason.includes("高于支持版本")));
+  const low = await cache.get(DOMAIN, { commandId: "cmd_bbbbbbbbbb" });
+  assert.ok(low);
+  assert.equal(low.health.needsMigration, true);
+  assert.equal(low.schemaVersion, 0);
+  assert.ok(cache.diagnostics().errors.some((e) => e.error.includes("needsMigration")));
+  const normal = await cache.get(DOMAIN, { commandId: "cmd_cccccccccc" });
+  assert.equal(normal.health.needsMigration, false);
+  assert.equal((await cache.report(DOMAIN)).schemaVersion, 1);
+});
+
+test("full vs merge 均返回 diff；人工修正 name/params/note 默认保留（AC-13/14）", async (t) => {
+  const { file } = await withTemp(t);
+  const [a, b] = makeCommands();
+  const cache = new ApiCommandCache(file);
+  const first = await cache.merge(DOMAIN, [a, b], { mode: "merge", overwriteManual: false });
+  assert.deepEqual(first.diff.added, 2);
+  for (const key of ["added", "updated", "removed", "skipped", "reviewRequired"]) {
+    assert.equal(typeof first.diff[key], "number");
+  }
+
+  await cache.update(DOMAIN, a.commandId, {
+    name: "manual.users", note: "人工备注", responseFields: ["code"],
+  });
+  await cache.update(DOMAIN, b.commandId, { name: "manual.orders" });
+
+  // merge：人工修正保留，removed 恒为 0，未观测条目标 stale
+  const mergeResult = await cache.merge(DOMAIN, [a], { mode: "merge", overwriteManual: false });
+  assert.equal(mergeResult.diff.removed, 0);
+  assert.ok(mergeResult.preservedManualEdits.some((s) => s.includes(a.commandId)));
+  assert.ok(mergeResult.stale.includes(b.commandId));
+  const preserved = await cache.get(DOMAIN, { commandId: a.commandId });
+  assert.equal(preserved.name, "manual.users");
+  assert.equal(preserved.note, "人工备注");
+  assert.deepEqual(preserved.responseFields, ["code"]);
+  assert.equal(preserved.manuallyEdited, true);
+
+  // full：未观测的人工条目保留 + stale + warnings[]（不静默删除人工资产）
+  const fullResult = await cache.merge(DOMAIN, [a], { mode: "full", overwriteManual: false });
+  assert.ok(fullResult.stale.includes(b.commandId));
+  assert.ok(fullResult.warnings.some((w) => w.includes(STALE_MANUAL_WARNING)));
+  assert.ok(await cache.get(DOMAIN, { commandId: b.commandId }));
+
+  // 仅 overwriteManual:true 才真正覆盖/删除
+  const overwrite = await cache.merge(DOMAIN, [a], { mode: "full", overwriteManual: true });
+  assert.ok(overwrite.diff.removed >= 1);
+  assert.equal(await cache.get(DOMAIN, { commandId: b.commandId }), undefined);
+  assert.equal((await cache.get(DOMAIN, { commandId: a.commandId })).name !== "manual.users", true);
+});
+
+test("连续 4 次失败自动禁用，一次成功复活并清零计数（AC-15）", async (t) => {
+  const { file } = await withTemp(t);
+  const [a] = makeCommands();
+  const cache = new ApiCommandCache(file);
+  await cache.merge(DOMAIN, [a], { mode: "full", overwriteManual: false });
+  for (let i = 0; i < 4; i += 1) {
+    await cache.recordFailure(DOMAIN, a.commandId, "NETWORK_ERROR", "boom");
+  }
+  assert.equal(await cache.get(DOMAIN, { commandId: a.commandId }), undefined, "4 次失败后视同未命中");
+  const disabledReport = await cache.report(DOMAIN);
+  assert.equal(disabledReport.perCommand[0].disabled, true);
+  assert.equal(disabledReport.perCommand[0].consecutiveFailures, 4);
+
+  await cache.recordSuccess(DOMAIN, a.commandId, 120);
+  const revived = await cache.get(DOMAIN, { commandId: a.commandId });
+  assert.ok(revived);
+  assert.equal(revived.health.disabled, false);
+  assert.equal(revived.health.consecutiveFailures, 0);
+  assert.equal(revived.health.hits, 1);
+  assert.equal(revived.health.authRequired, false);
+  assert.equal(revived.health.stale, false);
+});
+
+test("AUTH_REQUIRED 不禁用、不计连续失败；disabled / deprecated 视同未命中（AC-19）", async (t) => {
+  const { file } = await withTemp(t);
+  const [a, b] = makeCommands();
+  const cache = new ApiCommandCache(file);
+  await cache.merge(DOMAIN, [a, b], { mode: "full", overwriteManual: false });
+  for (let i = 0; i < 6; i += 1) {
+    await cache.recordFailure(DOMAIN, a.commandId, "AUTH_REQUIRED", ERROR_SAFE_MESSAGES.AUTH_REQUIRED);
+  }
+  const cmd = await cache.get(DOMAIN, { commandId: a.commandId });
+  assert.ok(cmd, "登录失效绝不禁用命令");
+  assert.equal(cmd.health.authRequired, true);
+  assert.equal(cmd.health.consecutiveFailures, 0);
+  assert.equal(cmd.health.disabled, false);
+  assert.equal(cmd.health.lastError, ERROR_SAFE_MESSAGES.AUTH_REQUIRED);
+  assert.equal((await cache.report(DOMAIN)).perCommand.find((p) => p.commandId === a.commandId).misses, 0);
+
+  await cache.invalidate(DOMAIN, { commandId: b.commandId, action: "disable" });
+  assert.equal(await cache.get(DOMAIN, { commandId: b.commandId }), undefined);
+  assert.equal((await cache.list(DOMAIN)).total, 1);
+  assert.equal((await cache.list(DOMAIN, { includeDisabled: true })).total, 2);
+  await cache.update(DOMAIN, a.commandId, { deprecated: true });
+  assert.equal(await cache.get(DOMAIN, { commandId: a.commandId }), undefined);
+  assert.equal((await cache.list(DOMAIN, { includeDisabled: true })).total, 2);
+});
+
+test("report() 健康度：hits/misses/averageDurationMs/skippedInvalid/errors（AC-15/27）", async (t) => {
+  const { file } = await withTemp(t);
+  const [a] = makeCommands();
+  const cache = new ApiCommandCache(file);
+  await cache.merge(DOMAIN, [a], { mode: "full", overwriteManual: false });
+  await cache.recordSuccess(DOMAIN, a.commandId, 100);
+  await cache.recordSuccess(DOMAIN, a.commandId, 200);
+  await cache.recordFailure(DOMAIN, a.commandId, "HTTP_ERROR", "HTTP 500");
+  const report = await cache.report(DOMAIN);
+  assert.equal(report.domains.length, 1);
+  assert.equal(report.domains[0].host, DOMAIN);
+  assert.equal(report.domains[0].commandCount, 1);
+  assert.equal(report.perCommand[0].hits, 2);
+  assert.equal(report.perCommand[0].misses, 1);
+  assert.equal(report.perCommand[0].averageDurationMs, 150);
+  assert.equal(report.perCommand[0].consecutiveFailures, 1);
+  assert.equal(report.schemaVersion, 1);
+  assert.deepEqual(report.skippedInvalid, []);
+  assert.deepEqual(report.errors, []);
+  assert.deepEqual((await cache.report()).domains.length, 1);
+});
+
+test("get()/list() 是纯读：反复查询不改变 hits/misses（关键约定）", async (t) => {
+  const { file } = await withTemp(t);
+  const [a] = makeCommands();
+  const cache = new ApiCommandCache(file);
+  await cache.merge(DOMAIN, [a], { mode: "full", overwriteManual: false });
+  for (let i = 0; i < 5; i += 1) {
+    await cache.get(DOMAIN, { commandId: a.commandId });
+    await cache.list(DOMAIN);
+  }
+  const report = await cache.report(DOMAIN);
+  assert.equal(report.perCommand[0].hits, 0);
+  assert.equal(report.perCommand[0].misses, 0);
+  assert.equal(report.perCommand[0].consecutiveFailures, 0);
+  assert.deepEqual(await cache.summary(DOMAIN), [{
+    commandId: a.commandId, name: a.name, method: "GET", risk: "read",
+    available: true, manuallyEdited: false,
+  }]);
+});
+
+test("缓存写失败只告警不阻断调用链路（AC-16 边界）", async (t) => {
+  const { dir } = await withTemp(t);
+  const blocker = join(dir, "blocker");
+  await writeFile(blocker, "not a directory", "utf8");
+  const file = join(blocker, CACHE_FILE_NAME); // 父路径是普通文件 → mkdir / rename 必然失败
+  const cache = new ApiCommandCache(file);
+  const original = console.error;
+  console.error = () => {};
+  try {
+    const [a] = makeCommands();
+    await assert.doesNotReject(() => cache.merge(DOMAIN, [a], { mode: "merge", overwriteManual: false }));
+    const listed = await cache.list(DOMAIN);
+    assert.equal(listed.cacheHit, true, "写盘失败不得影响内存态与调用链路");
+    assert.equal(listed.total, 1);
+    assert.ok(await cache.get(DOMAIN, { commandId: a.commandId }));
+    await assert.rejects(() => readFile(file, "utf8"), "写失败时不应产生缓存文件");
+    assert.ok(Array.isArray(cache.diagnostics().errors));
+  } finally {
+    console.error = original;
+  }
+});
+
+test("invalidate: disable / delete / clear_domain 计数正确", async (t) => {
+  const { file } = await withTemp(t);
+  const [a, b] = makeCommands();
+  const cache = new ApiCommandCache(file);
+  await cache.merge(DOMAIN, [a, b], { mode: "full", overwriteManual: false });
+  assert.deepEqual(await cache.invalidate(DOMAIN, { commandId: a.commandId, action: "disable" }),
+    { affected: 1, remaining: 2 });
+  assert.deepEqual(await cache.invalidate(DOMAIN, { commandId: b.commandId, action: "delete" }),
+    { affected: 1, remaining: 1 });
+  const cleared = await cache.invalidate(DOMAIN, { action: "clear_domain" });
+  assert.equal(cleared.affected, 1);
+  assert.equal(cleared.remaining, 0);
+  assert.equal((await cache.list(DOMAIN)).cacheHit, false);
+  assert.deepEqual(await cache.invalidate("missing.test", { action: "clear_domain" }),
+    { affected: 0, remaining: 0 });
+});
+
+test("结构非法 / hostname 非法 / 高 version 缓存文件：告警但不崩溃", async (t) => {
+  const { file } = await withTemp(t);
+  await writeRaw(file, { version: 1, generatedBy: "1.1.1" }); // 缺 domains
+  const c1 = new ApiCommandCache(file);
+  await assert.doesNotReject(() => c1.ensureLoaded());
+  assert.ok(c1.diagnostics().errors.some((e) => e.error.includes("结构非法")));
+
+  await writeRaw(file, { version: 9, generatedBy: "x", updatedAt: NOW,
+    domains: { [DOMAIN]: { host: DOMAIN, commands: [] } } });
+  const c2 = new ApiCommandCache(file);
+  await c2.ensureLoaded();
+  assert.ok(c2.diagnostics().errors.some((e) => e.error.includes("高于支持版本")));
+
+  await writeRaw(file, { version: 1, generatedBy: "x", updatedAt: NOW,
+    domains: { "*.evil.test": { host: "*.evil.test", commands: [] } } });
+  const c3 = new ApiCommandCache(file);
+  await c3.ensureLoaded();
+  assert.ok(c3.diagnostics().skippedInvalid.some((s) => s.reason.includes("hostname 非法")));
+  assert.ok(c3.diagnostics().errors.some((e) => e.error.includes("hostname 非法")));
+});
+
+test("超长字段 / 凭据 note 被跳过，超长 responseFields 被丢弃，toCommand 逐字段重建", async (t) => {
+  const { file } = await withTemp(t);
+  const base = makeCommands()[0];
+  const longNote = clone(base, "cmd_0000000021", (c) => { c.note = "x".repeat(600); });
+  const credNote = clone(base, "cmd_0000000022", (c) => { c.note = "Bearer abcdefghijklmnop"; });
+  const longField = clone(base, "cmd_0000000023", (c) => { c.responseFields = ["y".repeat(300), "code"]; });
+  await writeRaw(file, bucket([longNote, credNote, longField]));
+  const cache = new ApiCommandCache(file);
+  await cache.ensureLoaded();
+  assert.equal(await cache.get(DOMAIN, { commandId: "cmd_0000000021" }), undefined);
+  assert.equal(await cache.get(DOMAIN, { commandId: "cmd_0000000022" }), undefined);
+  const kept = await cache.get(DOMAIN, { commandId: "cmd_0000000023" });
+  assert.deepEqual(kept.responseFields, ["code"], "超长点路径必须被丢弃");
+  // 直接对 dist/toCommand 做单元级断言
+  const diag = { skippedInvalid: [], errors: [] };
+  assert.equal(toCommand(null, DOMAIN, diag), undefined);
+  assert.equal(toCommand({ commandId: "BAD" }, DOMAIN, diag), undefined);
+  const evil = clone(base, "cmd_0000000024", (c) => { c.request.urlTemplate = "https://evil.test/x"; });
+  assert.equal(toCommand(evil, DOMAIN, diag), undefined);
+  assert.equal(diag.skippedInvalid.length, 3);
+  assert.ok(diag.skippedInvalid.every((s) => !s.reason.includes("SECRET")));
+
+  // defaultApiCommandCacheFile 遵循 WEBPILOT_API_COMMAND_DIR
+  const dir = (await withTemp(t)).dir;
+  const prev = process.env.WEBPILOT_API_COMMAND_DIR;
+  process.env.WEBPILOT_API_COMMAND_DIR = dir;
+  try {
+    assert.equal(defaultApiCommandCacheFile(), join(dir, CACHE_FILE_NAME));
+  } finally {
+    if (prev === undefined) delete process.env.WEBPILOT_API_COMMAND_DIR;
+    else process.env.WEBPILOT_API_COMMAND_DIR = prev;
+  }
+});

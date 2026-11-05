@@ -1,5 +1,19 @@
 // background.js — Service Worker，管理 WebSocket 连接和 CDP
 
+// classic service worker（manifest 未声明 "type":"module"），用 importScripts 引入
+// 与 MCP 侧 api-command-types.ts 逐字对齐的共享常量与安全 helper。
+// 顶层 const / function 与本文件共享同一全局词法环境；helpers 不得引用任何 MCP 模块。
+//
+// 兼容性：node --test 的 session-isolation 测试用 vm.runInContext 只加载本文件源码，
+// 沙箱里既没有 importScripts，也不会加载 api-command-helpers.js。故加 typeof 守卫，
+// 并保证「加载期 + 普通命令路径」不引用 helpers 提供的标识符（见下方 TAB_SCOPED_COMMANDS /
+// API_EXECUTION_TYPES / dispatchCommand 的 case 均使用与 MSG 逐字一致的字面量）。
+// 真实 Chrome SW 中 importScripts 存在，helpers 会被正常加载；命令函数体内的 helpers
+// 引用只在真正调用对应命令时才求值，不影响存量会话隔离测试。
+if (typeof importScripts === 'function') {
+  importScripts('api-command-helpers.js');
+}
+
 const DEFAULT_WS_URL = 'ws://localhost:8765';
 const AUTO_CONNECT_ALARM = 'webpilot-auto-connect';
 const AUTO_CONNECT_RETRY_MINUTES = 1;
@@ -41,7 +55,20 @@ const MAX_OPERATION_LOGS = 100;
 const operationLogs = [];
 const READ_ONLY_BLOCKED_COMMANDS = new Set(['click', 'clickAt', 'type']);
 // CDP Network capture state: per-tab buffers of captured resources
+// 【回归红线】networkCaptures / networkListener / REPLAY_FORBIDDEN_HEADERS / 现有 replay 一行不改。
 const networkCaptures = new Map(); // tabId -> { resources: [], active: boolean, filter: object }
+
+// ===== API 命令集：分析会话状态（放扩展侧，Leader/Follower 最终连同一扩展，天然一致）=====
+// analysisId -> {
+//   analysisId, tabId, sessionId, options, ownedDebugger, startedAt,
+//   requestDetails: Map<requestId, {url, method, headerNames(仅字段名), postData, hasPostData, type, initiatorType, timestamp}>,
+//   responses: Map<requestId, {url, status, mimeType, type, timestamp}>,
+//   samples: ResponseBodySample[]（Q8，仅内存，stop 后立即丢弃）,
+//   samplePending: Set<Promise>, redactedHeaderNames: Set<string>, warnings: string[]
+// }
+const apiAnalysisSessions = new Map();
+let apiAnalysisListenerActive = false;
+
 const TAB_SCOPED_COMMANDS = new Set([
   'navigate', 'click', 'clickAt', 'type', 'waitFor', 'verify', 'extract',
   'getPageInfo', 'inspect', 'probeSelector', 'getPageText', 'screenshot', 'getResources',
@@ -53,8 +80,17 @@ const TAB_SCOPED_COMMANDS = new Set([
   'savePDF', 'setGeolocation', 'setNetworkThrottle', 'setTimezone',
   'getCookies', 'setCookie', 'deleteCookie', 'getAllCookies',
   'webmcpGetTools', 'webmcpExecuteTool', 'webmcpHealth',
-  'probeCapabilities'
+  'probeCapabilities',
+  // 仅增量追加这三个（TAB_SCOPED_API_MESSAGES）；apiCommandExecute 不加入（免开网页前提）。
+  // 使用字面量而非 MSG.*：MSG 由 api-command-helpers.js 提供，vm 沙箱加载器不执行该文件；
+  // 值与 MSG.ANALYSIS_START / MSG.ANALYSIS_STOP / MSG.BUNDLE_COLLECT 逐字一致。
+  'apiAnalysisStart', 'apiAnalysisStop', 'apiBundleCollect'
 ]);
+// 需要按「目标 URL」而非当前标签 URL 做安全校验的消息类型（扩展侧真正的安全边界）。
+// 字面量 'apiCommandExecute' 与 MSG.COMMAND_EXECUTE 逐字一致，加载期不依赖 helpers。
+const API_EXECUTION_TYPES = new Set(['apiCommandExecute']);
+// bundle 补采：不执行任何写操作，但会带着页面登录态去取文本 —— 必须逐个 URL 过域名白名单。
+const BUNDLE_COLLECT_TYPES = new Set(['apiBundleCollect']);
 
 function normalizeAllowedDomains(value) {
   const values = Array.isArray(value) ? value : String(value || '').split(/[\n,]/);
@@ -91,6 +127,53 @@ async function assertCommandAllowed(msg) {
   const settings = await getSecuritySettings();
   if (settings.emergencyStopped) throw new Error('WebPilot has been stopped locally. Re-enable it from the extension popup before continuing.');
   if (settings.readOnlyMode && READ_ONLY_BLOCKED_COMMANDS.has(msg.type)) throw new Error(`Blocked by read-only mode: ${msg.type}`);
+
+  // ===== API 命令集安全补齐（设计 1.3.5 落点 #3，仅新增类型分支，不改既有行为）=====
+  // 扩展侧完全不读 confirm：它不是安全边界（客户端可随意置 true）。
+  // 真正的边界是 popup 写入的 chrome.storage.local（WS 客户端不可写）。
+  if (API_EXECUTION_TYPES.has(msg.type)) {
+    if (settings.readOnlyMode && msg.options && msg.options.risk === 'write') {
+      throw new Error(formatApiError('READ_ONLY_BLOCKED'));
+    }
+    // 按目标 URL 校验：协议 http(s) + hostname 精确相等（Q13）+ 域名白名单。
+    // 校验的是 msg.options.url，而非当前标签 URL，避免「页面在白名单、请求打到外域」。
+    assertApiTargetUrl(msg.options?.url, msg.options?.hostname, settings.allowedDomains);
+  }
+
+  // bundle 补采：只读，但会带着页面登录态去取文本。逐个 URL 校验，任一不合法即整体拒绝
+  // （fail-closed，避免「一部分取到了才报错」造成半截数据）。
+  if (BUNDLE_COLLECT_TYPES.has(msg.type)) {
+    const urls = Array.isArray(msg.options?.urls) ? msg.options.urls : [];
+    const declared = (Array.isArray(msg.options?.hosts) ? msg.options.hosts : [])
+      .map((item) => String(item || '').trim().toLowerCase()).filter(Boolean);
+    let tabHost = '';
+    if (msg.tabId) {
+      try {
+        const tab = await chrome.tabs.get(msg.tabId);
+        tabHost = tab && tab.url ? new URL(tab.url).hostname.toLowerCase() : '';
+      } catch { /* tab 已关闭时留空，按 declared 校验 */ }
+    }
+    for (const raw of urls.slice(0, 10)) {
+      let parsed;
+      try {
+        parsed = new URL(String(raw || ''));
+      } catch {
+        throw new Error(formatApiError('INVALID_URL'));
+      }
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        throw new Error(formatApiError('INVALID_URL'));
+      }
+      if (parsed.username || parsed.password) throw new Error(formatApiError('INVALID_URL'));
+      const host = parsed.hostname.toLowerCase();
+      // 只允许「当前页面自身」或调用方显式声明的 host —— 不允许顺手取任意站点的 bundle。
+      if (host !== tabHost && !declared.includes(host)) throw new Error(formatApiError('HOST_MISMATCH'));
+      if (settings.allowedDomains.length > 0
+          && !settings.allowedDomains.some(domain => host === domain || host.endsWith(`.${domain}`))) {
+        throw new Error(formatApiError('DOMAIN_NOT_ALLOWED'));
+      }
+    }
+  }
+
   if (!settings.allowedDomains.length || !TAB_SCOPED_COMMANDS.has(msg.type)) return;
   // msg.tabId 已在 handleDaemonMessage 中解析为本 session 的具体 tab
   const tab = msg.type === 'navigate' ? null : await chrome.tabs.get(msg.tabId);
@@ -279,6 +362,9 @@ function disconnectWebSocket() {
     try { chrome.debugger.detach({ tabId }); } catch { /* not attached */ }
   }
   networkCaptures.clear();
+  // 新增落点 #7：断连时一并清空分析会话（含 Q8 样本）、移除独立 listener、
+  // 只 detach 分析会话自己独占的 debugger（绝不 detach 别人的）。
+  cleanupApiAnalysisSessions();
   broadcastStatus(false);
 }
 
@@ -543,6 +629,24 @@ async function dispatchCommand(msg, sessionId) {
     case 'probeCapabilities':
       await cmdProbeCapabilities(msg.tabId, msg.requestId);
       break;
+
+    // ===== API 命令集：3 个新消息（回包原样带 requestId + success）=====
+    // case 表达式在 switch 求值时会被依次计算，故这里必须用字面量而非 MSG.*：
+    // 值与 MSG.ANALYSIS_START / MSG.ANALYSIS_STOP / MSG.COMMAND_EXECUTE 逐字一致，
+    // 保证 background.js 在「未加载 helpers.js」的 vm 沙箱中也能完成 switch 分发。
+    case 'apiAnalysisStart':
+      await cmdApiAnalysisStart(msg, msg.requestId);
+      break;
+    case 'apiAnalysisStop':
+      await cmdApiAnalysisStop(msg, msg.requestId);
+      break;
+    case 'apiCommandExecute':
+      await cmdApiCommandExecute(msg, msg.requestId, sessionId);
+      break;
+    case 'apiBundleCollect':
+      await cmdApiBundleCollect(msg, msg.requestId);
+      break;
+
     case 'screenshot':
       await cmdScreenshot(msg.tabId, msg.requestId);
       break;
@@ -1424,6 +1528,766 @@ async function cmdReplayApiRequest(options, tabId, requestId) {
   } catch (e) {
     logOperation({ action: 'replayApiRequest', tabId: target, success: false, error: e.message, durationMs: Date.now() - startedAt });
     sendToDaemon({ type: 'replayApiRequestResult', requestId, success: false, error: e.message });
+  }
+}
+
+// ===========================================================================
+// ===== API 命令集：分析会话 + Q8 采样 + 免开网页执行（与现有抓包平行，互不干扰）=====
+//
+// 回归红线：本区块**不修改** networkCaptures / networkListener / REPLAY_FORBIDDEN_HEADERS /
+// cmdReplayApiRequest 的 redirect:'follow'。分析用独立 apiAnalysisSessions + 独立
+// apiAnalysisListener，start 时 addListener、stop 时 removeListener；
+// 同 tab 已有活跃 networkCaptures 时复用同一 debugger session，只加 listener、不重复
+// attach，也绝不 detach 别人的。
+// ===========================================================================
+
+/** 断连 / 扩展重载时清空分析会话（含 Q8 样本），只 detach 自己独占的 debugger。 */
+function cleanupApiAnalysisSessions() {
+  for (const session of apiAnalysisSessions.values()) {
+    session.samples.length = 0;          // Q8 样本值立即丢弃
+    session.samplePending.clear();
+    session.requestDetails.clear();
+    session.responses.clear();
+    if (session.ownedDebugger) {
+      try { chrome.debugger.detach({ tabId: session.tabId }); } catch { /* already detached */ }
+    }
+  }
+  apiAnalysisSessions.clear();
+  if (apiAnalysisListenerActive) {
+    try { chrome.debugger.onEvent.removeListener(apiAnalysisListener); } catch { /* not added */ }
+    apiAnalysisListenerActive = false;
+  }
+}
+
+/** AbortSignal.timeout 兜底（部分 Chrome 版本缺失时退回 AbortController）。 */
+function apiAbortSignal(timeoutMs) {
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    return AbortSignal.timeout(timeoutMs);
+  }
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), timeoutMs);
+  return controller.signal;
+}
+
+/**
+ * 独立的 CDP Network 事件监听器（与现有 networkListener 平行）。
+ * 按 source.tabId 分发到该 tab 的分析会话；header **只取字段名，绝不取值**；
+ * postData 只在内存供 MCP 侧参数推断，绝不落盘、绝不进日志。
+ */
+function apiAnalysisListener(source, method, params) {
+  if (!source || typeof source.tabId !== 'number') return;
+  for (const session of apiAnalysisSessions.values()) {
+    if (session.tabId !== source.tabId) continue;
+    handleAnalysisEvent(session, method, params || {});
+  }
+}
+
+function handleAnalysisEvent(session, method, params) {
+  if (method === 'Network.requestWillBeSent') {
+    const request = params.request || {};
+    const headerNames = Object.keys(request.headers || {}).map((key) => String(key).toLowerCase());
+    for (const name of apiRedactHeaderNames(headerNames)) session.redactedHeaderNames.add(name);
+    // 与现有抓包一致：请求详情 Map 上限 1000，防止内存膨胀。
+    if (session.requestDetails.size > 1000) {
+      const firstKey = session.requestDetails.keys().next().value;
+      session.requestDetails.delete(firstKey);
+    }
+    session.requestDetails.set(params.requestId, {
+      url: typeof request.url === 'string' ? request.url : '',
+      method: String(request.method || '').toUpperCase(),  // CDP 真实 HTTP method
+      headerNames: headerNames.slice(0, MAX_HEADER_NAME_LENGTH),
+      postData: typeof request.postData === 'string' ? request.postData : null,
+      hasPostData: request.hasPostData === true || typeof request.postData === 'string',
+      type: String(params.type || '').toLowerCase(),
+      initiatorType: String((params.initiator && params.initiator.type) || ''),
+      timestamp: Number(params.timestamp) || 0
+    });
+    return;
+  }
+
+  if (method === 'Network.responseReceived') {
+    const response = params.response || {};
+    session.responses.set(params.requestId, {
+      url: typeof response.url === 'string' ? response.url : '',
+      status: Number(response.status) || 0,
+      mimeType: String(response.mimeType || '').toLowerCase(),
+      type: String(params.type || '').toLowerCase(),
+      timestamp: Number(params.timestamp) || 0
+    });
+    return;
+  }
+
+  // Q8：仅 captureResponseBody=true 时，在 loadingFinished 后限量取响应体。
+  if (method === 'Network.loadingFinished' && session.options.captureResponseBody === true) {
+    collectResponseBodySample(session, params.requestId);
+  }
+}
+
+/** Q8 采样：候选判定 → Network.getResponseBody → 只把样本留在会话内存。 */
+function collectResponseBodySample(session, requestId) {
+  if (session.samples.length + session.samplePending.size >= MAX_RESPONSE_SAMPLES) return;
+  const detail = session.requestDetails.get(requestId);
+  const response = session.responses.get(requestId);
+  const candidate = {
+    type: (detail && detail.type) || (response && response.type) || '',
+    mimeType: (response && response.mimeType) || '',
+    status: response ? response.status : 0
+  };
+  if (!isSampleCandidate(candidate)) return;
+  const task = chrome.debugger.sendCommand(
+    { tabId: session.tabId },
+    'Network.getResponseBody',
+    { requestId }
+  ).then((result) => {
+    const bodyText = decodeCdpResponseBody(result);
+    if (!bodyText || session.samples.length >= MAX_RESPONSE_SAMPLES) return;
+    session.samples.push({
+      requestId,
+      contentType: candidate.mimeType,
+      status: candidate.status,
+      bodyText,
+      truncated: false
+    });
+  }).catch(() => {
+    // 缓存命中 / 重定向 / body 不可用等情况直接跳过，绝不猜测或回显内容。
+  }).finally(() => {
+    session.samplePending.delete(task);
+  });
+  session.samplePending.add(task);
+}
+
+/** 把会话内 join 好的 CDP 数据组装成 RawCapturedRecord[]（只含 header 字段名）。 */
+function buildAnalysisRecords(session) {
+  const records = [];
+  const filter = session.options.filter || {};
+  for (const [requestId, detail] of session.requestDetails) {
+    if (filter.urlContains && !detail.url.includes(filter.urlContains)) continue;
+    const response = session.responses.get(requestId);
+    if (filter.mimeType && !(response && response.mimeType || '').includes(filter.mimeType)) continue;
+    let host = '';
+    let path = '/';
+    let query = '';
+    try {
+      const parsed = new URL(detail.url);
+      host = parsed.hostname.toLowerCase();
+      path = parsed.pathname || '/';
+      query = parsed.search.replace(/^\?/, '');
+    } catch { /* URL 非法时留空，由 MCP 侧 normalizeRecords 跳过 */ }
+    records.push({
+      requestId,
+      url: detail.url,
+      method: detail.method,
+      host,
+      path,
+      query,
+      status: response ? response.status : 0,
+      mimeType: response ? response.mimeType : '',
+      resourceType: detail.type || (response && response.type) || '',
+      initiatorType: detail.initiatorType,
+      timestamp: detail.timestamp,
+      headerNames: detail.headerNames,
+      postData: detail.postData,
+      hasPostData: detail.hasPostData
+    });
+  }
+  return records;
+}
+
+/**
+ * analyze_current 兼容入口：从现有 networkCaptures 缓冲区一次性解析。
+ * 只读 `requestDetails` / `resources` 的字段名与元数据，**不新建会话、不采样响应体**。
+ * 注意：networkCaptures.requestDetails 里的 headers 是原值，这里只取 Object.keys（字段名）。
+ */
+function buildCurrentRecords(capture) {
+  const records = [];
+  if (!capture) return records;
+  const responsesByRequestId = new Map();
+  for (const entry of (capture.resources || [])) {
+    if (entry && entry.requestId) responsesByRequestId.set(entry.requestId, entry);
+  }
+  for (const [requestId, detail] of (capture.requestDetails || new Map())) {
+    const response = responsesByRequestId.get(requestId);
+    let host = '';
+    let path = '/';
+    let query = '';
+    try {
+      const parsed = new URL(detail.url);
+      host = parsed.hostname.toLowerCase();
+      path = parsed.pathname || '/';
+      query = parsed.search.replace(/^\?/, '');
+    } catch { /* 同上 */ }
+    records.push({
+      requestId,
+      url: typeof detail.url === 'string' ? detail.url : '',
+      method: String(detail.method || '').toUpperCase(),
+      host,
+      path,
+      query,
+      status: Number(response && response.status) || 0,
+      mimeType: String((response && response.mimeType) || '').toLowerCase(),
+      resourceType: String(detail.type || (response && response.type) || '').toLowerCase(),
+      initiatorType: String(detail.initiatorType || ''),
+      timestamp: Number(detail.timestamp) || 0,
+      headerNames: Object.keys(detail.headers || {}).map((key) => String(key).toLowerCase()),
+      postData: typeof detail.postData === 'string' ? detail.postData : null,
+      hasPostData: detail.hasPostData === true || typeof detail.postData === 'string'
+    });
+  }
+  return records;
+}
+
+/** apiAnalysisStart：按 tab 唯一 + 全局并发上限；debugger 冲突时复用 session。 */
+async function cmdApiAnalysisStart(msg, requestId) {
+  const startedAt = Date.now();
+  const options = rebuildStartOptions(msg.options);
+  const tabId = msg.tabId;  // 已由 handleDaemonMessage 经 getTargetTabId 解析（TAB_SCOPED）
+  try {
+    for (const session of apiAnalysisSessions.values()) {
+      if (session.tabId === tabId) {
+        sendToDaemon({
+          type: MSG_RESULT.ERROR,
+          requestId,
+          success: false,
+          error: formatApiError('ANALYSIS_IN_PROGRESS', session.analysisId)
+        });
+        return;
+      }
+    }
+    if (apiAnalysisSessions.size >= MAX_CONCURRENT_ANALYSES) {
+      sendToDaemon({
+        type: MSG_RESULT.ERROR,
+        requestId,
+        success: false,
+        error: formatApiError('ANALYSIS_IN_PROGRESS', '全局并发上限')
+      });
+      return;
+    }
+
+    const analysisId = options.analysisId || `an_${Date.now()}_auto`;
+    // 待明确 7：已有活跃 networkCaptures → 复用同一 debugger，只 addListener、不重复 attach。
+    const existingCapture = networkCaptures.get(tabId);
+    const reuseDebugger = !!(existingCapture && existingCapture.active);
+    let ownedDebugger = false;
+    if (!reuseDebugger) {
+      try { await chrome.debugger.detach({ tabId }); } catch { /* not attached */ }
+      await chrome.debugger.attach({ tabId }, '1.3');
+      await chrome.debugger.sendCommand({ tabId }, 'Network.enable');
+      ownedDebugger = true;
+    }
+
+    apiAnalysisSessions.set(analysisId, {
+      analysisId,
+      tabId,
+      options,
+      ownedDebugger,
+      startedAt: new Date().toISOString(),
+      requestDetails: new Map(),
+      responses: new Map(),
+      samples: [],
+      samplePending: new Set(),
+      redactedHeaderNames: new Set(),
+      warnings: []
+    });
+    if (!apiAnalysisListenerActive) {
+      chrome.debugger.onEvent.addListener(apiAnalysisListener);
+      apiAnalysisListenerActive = true;
+    }
+
+    logOperation(safeLogForApiExecute({
+      action: 'apiAnalysisStart', success: true, durationMs: Date.now() - startedAt
+    }));
+    sendToDaemon({
+      type: MSG_RESULT.ANALYSIS_START,
+      requestId,
+      success: true,
+      analysisId,
+      tabId,
+      captureResponseBody: options.captureResponseBody,
+      message: 'API analysis session started'
+    });
+  } catch (e) {
+    logOperation(safeLogForApiExecute({
+      action: 'apiAnalysisStart', success: false, durationMs: Date.now() - startedAt
+    }));
+    sendToDaemon({
+      type: MSG_RESULT.ERROR,
+      requestId,
+      success: false,
+      error: formatApiError('ANALYSIS_IN_PROGRESS')
+    });
+  }
+}
+
+/** apiAnalysisStop：停止并回传 records[] + samples[]，随后立即清空会话内存。 */
+async function cmdApiAnalysisStop(msg, requestId) {
+  const startedAt = Date.now();
+  const options = rebuildStopOptions(msg.options);
+  const tabId = msg.tabId;
+  // analyze_current 兼容入口：显式标记，不新建会话、不采样、只读现有缓冲区。
+  const analyzeCurrent = msg.analyzeCurrent === true;
+
+  if (analyzeCurrent) {
+    const records = buildCurrentRecords(networkCaptures.get(tabId));
+    const warnings = [ANALYZE_CURRENT_REVIEW_REASON];
+    logOperation(safeLogForApiExecute({
+      action: 'apiAnalysisStop', success: true, durationMs: Date.now() - startedAt
+    }));
+    sendToDaemon({
+      type: MSG_RESULT.ANALYSIS_STOP,
+      requestId,
+      success: true,
+      analysisId: options.analysisId || '',
+      records,
+      samples: [],                        // 兼容入口绝不采样响应体
+      redactedHeaderNames: [],
+      warnings,
+      sampledResponseCount: 0,
+      tabId
+    });
+    return;
+  }
+
+  let session = options.analysisId ? apiAnalysisSessions.get(options.analysisId) : null;
+  if (!session) {
+    // Follower 进程可能丢失 analysisId 提示：按 tab 兜底定位会话。
+    for (const candidate of apiAnalysisSessions.values()) {
+      if (candidate.tabId === tabId) { session = candidate; break; }
+    }
+  }
+  if (!session) {
+    sendToDaemon({
+      type: MSG_RESULT.ERROR,
+      requestId,
+      success: false,
+      error: formatApiError('NO_ANALYSIS_SESSION')
+    });
+    return;
+  }
+
+  // 等待在途的 getResponseBody，避免漏掉最后几条样本（样本值仍在内存）。
+  if (session.samplePending.size > 0) {
+    await Promise.allSettled([...session.samplePending]);
+  }
+  const records = buildAnalysisRecords(session);
+  const samples = session.samples.slice(0, MAX_RESPONSE_SAMPLES);
+  const redactedHeaderNames = [...session.redactedHeaderNames].sort();
+  const warnings = [...session.warnings];
+  const analysisId = session.analysisId;
+  const ownedDebugger = session.ownedDebugger;
+
+  // 只 removeListener 自己的；不 detach 别人的（复用 networkCaptures 时 ownedDebugger=false）。
+  apiAnalysisSessions.delete(analysisId);
+  if (apiAnalysisSessions.size === 0 && apiAnalysisListenerActive) {
+    try { chrome.debugger.onEvent.removeListener(apiAnalysisListener); } catch { /* not added */ }
+    apiAnalysisListenerActive = false;
+  }
+  if (ownedDebugger) {
+    try { await chrome.debugger.detach({ tabId: session.tabId }); } catch { /* already detached */ }
+  }
+  // 回包发出后立刻丢弃引用：样本值不驻留、不落盘、不进日志。
+  session.samples.length = 0;
+  session.requestDetails.clear();
+  session.responses.clear();
+
+  logOperation(safeLogForApiExecute({
+    action: 'apiAnalysisStop', success: true, durationMs: Date.now() - startedAt
+  }));
+  sendToDaemon({
+    type: MSG_RESULT.ANALYSIS_STOP,
+    requestId,
+    success: true,
+    analysisId,
+    records,
+    samples,
+    redactedHeaderNames,
+    warnings,
+    sampledResponseCount: samples.length,
+    tabId
+  });
+}
+
+/**
+ * apiBundleCollect：扩展侧「带登录态补采 JS bundle」。
+ *
+ * 动机：登录态站点的 bundle 常按会话鉴权，Node 直读 401；浏览器页面上下文天然持有会话。
+ * 因此把「取文本」下沉到扩展，取到的文本回传 MCP 侧交给**同一个 scanSources()** 解析
+ * —— 扫描逻辑只有一份，扩展侧不做任何接口推断。
+ *
+ * 三层 fallback，任一层拿到即停（顺序与 BUNDLE_COLLECT_VIAS 逐字一致）：
+ *   page   页面上下文 fetch：与页面同源同站，SameSite=Lax/Strict 的会话 Cookie 全部生效；
+ *   worker Service Worker fetch：有 host_permissions、不受 CORS 限制；但跨站时 SameSite 严格
+ *          Cookie 可能不被带上，故排在页面上下文之后；
+ *   cache  CDP Page.getResourceContent：直接读浏览器缓存里已加载过的原始字节，最保真；
+ *          需要临时 attach debugger，被 devtools / 分析会话占用时静默跳过该层。
+ *
+ * 硬约束：只取文本，不取 header / cookie；请求固定 GET + credentials:'include'，
+ * 不给调用方任何注入 method / header / body 的入口；原文只在局部变量与回包中流转，
+ * 不写 chrome.storage、不进 operationLogs、不跨调用驻留。
+ */
+async function cmdApiBundleCollect(msg, requestId) {
+  const startedAt = Date.now();
+  const tabId = msg.tabId;
+  const options = rebuildBundleCollectOptions(msg.options);
+  const warnings = [];
+  try {
+    if (!tabId) throw new Error(formatApiError('NO_ANALYSIS_SESSION'));
+
+    // 二次防御：assertCommandAllowed 已校验过一遍，这里仍逐个 URL 复核（不经存储状态）。
+    for (const url of options.urls) {
+      const verdict = apiCheckBundleUrl(url, options.hosts);
+      if (!verdict.ok) {
+        throw new Error(formatApiError(verdict.reason === 'host' ? 'HOST_MISMATCH' : 'INVALID_URL'));
+      }
+    }
+
+    // 1) 发现：只取 URL 列表，不取内容。
+    let candidates = options.urls.slice();
+    let discovered = 0;
+    if (options.discover) {
+      const scanned = await apiWithTimeout(
+        runInPageContext(tabId, apiCollectBundleCandidatesInPage, []),
+        options.timeoutMs + 2000
+      );
+      if (Array.isArray(scanned)) {
+        discovered = scanned.length;
+        for (const raw of scanned) {
+          const verdict = apiCheckBundleUrl(raw, options.hosts);
+          if (verdict.ok && candidates.indexOf(verdict.url) === -1) candidates.push(verdict.url);
+        }
+      }
+    }
+    candidates = candidates.slice(0, options.maxSources);
+    if (candidates.length === 0) {
+      warnings.push(BUNDLE_COLLECT_EMPTY_WARNING);
+      logOperation(safeLogForApiExecute({
+        action: 'apiBundleCollect', success: true, durationMs: Date.now() - startedAt
+      }));
+      sendToDaemon({
+        type: MSG_RESULT.BUNDLE_COLLECT, requestId, success: true,
+        sources: [], requested: 0, collected: 0, discovered, warnings
+      });
+      return;
+    }
+
+    // 2) 逐条三层补采；总量预算与墙钟预算用尽即停止后续 URL（避免撞上 bridge 的 30s 超时）。
+    const sources = [];
+    const deadline = startedAt + BUNDLE_COLLECT_WALL_BUDGET_MS;
+    let totalBytes = 0;
+    let failures = 0;
+    let truncated = false;
+    for (const url of candidates) {
+      const remaining = BUNDLE_COLLECT_MAX_TOTAL_BYTES - totalBytes;
+      if (remaining <= 0) { truncated = true; break; }
+      const timeLeft = deadline - Date.now();
+      if (timeLeft <= 500) { truncated = true; break; }
+      const budget = Math.min(options.maxBytes, remaining);
+      const perCall = Math.min(options.timeoutMs, timeLeft);
+      const collected = await collectOneBundle(tabId, url, budget, perCall, options.hosts, options.useBrowserCache);
+      if (!collected) { failures += 1; continue; }
+      totalBytes += collected.bytes;
+      if (collected.truncated) truncated = true;
+      sources.push({ url, ok: true, text: collected.text, via: collected.via, bytes: collected.bytes });
+    }
+    if (failures > 0) warnings.push(BUNDLE_COLLECT_FAILED_WARNING);
+    if (truncated) warnings.push(BUNDLE_COLLECT_TRUNCATED_WARNING);
+
+    logOperation(safeLogForApiExecute({
+      action: 'apiBundleCollect', success: true, durationMs: Date.now() - startedAt
+    }));
+    sendToDaemon({
+      type: MSG_RESULT.BUNDLE_COLLECT, requestId, success: true,
+      sources, requested: candidates.length, collected: sources.length, discovered, warnings
+    });
+  } catch (e) {
+    logOperation(safeLogForApiExecute({
+      action: 'apiBundleCollect', success: false, durationMs: Date.now() - startedAt
+    }));
+    sendToDaemon({ type: MSG_RESULT.ERROR, requestId, success: false, error: e.message });
+  }
+}
+
+/** 给 executeScript 的等待套一层上限，避免注入环境卡死拖垮整条命令。 */
+async function apiWithTimeout(promise, timeoutMs) {
+  let timer = null;
+  try {
+    return await Promise.race([
+      Promise.resolve(promise).catch(() => undefined),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(undefined), timeoutMs); })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** 在页面上下文执行一个自包含函数；页面受限 / 注入失败时返回 undefined。 */
+async function runInPageContext(tabId, func, args) {
+  try {
+    const results = await chrome.scripting.executeScript({ target: { tabId }, func, args });
+    const first = Array.isArray(results) ? results[0] : null;
+    return first ? first.result : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 注入页面上下文：列出当前页面已加载的脚本 URL。
+ * 只读 DOM 与 performance 条目，**不取任何内容**、不发任何请求。
+ */
+function apiCollectBundleCandidatesInPage() {
+  const out = [];
+  const push = (raw) => {
+    if (!raw) return;
+    try {
+      const url = new URL(String(raw), location.href);
+      if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
+      const value = url.toString();
+      if (out.indexOf(value) === -1) out.push(value);
+    } catch { /* 非法 URL 跳过 */ }
+  };
+  try {
+    const scripts = document.querySelectorAll('script[src]');
+    for (let i = 0; i < scripts.length; i += 1) push(scripts[i].getAttribute('src'));
+  } catch { /* ignore */ }
+  try {
+    const entries = performance.getEntriesByType('resource');
+    for (let i = 0; i < entries.length; i += 1) {
+      const kind = String(entries[i].initiatorType || '').toLowerCase();
+      const name = String(entries[i].name || '');
+      if (kind === 'script' || /\.(?:m?js|cjs|jsx|ts|tsx)(?:$|[?#])/i.test(name)) push(name);
+    }
+  } catch { /* ignore */ }
+  return out;
+}
+
+/**
+ * 注入页面上下文：在页面里 fetch 一段文本。
+ * 与页面同源同站 → SameSite 严格 / Lax 的会话 Cookie 都会被带上，等价于页面自己发请求。
+ * 跳转后复查最终 host（防 3xx 跳到外域），超预算按字节截断并标记。
+ */
+async function apiFetchBundleInPage(targetUrl, timeoutMs, maxBytes, allowedHosts) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const resp = await fetch(targetUrl, {
+      method: 'GET',
+      credentials: 'include',
+      cache: 'force-cache',
+      redirect: 'follow',
+      signal: controller.signal,
+      headers: { accept: '*/*' }
+    });
+    if (!resp.ok) return { ok: false };
+    let finalHost = '';
+    try { finalHost = new URL(resp.url || targetUrl).hostname.toLowerCase(); } catch { finalHost = ''; }
+    const hosts = Array.isArray(allowedHosts) ? allowedHosts : [];
+    if (!finalHost || hosts.indexOf(finalHost) === -1) return { ok: false };
+    const buffer = await resp.arrayBuffer();
+    const bytes = new Uint8Array(maxBytes > 0 && buffer.byteLength > maxBytes ? buffer.slice(0, maxBytes) : buffer);
+    const text = new TextDecoder('utf-8').decode(bytes);
+    if (!text) return { ok: false };
+    return { ok: true, text, truncated: buffer.byteLength > bytes.byteLength };
+  } catch {
+    return { ok: false };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** 层 2：Service Worker fetch（host_permissions 生效，不受 CORS 限制）。 */
+async function apiFetchBundleFromWorker(targetUrl, timeoutMs, maxBytes, hosts) {
+  try {
+    const resp = await fetch(targetUrl, {
+      method: 'GET',
+      credentials: 'include',
+      cache: 'force-cache',
+      redirect: 'follow',
+      headers: { accept: '*/*' },
+      signal: apiAbortSignal(timeoutMs)
+    });
+    if (!resp.ok) return null;
+    let finalHost = '';
+    try { finalHost = new URL(resp.url || targetUrl).hostname.toLowerCase(); } catch { finalHost = ''; }
+    if (!finalHost || (hosts.length > 0 && hosts.indexOf(finalHost) === -1)) return null;
+    const buffer = await resp.arrayBuffer();
+    const exceeded = maxBytes > 0 && buffer.byteLength > maxBytes;
+    const bytes = new Uint8Array(exceeded ? buffer.slice(0, maxBytes) : buffer);
+    const text = new TextDecoder('utf-8').decode(bytes);
+    if (!text) return null;
+    return { text, via: 'worker', bytes: text.length, truncated: exceeded };
+  } catch {
+    return null;
+  }
+}
+
+/** 层 3：CDP 读浏览器缓存里「已加载过」的原始响应字节（最保真）。 */
+async function apiCollectBundlesFromBrowserCache(tabId, urls) {
+  const found = new Map();
+  if (!urls.length) return found;
+  let attached = false;
+  try {
+    await chrome.debugger.attach({ tabId }, '1.3');
+    attached = true;
+  } catch {
+    return found;   // devtools / 分析会话已占用 → 放弃该层，不影响前两层结果
+  }
+  try {
+    await chrome.debugger.sendCommand({ tabId }, 'Page.enable');
+    const tree = await chrome.debugger.sendCommand({ tabId }, 'Page.getFrameTree');
+    const frameId = tree && tree.frameTree && tree.frameTree.frame && tree.frameTree.frame.id;
+    if (!frameId) return found;
+    for (const url of urls) {
+      try {
+        const res = await chrome.debugger.sendCommand({ tabId }, 'Page.getResourceContent', { frameId, url });
+        if (res && typeof res.content === 'string' && res.content) found.set(url, res.content);
+      } catch { /* 未加载过 / 已过期 → 跳过 */ }
+    }
+  } catch { /* Page domain 不可用 → 放弃该层 */ } finally {
+    if (attached) {
+      try { await chrome.debugger.detach({ tabId }); } catch { /* already detached */ }
+    }
+  }
+  return found;
+}
+
+/** 单 URL 三层补采；全部失败返回 null。 */
+async function collectOneBundle(tabId, url, maxBytes, timeoutMs, hosts, useBrowserCache) {
+  // 层 1：页面上下文
+  const page = await apiWithTimeout(
+    runInPageContext(tabId, apiFetchBundleInPage, [url, timeoutMs, maxBytes, hosts]),
+    timeoutMs + 2000
+  );
+  if (page && page.ok === true && typeof page.text === 'string' && page.text) {
+    return { text: page.text, via: 'page', bytes: page.text.length, truncated: page.truncated === true };
+  }
+  // 层 2：Service Worker
+  const worker = await apiFetchBundleFromWorker(url, timeoutMs, maxBytes, hosts);
+  if (worker) return worker;
+  // 层 3：浏览器缓存
+  if (useBrowserCache) {
+    const cached = await apiCollectBundlesFromBrowserCache(tabId, [url]);
+    const text = cached.get(url);
+    if (typeof text === 'string' && text) {
+      const exceeded = maxBytes > 0 && text.length > maxBytes;
+      return {
+        text: exceeded ? text.slice(0, maxBytes) : text,
+        via: 'cache',
+        bytes: exceeded ? maxBytes : text.length,
+        truncated: exceeded
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * apiCommandExecute：免开网页执行（完全不读 networkCaptures.requestDetails）。
+ * 输入是「持久化模板 + params 渲染后的最终 url」，用扩展 SW 的 fetch 由 Chrome
+ * 自动按最终 URL 匹配 Cookie（credentials:'include'），不手工拼 Cookie、不落盘凭据。
+ * 安全：目标 URL 白名单 + hostname 精确相等 + readOnly/emergencyStop（assertCommandAllowed）；
+ * 请求 header 只用 accept/content-type 最小白名单；redirect:'manual' + fail-closed。
+ */
+async function cmdApiCommandExecute(msg, requestId, sessionId) {
+  const startedAt = Date.now();
+  const options = rebuildExecuteOptions(msg.options);
+  const logBase = {
+    action: 'apiCommandExecute',
+    method: options.method,
+    hostname: options.hostname,
+    risk: options.risk
+  };
+  try {
+    // 待明确 4：允许省略 tabId（免开网页前提）；显式传时沿用 getTargetTabId 跨组拒绝。
+    if (typeof msg.tabId === 'number' && Number.isFinite(msg.tabId)) {
+      try {
+        await getTargetTabId(msg.tabId, sessionId);
+      } catch {
+        throw new Error(formatApiError('DOMAIN_NOT_ALLOWED'));
+      }
+    }
+    if (!options.url || !options.method || !options.hostname) {
+      throw new Error(formatApiError('INVALID_URL'));
+    }
+    // 二次防御：即使 assertCommandAllowed 被绕过，这里仍按目标 URL 复核。
+    const settings = await getSecuritySettings();
+    if (settings.emergencyStopped) throw new Error(formatApiError('EMERGENCY_STOPPED'));
+    assertApiTargetUrl(options.url, options.hostname, settings.allowedDomains);
+
+    // 请求 header 最小白名单：绝不从缓存 / 抓包 / 消息恢复任何 header 值。
+    const headers = {};
+    if (API_COMMAND_ALLOWED_HEADERS.includes('accept')) headers['Accept'] = 'application/json';
+    if (options.body !== null && API_COMMAND_ALLOWED_HEADERS.includes('content-type')) {
+      headers['Content-Type'] = 'application/json';
+    }
+
+    const resp = await fetch(options.url, {
+      method: options.method,
+      headers,
+      ...(options.body !== null ? { body: options.body } : {}),
+      credentials: 'include',
+      redirect: 'manual',
+      signal: apiAbortSignal(Math.min(options.timeoutMs, API_EXEC_TIMEOUT_MS))
+    });
+
+    // fail-closed：3xx / opaqueredirect（status 0、Location 不可读）一律阻断，不逐跳跟随。
+    if (resp.type === 'opaqueredirect' || resp.status === 0
+        || (resp.status >= 300 && resp.status < 400)) {
+      throw new Error(formatApiError('REDIRECT_BLOCKED'));
+    }
+
+    let text = await resp.text();
+    let truncated = false;
+    if (text.length > options.maxBodyChars) {
+      text = text.slice(0, options.maxBodyChars);
+      truncated = true;
+    }
+    const contentType = resp.headers.get('content-type') || '';
+    let body = text;
+    if (contentType.includes('json')) {
+      try { body = JSON.parse(text); } catch { /* 保留截断文本 */ }
+    }
+    const durationMs = Date.now() - startedAt;
+    const authRequired = resp.status === 401 || resp.status === 403;
+    const errorCode = !resp.ok ? (authRequired ? 'AUTH_REQUIRED' : 'HTTP_ERROR') : undefined;
+
+    // 日志只含 action/method/hostname/risk/status/success/durationMs，绝不记 url / body / 响应体 / header 值。
+    logOperation(safeLogForApiExecute({
+      ...logBase, status: resp.status, success: resp.ok, durationMs
+    }));
+    sendToDaemon({
+      type: MSG_RESULT.COMMAND_EXECUTE,
+      requestId,
+      success: true,          // 传输层成功；业务状态由 status / errorCode 表达
+      status: resp.status,
+      statusText: resp.statusText,
+      contentType,
+      body,
+      bodyLength: text.length,
+      truncated,
+      durationMs,
+      httpOk: resp.ok,
+      authRequired,
+      ...(errorCode ? { errorCode } : {})
+    });
+  } catch (e) {
+    const raw = String((e && e.message) || '');
+    let code = 'NETWORK_ERROR';
+    const pipe = raw.indexOf('|');
+    if (pipe > 0 && API_ERROR_CODES.includes(raw.slice(0, pipe))) {
+      code = raw.slice(0, pipe);
+    } else if (/abort|timeout/i.test(raw)) {
+      code = 'EXTENSION_TIMEOUT';
+    }
+    logOperation(safeLogForApiExecute({
+      ...logBase, status: 0, success: false, durationMs: Date.now() - startedAt
+    }));
+    sendToDaemon({
+      type: MSG_RESULT.ERROR,
+      requestId,
+      success: false,
+      error: formatApiError(code),
+      errorCode: code
+    });
   }
 }
 

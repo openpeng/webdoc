@@ -78,6 +78,7 @@ Clicking **Disconnect** intentionally disables automatic reconnection; use
 | `WEBPILOT_MAX_GROUPS` | `5` | Maximum number of session tab groups (live instances); the oldest idle groups are closed first. |
 | `WEBPILOT_SESSION_ID` | unset | Per-session id injected by the host; becomes the ownership key so each conversation reclaims its own group exactly. |
 | `WEBPILOT_ALLOW_CROSS_AGENT_RECLAIM` | `0` | Allow adopting an idle group that belongs to another session (also inherits its logged-in pages). |
+| `WEBPILOT_API_COMMAND_DIR` | falls back to `WEBPILOT_TASK_LOG_DIR`, then `.webpilot-task-logs/` | Directory holding the local per-hostname `api-commands.json` cache used by the API command set. |
 
 ## Tools
 
@@ -116,6 +117,45 @@ Clicking **Disconnect** intentionally disables automatic reconnection; use
 | `list_webmcp_tools` | List all tools registered by the page via WebMCP. Each tool includes `name`, `description`, `inputSchema`, and `annotations`. |
 | `execute_webmcp_tool` | Execute a specific WebMCP-registered tool by name, passing structured input. This is the native channel — faster and more reliable than DOM automation. |
 | `probe_page_capabilities` | Multi-dimensional page capability scan: WebMCP tools, declarative forms, JSON-LD actions, DOM semantic patterns, and network API endpoints. Use to decide the best execution strategy. |
+| `analyze_page_apis` | Sediment named, reusable API commands. Two discovery paths: live capture (`start` → operate the UI → `stop_and_analyze`; `analyze_current` is a compatibility entry) and **static inference `scan_site`** (reads JS bundles / HAR / OpenAPI / declarative command sets directly — no page, no capture, no login session required). |
+| `list_api_commands` | List the local per-hostname API command set (auto-load entry, pure local cache read, never executes anything). |
+| `get_api_command` | Show one command's full definition: `params[]`, `responseFields[]`, `responseSchema`, health, source. |
+| `call_api_command` | Execute a persisted command without opening the page or keeping a capture buffer, reusing the browser's current session cookies. Write commands require `confirm: true`. |
+| `update_api_command` | Manually rename / edit params / edit response projection / annotate / deprecate a command (`manuallyEdited: true`, preserved by later analyses). |
+| `invalidate_api_commands` | Disable, delete, or clear the command cache for one command or a whole hostname. |
+| `get_api_command_cache` | Health report: hits / misses / consecutive failures / disabled / average latency, plus skipped-invalid entries. |
+| `ai_search` | AI search summary: one call returns the full text of Baidu's "AI answer" block plus its cited sources — no page, no capture. Streams from `chat-ws.baidu.com/baikan/conversation` (no signature or token needed), with the mobile SSR page as fallback. |
+
+## API command set (analyze → sediment → call without opening the page)
+
+The seven `api_command_*` tools turn one-time network captures into a **per-hostname, local** command set. Two discovery paths can be combined:
+
+1. **Live capture (accurate params and responses).** `analyze_page_apis({action:"start", captureResponseBody:true})` → operate the page's UI → `analyze_page_apis({action:"stop_and_analyze", mode:"merge"})`. The report contains `commandCount`, `needsReview[]`, `diff`, `preservedManualEdits[]`, and `warnings[]`. `analyze_current` parses an existing `start_network_capture` buffer once, without response sampling; its output is always flagged for manual review.
+2. **Static inference (zero UI, whole-site skeleton).** `analyze_page_apis({action:"scan_site", domain:"example.com", sources:[{kind:"js", url:"https://example.com/static/app.js"}, {kind:"openapi", text:"{...}"}]})`. The MCP server reads front-end bundles, specs, and archived traffic **without a browser, debugger, tab, or login session**; merge the skeleton with real captures afterwards. Supported `kind`: `js` / `har` / `openapi` / `commands`; inline `text` takes precedence over `url`. See [SiteScan design](docs/api-command-site-scan-design.md).
+2.1 **Login-state bundle collection (when a bundle needs a session).** Add `collectViaExtension:true` and URL sources are fetched from the extension instead: page-context fetch → service-worker fetch → browser cache (CDP `Page.getResourceContent`), a three-layer fallback that borrows the page's own session, so bundles that return 401 to a plain Node read still come through. `discoverBundles:true` also auto-discovers already-loaded scripts on the current tab. The returned text still goes through **the same `scanSources()`** — there is exactly one scanner — and stays memory-only, never written to disk or logs. See [BundleCollect design](docs/api-command-bundle-collect-design.md).
+3. **Sediment / discover.** The commands are stored in `api-commands.json` under `WEBPILOT_API_COMMAND_DIR`, keyed by exact hostname. On a later visit, `navigate` and `probe_page_capabilities` append an `apiCommands` summary automatically (recommendations only — **zero network requests, zero execution**). `list_api_commands(domain)` returns the full cards; `get_api_command` returns one full definition; `update_api_command` protects your manual edits with `manuallyEdited: true`.
+4. **Call.** `call_api_command({name:"list.courses", params:{...}})` renders the stored template and executes it from the extension service worker with `credentials:'include'` — the browser itself matches cookies, so no page, tab, or capture buffer is needed. Write commands (`risk: "write"`) return a redacted `preview` and `confirmationRequired: true` unless `confirm: true` is passed, and **send no request** in that case.
+
+**Conservative defaults for static inference.** Output is always flagged `needsReview` with an empty `responseSchema`, and **every inferred command defaults to `risk: "write"`** (no real response evidence means read-only cannot be assumed); `trustSpec: true` relaxes this only for `openapi` / `commands` sources. Every relaxed control is an explicit, default-off argument: private/loopback hosts (`allowPrivateHosts`), cross-hostname script sources (`allowCrossHost` + `extraHosts`), and loose path matching (`loosePaths`). **No execution-side security gate was changed.**
+
+**`{{param}}` placeholders.** Command templates use double braces for render-time values: `urlTemplate`, `queryTemplate`, and `bodyTemplate` contain `{{name}}` placeholders (e.g. `?keyword={{keyword}}`, `{"page":{{page}}}`). Single braces `{id}` appear only in `pathTemplate` as a structural marker and stable-hash input — they are never substituted at call time. Pass values through `call_api_command.params` keyed by parameter name; query/path values are URL-encoded, body values keep their JSON type (numbers are not stringified), and path values containing `/`, `?`, or `#` are rejected. `responseFields` whitelists which response fields come back; sensitive fields are replaced with `[REDACTED]`.
+
+**What is never stored.** Request/response header **values**, cookies, CSRF tokens, credentials, and business sample values never enter the cache, reports, or logs. Only header **names** are kept (for the redaction report). Response-body sampling is off by default, limited to the first 20 matching XHR/fetch 2xx JSON/text responses (≤64 KB each) during an analysis session, and lives only in memory to derive field names and types. The **raw text** read by `scan_site` (scripts, specs, HAR) is likewise memory-only; its output contains only path structure, HTTP methods, and field names. Static inference uses a separate quota (40 sources / 2 MB each / 16 MB total / 8 s timeout) and does not consume or modify the capture-sampling quota above. Bundle text collected for login-state sources travels only from the extension through the message into orchestrator locals and is dropped right after the reply, with its own quota (10 sources / 2 MB each / 8 MB total / 8 s timeout); the `options` whitelist has no `headers`, `cookies`, `method`, or `body`, and the extension exposes no request-construction entry point at all.
+
+## AI search summary (`ai_search`)
+
+`ai_search({query:"what are the Kubernetes probe types", maxChars:4000, maxCitations:5})` returns `answer` (markdown), `citations[]` (title / url / source site), and `via` (the channel actually used) in one call — **no page opened, no capture, no login session**.
+
+The endpoint is not the search page itself, but the generation stream that drives the AI answer block on top of it:
+
+```
+POST https://chat-ws.baidu.com/baikan/conversation?inputMethod=chat_search&llmsearch=1&word={{query}}
+→ text/event-stream; body arrives in data.message.content.generator, component="markdown-yiyan", data.value incrementally
+```
+
+Measured fact: **none** of `k_signature` / `pmgr_token` / `k_timestamp` / `lid` / `qid` are required (the real page request carries all of them, the server does not validate them). The body only has to include `baikan_is_high_time_demand:"1"` and `categoryIDs:[20]`; without those two you get the skeleton with empty `text`. The `sseEndpoint` in the response is that template, so you can replay it with `curl` yourself.
+
+The fallback is the **SSR `baikan` data block** in the mobile page `m.baidu.com` (`<script type="application/json" data-for="baikan">`; concatenate `content` of every `component="markdown"` block in document order). It needs no token at all, but Baidu's AI coverage on mobile is clearly lower (same query: present on desktop, absent on mobile), so it is fallback only. See [AI Search design](docs/ai-search-design.md).
 
 ## WebMCP dual-channel
 
@@ -269,6 +309,21 @@ bypass them:
   blocks clicking and typing, including coordinate clicks.
 - **Emergency stop:** disconnects the bridge, disables automatic reconnection,
   and rejects new remote commands. Select **Connect** to resume deliberately.
+
+For `call_api_command` the extension additionally enforces, **independently of the MCP
+client** (it never reads `confirm`): the target URL must be http(s), its hostname must
+exactly equal the command's owning hostname, and it must pass the domain allowlist;
+read-only mode blocks `risk: "write"` commands; redirection is `redirect:'manual'` +
+fail-closed (`REDIRECT_BLOCKED`), with no hop-by-hop following. The `confirm` flag is
+only a server-side mis-click gate, not a security boundary.
+
+**Known risk (existing behavior, not changed in this release):** the legacy
+`replay_api_request` tool still forwards captured sensitive headers such as
+`authorization` / `x-csrf-token`, because changing `REPLAY_FORBIDDEN_HEADERS` would
+break existing users who rely on that behavior. Hardening it is on the Roadmap. The
+new `call_api_command` channel **does not accept headers at all** — any injected
+`headers` / `confirm` / `overrides` / `tabId` fields are dropped by an allowlist rebuild —
+so it is safe from the source.
 
 ## Dual-use disclosure
 
