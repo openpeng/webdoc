@@ -22,6 +22,8 @@ const EXPOSED = [
   "START_OPTIONS_ALLOWED_KEYS", "FILTER_ALLOWED_KEYS", "STOP_OPTIONS_ALLOWED_KEYS",
   "EXECUTE_OPTIONS_ALLOWED_KEYS", "EXECUTE_OPTIONS_FORBIDDEN_KEYS",
   "API_COMMAND_ALLOWED_HEADERS", "RESPONSE_SENSITIVE_FIELDS", "PARAM_RESERVED_NAMES",
+  "API_COMMAND_FORBIDDEN_HEADERS", "HEADER_NAME_PATTERN", "MAX_HEADER_VALUE_LENGTH",
+  "sanitizeRequestHeaders",
   "REQUEST_PARAM_NAME_DENYLIST", "STATIC_RESOURCE_TYPES", "STATIC_ASSET_EXTENSIONS",
   "TELEMETRY_PATH_KEYWORDS", "SAMPLE_CANDIDATE_RESOURCE_TYPES", "SAMPLE_MIME_KEYWORDS",
   "GENERIC_PATH_SEGMENTS", "PAGINATION_FIELD_NAMES", "FILTER_PARAM_NAME_HINTS",
@@ -211,13 +213,18 @@ test("EXECUTE_OPTIONS_FORBIDDEN_KEYS / LOG_STRIP_KEYS / 日志与 header 白名�
   for (const name of ["START_OPTIONS_ALLOWED_KEYS", "FILTER_ALLOWED_KEYS",
                       "STOP_OPTIONS_ALLOWED_KEYS", "EXECUTE_OPTIONS_ALLOWED_KEYS",
                       "EXECUTE_OPTIONS_FORBIDDEN_KEYS", "API_COMMAND_ALLOWED_HEADERS",
+                      "API_COMMAND_FORBIDDEN_HEADERS", "HEADER_NAME_PATTERN",
+                      "MAX_HEADER_VALUE_LENGTH",
                       "RESPONSE_SENSITIVE_FIELDS", "PARAM_RESERVED_NAMES",
                       "REQUEST_PARAM_NAME_DENYLIST", "LOG_STRIP_KEYS", "API_LOG_ALLOWED_KEYS"]) {
     same(H[name], T[name]);
   }
-  assert.deepEqual([...T.EXECUTE_OPTIONS_FORBIDDEN_KEYS],
-    ["headers", "confirm", "overrides", "tabId"]);
+  // 【放开·绿区】headers 已进入允许键（请求头放开），因此不再出现在禁用键里。
+  assert.deepEqual([...T.EXECUTE_OPTIONS_FORBIDDEN_KEYS], ["confirm", "overrides", "tabId"]);
   assert.deepEqual([...T.API_COMMAND_ALLOWED_HEADERS], ["accept", "content-type"]);
+  // 凭据头黑名单是硬边界：两端必须逐字一致。
+  assert.deepEqual([...T.API_COMMAND_FORBIDDEN_HEADERS],
+    ["cookie", "authorization", "proxy-authorization", "set-cookie"]);
   // 禁用键绝不能出现在允许键里；日志剥离键必须覆盖新增消息的敏感载荷
   for (const forbidden of T.EXECUTE_OPTIONS_FORBIDDEN_KEYS) {
     assert.ok(!T.EXECUTE_OPTIONS_ALLOWED_KEYS.includes(forbidden));

@@ -181,7 +181,7 @@ const COMMAND_FORBIDDEN_KEYS = [
   'computed', 'script', 'eval', 'function', 'headers', 'cookie', 'authorization',
   'token', 'secret', 'csrf', 'prototype', 'constructor', '__proto__'
 ];
-const REQUEST_TEMPLATE_ALLOWED_KEYS = ['method', 'urlTemplate', 'pathTemplate', 'bodyTemplate', 'queryTemplate'];
+const REQUEST_TEMPLATE_ALLOWED_KEYS = ['method', 'urlTemplate', 'pathTemplate', 'bodyTemplate', 'queryTemplate', 'headers'];
 const API_PARAM_ALLOWED_KEYS = ['name', 'location', 'type', 'required', 'description', 'enumCount', 'allowedValues', 'constant', 'defaultValue'];
 const SCHEMA_FIELD_ALLOWED_KEYS = ['path', 'type', 'array', 'isPagination', 'redacted'];
 const RESPONSE_SCHEMA_ALLOWED_KEYS = ['fields', 'depthLimited', 'sampleCount'];
@@ -198,15 +198,43 @@ const DOMAIN_BUCKET_ALLOWED_KEYS = ['host', 'updatedAt', 'commands'];
 const START_OPTIONS_ALLOWED_KEYS = ['analysisId', 'filter', 'includeStaticAssets', 'maxEndpoints', 'captureResponseBody'];
 const FILTER_ALLOWED_KEYS = ['urlContains', 'mimeType'];
 const STOP_OPTIONS_ALLOWED_KEYS = ['analysisId'];
-const EXECUTE_OPTIONS_ALLOWED_KEYS = ['url', 'method', 'hostname', 'risk', 'body', 'maxBodyChars', 'timeoutMs'];
+const EXECUTE_OPTIONS_ALLOWED_KEYS = ['url', 'method', 'hostname', 'risk', 'body', 'maxBodyChars', 'timeoutMs', 'headers'];
 /** 客户端注入这些字段一律丢弃（AC-22 关键）—— 逐字同步。 */
-const EXECUTE_OPTIONS_FORBIDDEN_KEYS = ['headers', 'confirm', 'overrides', 'tabId'];
+const EXECUTE_OPTIONS_FORBIDDEN_KEYS = ['confirm', 'overrides', 'tabId'];
 /** bundle 补采 options 白名单：只允许「取哪些 URL / 取多少 / 走不走缓存」，不含任何请求构造入口。 */
 const BUNDLE_COLLECT_ALLOWED_KEYS = ['urls', 'discover', 'maxSources', 'maxBytes', 'timeoutMs', 'useBrowserCache', 'hosts'];
 const BUNDLE_COLLECT_FORBIDDEN_KEYS = ['headers', 'cookies', 'credentials', 'method', 'body', 'postData', 'confirm', 'tabId', 'overrides'];
 
-/** (c) 请求 header 最小白名单：绝不从缓存 / 抓包 / 消息恢复任何 header 值。 */
+/** (c) 请求 header 最低保证集：这两个头由代码无条件补上，不依赖调用方。 */
 const API_COMMAND_ALLOWED_HEADERS = ['accept', 'content-type'];
+
+/** 【放开·绿区】请求头黑名单：命中即静默剔除 —— 逐字同步。 */
+const API_COMMAND_FORBIDDEN_HEADERS = ['cookie', 'authorization', 'proxy-authorization', 'set-cookie'];
+/** 请求头字段名合法性（RFC 7230 token）—— 逐字同步。 */
+const HEADER_NAME_PATTERN = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,128}$/;
+/** 请求头值长度上限 —— 逐字同步。 */
+const MAX_HEADER_VALUE_LENGTH = 512;
+
+/**
+ * 【放开·绿区】请求头过滤：保留全部非凭据头，只剔除凭据黑名单与非法头。
+ * 扩展侧是真正的边界，因此这里必须独立再过滤一次（MCP 侧已滤过，但消息不可全信）。
+ */
+function sanitizeRequestHeaders(headers) {
+  const out = {};
+  if (!apiIsPlainObject(headers)) return out;
+  for (const rawName of Object.keys(headers)) {
+    const name = String(rawName).trim();
+    if (!name || !HEADER_NAME_PATTERN.test(name)) continue;
+    if (API_COMMAND_FORBIDDEN_HEADERS.indexOf(name.toLowerCase()) >= 0) continue;
+    const rawValue = headers[rawName];
+    if (typeof rawValue !== 'string' && typeof rawValue !== 'number' && typeof rawValue !== 'boolean') continue;
+    const value = String(rawValue);
+    if (!value || value.length > MAX_HEADER_VALUE_LENGTH) continue;
+    if (/[\r\n]/.test(value)) continue;
+    out[name] = value;
+  }
+  return out;
+}
 
 /** (d) 响应敏感字段黑名单。 */
 const RESPONSE_SENSITIVE_FIELDS = [
@@ -440,7 +468,8 @@ function rebuildBundleCollectOptions(raw) {
 /**
  * apiCommandExecute 的 msg.options 白名单重建（AC-22 关键）。
  * 从零构造对象，只拷 EXECUTE_OPTIONS_ALLOWED_KEYS；因此
- * `headers` / `confirm` / `overrides` / `tabId` 及任意注入字段**一律被丢弃**。
+ * `confirm` / `overrides` / `tabId` 及任意注入字段**一律被丢弃**。
+ * 【放开·绿区】`headers` 现在在白名单内，但只保留**非凭据头**（凭据黑名单静默剔除）。
  * 扩展侧从不读取 `confirm` —— 它不是安全边界，真正边界是 chrome.storage.local。
  */
 function rebuildExecuteOptions(raw) {
@@ -455,6 +484,7 @@ function rebuildExecuteOptions(raw) {
     hostname: typeof picked.hostname === 'string' ? picked.hostname.trim().toLowerCase() : '',
     risk: picked.risk === 'write' ? 'write' : 'read',
     body: typeof picked.body === 'string' ? picked.body : null,
+    headers: sanitizeRequestHeaders(picked.headers),
     maxBodyChars: apiClampInt(picked.maxBodyChars, MAX_BODY_CHARS_MIN, MAX_BODY_CHARS_MAX, MAX_BODY_CHARS_DEFAULT),
     timeoutMs: apiClampInt(picked.timeoutMs, API_EXEC_TIMEOUT_MIN_MS, API_EXEC_TIMEOUT_MS, API_EXEC_TIMEOUT_DEFAULT_MS)
   };

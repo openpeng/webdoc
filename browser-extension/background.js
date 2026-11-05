@@ -2213,11 +2213,19 @@ async function cmdApiCommandExecute(msg, requestId, sessionId) {
     if (settings.emergencyStopped) throw new Error(formatApiError('EMERGENCY_STOPPED'));
     assertApiTargetUrl(options.url, options.hostname, settings.allowedDomains);
 
-    // 请求 header 最小白名单：绝不从缓存 / 抓包 / 消息恢复任何 header 值。
+    // 请求头：最低保证集（accept / content-type）+ 调用方传入的非凭据头。
+    // 凭据头（cookie / authorization / proxy-authorization / set-cookie）已在
+    // rebuildExecuteOptions 内静默剔除，这里只做兜底合并。
     const headers = {};
     if (API_COMMAND_ALLOWED_HEADERS.includes('accept')) headers['Accept'] = 'application/json';
     if (options.body !== null && API_COMMAND_ALLOWED_HEADERS.includes('content-type')) {
       headers['Content-Type'] = 'application/json';
+    }
+    if (options.headers && typeof options.headers === 'object') {
+      for (const [name, value] of Object.entries(options.headers)) {
+        if (typeof value !== 'string') continue;
+        headers[name] = value;
+      }
     }
 
     const resp = await fetch(options.url, {

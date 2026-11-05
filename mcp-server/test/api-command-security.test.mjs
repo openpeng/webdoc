@@ -276,8 +276,39 @@ test("A.3 EXECUTE_OPTIONS_FORBIDDEN_KEYS 生效：headers/confirm/overrides/tabI
   assert.ok(reply, "注入字段不应导致执行失败");
 });
 
-test("A.4 只读模式不可绕过：risk=write + confirm:true 仍 READ_ONLY_BLOCKED，fetch 调用 0 次（AC-22）", async () => {
-  const { sandbox, sent, fetchCalls } = loadExtension({ initialStorage: { readOnlyMode: true } });
+test("A.3b 放开后：非凭据请求头原样下发，凭据头（Cookie / Authorization 等）一律剔除（AC-06/22）", async () => {
+  const injected = {
+    headers: {
+      "X-Requested-With": "XMLHttpRequest",
+      Referer: "https://example.com/",
+      Cookie: "SECRET_COOKIE_VALUE",
+      Authorization: "SECRET_AUTH_VALUE",
+      "Proxy-Authorization": "SECRET_PROXY_VALUE",
+      "Set-Cookie": "SECRET_SETCOOKIE_VALUE",
+    },
+  };
+  const { sandbox, sent, fetchCalls } = loadExtension();
+  const msg = executeMsg(injected);
+  const rebuilt = JSON.parse(JSON.stringify(sandbox.__wp.rebuildExecuteOptions(msg.options)));
+  assert.equal(rebuilt.headers["X-Requested-With"], "XMLHttpRequest", "非凭据头必须保留");
+  assert.equal(rebuilt.headers.Referer, "https://example.com/");
+  for (const secret of ["Cookie", "Authorization", "Proxy-Authorization", "Set-Cookie"]) {
+    assert.equal(Object.hasOwn(rebuilt.headers, secret), false, `凭据头必须剔除：${secret}`);
+  }
+
+  await sandbox.handleDaemonMessage(msg);
+  assert.equal(fetchCalls.length, 1);
+  const init = fetchCalls[0].init;
+  assert.equal(init.headers["X-Requested-With"], "XMLHttpRequest", "请求头必须真的进 fetch");
+  assert.equal(init.headers.Referer, "https://example.com/");
+  for (const secret of ["SECRET_COOKIE_VALUE", "SECRET_AUTH_VALUE", "SECRET_PROXY_VALUE", "SECRET_SETCOOKIE_VALUE"]) {
+    assert.ok(!JSON.stringify(init.headers).includes(secret), `凭据值不得进 fetch：${secret}`);
+  }
+  const reply = sent.find((m) => m.type === MSG_RESULT.COMMAND_EXECUTE);
+  assert.ok(reply, "请求头放开不应导致执行失败");
+});
+
+test("A.4 只读模式不可绕过：risk=write + confirm:true 仍 READ_ONLY_BLOCKED，fetch 调用 0 次（AC-22）", async () => {  const { sandbox, sent, fetchCalls } = loadExtension({ initialStorage: { readOnlyMode: true } });
   await sandbox.handleDaemonMessage(executeMsg(
     { risk: "write", method: "POST", body: "{}", confirm: true },
     { confirm: true },

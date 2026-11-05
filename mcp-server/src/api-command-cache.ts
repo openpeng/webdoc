@@ -30,6 +30,7 @@ import {
 import {
   normalizeHostname, isValidHostname, isSafeLiteral, isSensitiveFieldName,
   isPersistableLiteral, looksLikeCredential, sanitizeErrorMessage, redactHeaderNames,
+  sanitizeRequestHeaders,
 } from "./api-command-normalize.js";
 import type {
   ApiCommand, ApiParam, ApiCommandCacheFile, DomainBucket, CacheLoadDiagnostics,
@@ -193,6 +194,8 @@ function rebuildRequestTemplate(
   if (!bodyRebuild.ok) return bodyRebuild;
   const queryRebuild = rebuildQueryTemplate(raw.queryTemplate, host, commandId, diag);
   if (!queryRebuild.ok) return queryRebuild;
+  const headerRebuild = rebuildHeaderTemplate(raw.headers, host, commandId, diag);
+  if (!headerRebuild.ok) return headerRebuild;
 
   return {
     ok: true,
@@ -202,8 +205,37 @@ function rebuildRequestTemplate(
       pathTemplate,
       bodyTemplate: bodyRebuild.value,
       queryTemplate: queryRebuild.value,
+      ...(Object.keys(headerRebuild.value).length > 0 ? { headers: headerRebuild.value } : {}),
     },
   };
+}
+
+/**
+ * 请求头模板重建（放开项）：值只允许 {{param}} 占位符或可落盘标量；
+ * 字段名命中凭据黑名单（cookie / authorization / proxy-authorization / set-cookie）时一律拒绝。
+ */
+function rebuildHeaderTemplate(
+  raw: any, host: string, commandId: string, diag: CacheLoadDiagnostics,
+): Rebuild<Record<string, string>> {
+  if (raw === undefined || raw === null) return { ok: true, value: {} };
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    return failRebuild(diag, host, commandId, "headers 必须是扁平对象");
+  }
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(raw)) {
+    if (typeof value !== "string") {
+      return failRebuild(diag, host, commandId, "headers 值必须是字符串");
+    }
+    if (!PLACEHOLDER_ONLY_RE.test(value) && !isPersistableLiteral(value)) {
+      return failRebuild(diag, host, commandId, "headers 含超长或非标量字面量");
+    }
+    const filtered = sanitizeRequestHeaders({ [key]: value });
+    if (!Object.prototype.hasOwnProperty.call(filtered, key)) {
+      return failRebuild(diag, host, commandId, "headers 含凭据头或非法字段名");
+    }
+    out[key] = value;
+  }
+  return { ok: true, value: out };
 }
 
 function rebuildBodyTemplate(
