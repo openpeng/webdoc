@@ -185,7 +185,7 @@ const REQUEST_TEMPLATE_ALLOWED_KEYS = ['method', 'urlTemplate', 'pathTemplate', 
 const API_PARAM_ALLOWED_KEYS = ['name', 'location', 'type', 'required', 'description', 'enumCount', 'allowedValues', 'constant', 'defaultValue'];
 const SCHEMA_FIELD_ALLOWED_KEYS = ['path', 'type', 'array', 'isPagination', 'redacted'];
 const RESPONSE_SCHEMA_ALLOWED_KEYS = ['fields', 'depthLimited', 'sampleCount'];
-const SOURCE_ALLOWED_KEYS = ['analysisId', 'analyzedAt', 'generatedBy'];
+const SOURCE_ALLOWED_KEYS = ['analysisId', 'analyzedAt', 'generatedBy', 'origin', 'crossHost'];
 const HEALTH_ALLOWED_KEYS = [
   'hits', 'misses', 'consecutiveFailures', 'disabled', 'totalDurationMs',
   'lastSuccessAt', 'lastFailureAt', 'lastError', 'drifted', 'authRequired',

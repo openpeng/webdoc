@@ -28,6 +28,7 @@ import {
   SITE_SCAN_MAX_TOTAL_BYTES, SITE_SCAN_MAX_SOURCE_BYTES, SITE_SCAN_FETCH_TIMEOUT_MS,
   SITE_SCAN_MAX_ENDPOINTS, SITE_SCAN_REVIEW_REASON, SITE_SCAN_NO_SOURCE_WARNING,
   SITE_SCAN_SOURCE_FAILED_WARNING, SITE_SCAN_CONSERVATIVE_RISK_WARNING,
+  SITE_SCAN_CROSS_HOST_COMMAND_WARNING,
   SITE_SCAN_DEFAULT_LOOSE, SITE_SCAN_DEFAULT_TRUST_SPEC,
   BUNDLE_COLLECT_MAX_SOURCES, BUNDLE_COLLECT_DEFAULT_SOURCES,
   BUNDLE_COLLECT_MAX_SOURCE_BYTES,
@@ -981,6 +982,7 @@ export class ApiCommandService {
       // needsReview 由 scan_site 自己统一收敛为 1 条来源标注，不叠加生成层的理由。
       forceNeedsReview: false,
       emptyResponseSchema: true,
+      sourceOrigin: "scan",
     };
     const generated = generateCommands(groups, ctx);
 
@@ -999,26 +1001,53 @@ export class ApiCommandService {
       reason: SITE_SCAN_REVIEW_REASON,
     }));
 
-    const mergeResult = await this.cache.merge(domain, commands, {
-      mode,
-      overwriteManual: args.overwriteManual === true,
-    });
-    for (const warning of mergeResult.warnings) report.warnings.push(warning);
+    // 静态推导可能还原出跨 host 的候选（协议相对 URL //host/path）—— 这些命令属于
+    // 各自的 host，必须按 host 分桶合并，否则缓存侧的 host 白名单重建会直接拒绝它们。
+    const byHost = new Map<string, ApiCommand[]>();
+    for (const command of commands) {
+      const host = command.domain || domain;
+      const bucket = byHost.get(host);
+      if (bucket) bucket.push(command);
+      else byHost.set(host, [command]);
+    }
 
-    const listed = await this.cache.list(domain, { includeDisabled: true });
+    const diff: AnalysisDiff = { added: 0, updated: 0, removed: 0, skipped: 0, reviewRequired: 0 };
+    const preservedManualEdits: string[] = [];
+    const stale: string[] = [];
     const freshIds = new Set(commands.map((command) => command.commandId));
+    const cards: CommandCard[] = [];
+    let crossHostCount = 0;
+    for (const [host, hostCommands] of byHost) {
+      const mergeResult = await this.cache.merge(host, hostCommands, {
+        mode,
+        overwriteManual: args.overwriteManual === true,
+      });
+      for (const warning of mergeResult.warnings) report.warnings.push(warning);
+      diff.added += mergeResult.diff.added;
+      diff.updated += mergeResult.diff.updated;
+      diff.removed += mergeResult.diff.removed;
+      diff.skipped += mergeResult.diff.skipped;
+      diff.reviewRequired += mergeResult.diff.reviewRequired;
+      preservedManualEdits.push(...mergeResult.preservedManualEdits);
+      stale.push(...mergeResult.stale);
+      const listed = await this.cache.list(host, { includeDisabled: true });
+      cards.push(...listed.commands.filter((card) => freshIds.has(card.commandId)));
+      crossHostCount += hostCommands.filter((command) => command.source?.crossHost === true).length;
+    }
+    if (crossHostCount > 0) report.warnings.push(SITE_SCAN_CROSS_HOST_COMMAND_WARNING);
+
     report.cacheWritten = true;
     report.endpointCount = groups.length;
     report.commandCount = commands.length;
-    report.commands = listed.commands.filter((card) => freshIds.has(card.commandId));
+    report.commands = cards;
     report.needsReview = needsReview;
     report.redactedHeaders = [...generated.redactedHeaders].sort();
     report.diff = {
-      ...mergeResult.diff,
-      reviewRequired: Math.max(mergeResult.diff.reviewRequired, needsReview.length),
+      ...diff,
+      reviewRequired: Math.max(diff.reviewRequired, needsReview.length),
     };
-    report.preservedManualEdits = mergeResult.preservedManualEdits;
-    report.stale = mergeResult.stale;
+    report.preservedManualEdits = preservedManualEdits;
+    report.stale = stale;
     report.sampledResponseCount = 0;
     return report;
   }

@@ -439,13 +439,19 @@ export function filterCandidates(records: NormalizedRecord[], opts: FilterCandid
 // 阶段 5：分组聚合
 // ---------------------------------------------------------------------------
 
-/** 按 method + pathTemplate 聚合多次抓包样本，保持首次出现顺序。 */
+/**
+ * 按 method + host + pathTemplate 聚合多次抓包样本，保持首次出现顺序。
+ *
+ * 分组键**含 host**：静态推导会把协议相对 URL（//host/path）还原到各自的 host，
+ * 同一路径挂在不同 host 上是不同接口，并成一条必然有一半打错地址。
+ * 抓包通道里所有记录的 host 相同，因此该键与旧的 method+pathTemplate 分组等价。
+ */
 export function groupEndpoints(records: NormalizedRecord[]): EndpointGroup[] {
   const groups = new Map<string, EndpointGroup>();
   for (const rec of Array.isArray(records) ? records : []) {
     if (!rec || typeof rec !== "object") continue;
     const { pathTemplate, pathParams } = templatePath(rec.path);
-    const key = endpointKey(rec.method, pathTemplate);
+    const key = `${rec.host}\u0000${endpointKey(rec.method, pathTemplate)}`;
     let group = groups.get(key);
     if (!group) {
       group = { method: rec.method, pathTemplate, pathParams, records: [], host: rec.host };

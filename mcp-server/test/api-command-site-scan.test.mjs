@@ -18,7 +18,7 @@ import { ApiCommandService } from "../dist/api-command-service.js";
 import {
   SITE_SCAN_REVIEW_REASON, SITE_SCAN_PRIVATE_HOST_WARNING,
   SITE_SCAN_CROSS_HOST_WARNING, SITE_SCAN_NO_SOURCE_WARNING,
-  SITE_SCAN_CONSERVATIVE_RISK_WARNING,
+  SITE_SCAN_CONSERVATIVE_RISK_WARNING, SITE_SCAN_CROSS_HOST_COMMAND_WARNING,
 } from "../dist/api-command-types.js";
 
 const JS_BUNDLE = `
@@ -562,5 +562,60 @@ test("T1：报告标注输入来源层级 bundleSource", async () => {
 
     const none = await service.analyze({ action: "scan_site", domain: "example.com" });
     assert.equal(none.bundleSource, "none");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T2 路径归一与 method 修复（AC-13）
+// ---------------------------------------------------------------------------
+
+test("T2：协议相对 URL 不再被整体当路径，host 被还原", () => {
+  const candidates = scanJsText("const u = '//cm.example.com/api/fees/pc';", { loose: true });
+  assert.equal(candidates.length, 1);
+  assert.equal(candidates[0].pathTemplate, "/api/fees/pc", "host 不得留在路径里");
+  assert.equal(candidates[0].host, "cm.example.com");
+});
+
+test("T2：同一路径挂在不同 host 上是两条候选（不互相去重）", () => {
+  const candidates = scanJsText(
+    "const a = '//a.example.com/x/nav'; const b = '//b.example.com/x/nav';",
+    { loose: true },
+  );
+  assert.equal(candidates.length, 2);
+  assert.deepEqual(candidates.map((c) => c.host).sort(), ["a.example.com", "b.example.com"]);
+});
+
+test("T2：method 推断不受上一条语句污染（真实 GET 不被误判成 POST）", () => {
+  const polluted = scanJsText(
+    "axios.post('/api/v1/other');\nfetch('/x/vip/ads/materials');",
+    { loose: true },
+  );
+  const target = polluted.find((c) => c.pathTemplate === "/x/vip/ads/materials");
+  assert.ok(target, "应发现 /x/vip/ads/materials");
+  assert.equal(target.method, "GET", "上一条语句的 .post( 不得污染本次判定");
+
+  const explicitType = scanJsText("$.ajax({ url: '/x/frontend/finger/spi', type: 'POST' });", { loose: true });
+  assert.equal(explicitType[0].method, "POST", "$.ajax 的 type 字段必须被识别");
+
+  const explicitMethod = scanJsText("axios({ url: '/x/a', method: 'POST' });", { loose: true });
+  assert.equal(explicitMethod[0].method, "POST", "对象字面量的 method 字段必须被识别");
+
+  const adjacent = scanJsText("axios.post('/x/vip/ads/materials', { id: 1 });", { loose: true });
+  assert.equal(adjacent[0].method, "POST", "紧邻的调用动词仍然生效");
+});
+
+test("T2：跨 host 命令按各自 host 归档，并打上 crossHost 标记", async () => {
+  await withCache(async (cache) => {
+    const service = new ApiCommandService(cache, async () => { throw new Error("不应调用"); });
+    const report = await service.analyze({
+      action: "scan_site", domain: "api.example.com",
+      sources: [{ kind: "js", text: "const a = '//cm.example.com/x/nav';" }],
+    });
+    assert.equal(report.commandCount, 1);
+    const own = await cache.list("api.example.com", { includeDisabled: true });
+    assert.equal(own.commands.length, 0, "跨 host 命令不得落进扫描目标域名的桶");
+    const cross = await cache.list("cm.example.com", { includeDisabled: true });
+    assert.equal(cross.commands.length, 1, "跨 host 命令应归档到它自己的 host");
+    assert.ok(report.warnings.includes(SITE_SCAN_CROSS_HOST_COMMAND_WARNING));
   });
 });
