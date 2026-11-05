@@ -60,6 +60,7 @@ import {
 } from "./api-command-render.js";
 import type { CompositeStepPlan } from "./api-command-render.js";
 import { scanSources, toScanRecords, checkScanUrl, extractFinishedCommands } from "./api-command-site-scan.js";
+import type { AnalyzeAction, AnalyzeArgs } from "./api-command-args.js";
 import { rewriteCommandHost, toCommand } from "./api-command-cache.js";
 import {
   AI_ANSWER_MAX_CHARS_DEFAULT, AI_ANSWER_MAX_CHARS_LIMIT, AI_QUERY_MAX_CHARS,
@@ -76,43 +77,8 @@ import type { BaiduAiAnswer } from "./baidu-ai-search.js";
 
 export type SendFn = (type: string, params: Record<string, unknown>) => Promise<any>;
 
-/** analyze_page_apis 的 4 种 action（scan_site 为放开分级后的静态推导入口）。 */
-export type AnalyzeAction = "start" | "stop_and_analyze" | "analyze_current" | "scan_site";
-
-export interface AnalyzeArgs {
-  action: AnalyzeAction;
-  domain?: string;
-  analysisId?: string;
-  tabId?: number;
-  filter?: { urlContains?: string; mimeType?: string };
-  includeStaticAssets?: boolean;
-  maxEndpoints?: number;
-  captureResponseBody?: boolean;
-  mode?: AnalysisMode;
-  overwriteManual?: boolean;
-  // ---- scan_site 专用（不经过扩展、不绑定 tab）----
-  /** 数据源：{kind, url} 或 {kind, text}，kind ∈ js/har/openapi/commands。 */
-  sources?: SiteScanSource[];
-  /** 【黄区】允许内网 / 回环地址，默认 false。 */
-  allowPrivateHosts?: boolean;
-  /** 【黄区】允许跨 hostname 脚本源（CDN），默认 false，需同时给 extraHosts。 */
-  allowCrossHost?: boolean;
-  extraHosts?: string[];
-  /** 规格类来源（openapi/commands）按声明方法判定 risk；默认 false = 全部按 write 保守处理。 */
-  trustSpec?: boolean;
-  /** 放宽 JS 路径判定，默认 false。 */
-  loosePaths?: boolean;
-  scanTimeoutMs?: number;
-  // ---- bundle 补采（受登录态保护的 JS bundle 走扩展侧取文本）----
-  /** 【绿区】URL 类数据源改由扩展侧取文本：借用页面登录态，Node 直读 401 时用。 */
-  collectViaExtension?: boolean;
-  /** 【绿区】从 tabId 对应页面自动发现已加载的 bundle 并补采（隐含 collectViaExtension）。 */
-  discoverBundles?: boolean;
-  /** 单次补采条数上限，默认 6，clamp 1..10。 */
-  bundleMaxSources?: number;
-  /** 是否允许 CDP 浏览器缓存层兜底（读已加载过的原始字节），默认 true。 */
-  bundleUseBrowserCache?: boolean;
-}
+/** analyze_page_apis 的 4 种 action 与入参契约定义在纯函数层 api-command-args.ts。 */
+export type { AnalyzeAction, AnalyzeArgs } from "./api-command-args.js";
 
 export interface ListArgs {
   domain: string;
