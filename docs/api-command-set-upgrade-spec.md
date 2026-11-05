@@ -181,11 +181,42 @@
 
 ### T9 · 复合命令（多步编排）—— 排最后
 
+> **语法在 2026-11-05 由用户拍板定案**，与初版设计不同，下表为最终实现。
+> 取值路径 = **JSONPath**；依赖声明 = **显式映射表**；复合命令作为**命令集条目落盘**，
+> 靠**导入命令包**交付（不新增独立工具）。
+
 | 文件 | 改动 |
 |---|---|
-| `api-command-types.ts` | `ApiCommand` 新增 `steps?: CommandStep[]`：`{ ref: string; params: Record<string, string>; from?: Record<string, string> }`，`params` 值为 `{{stepN.field}}` 形式的取值路径 |
-| `api-command-render.ts` | 新增 `resolveCompositeSteps()`：把上一步响应按 `from` 路径取值 → 注入下一步 `params` |
-| `api-command-service.ts` `call()` | 命令名指向复合命令时，按序执行子命令并合并结果 |
+| `api-command-types.ts` | `ApiCommand` 新增 `steps?: CommandStep[]`；`CommandStep = { name?, commandId, params?, risk?, note? }`；白名单 `COMMAND_STEP_ALLOWED_KEYS`；上限 `MAX_COMPOSITE_STEPS=5` / `MAX_JSONPATH_LENGTH=256` / `MAX_JSONPATH_SEGMENTS=16`；`ExecuteResult` 新增 `stepResults?` |
+| `api-command-render.ts` | 新增 `parseJsonPath` / `evalJsonPath` / `isStepValueMapping` / `resolveCompositeSteps` / `applyStepMappings`（全部纯函数、无 IO） |
+| `api-command-cache.ts` | 新增 `rebuildSteps()` / `rebuildStepParams()` / `isPersistableStepValue()`；`toCommand()` 接入 `steps`；`export` / `import` 自动带 steps |
+| `api-command-service.ts` | `call()` 走多步编排分支；新增 `callComposite()` / `executeCommandRequest()` / `collectCompositeParams()` / `staticStepParams()` / `filterParamsForCommand()` |
+| `server.ts` | `call_api_command` / `import_api_commands` 工具描述补充复合命令说明 |
+| `browser-extension/api-command-helpers.js` | `COMMAND_ALLOWED_KEYS` 增加 `'steps'`（两端常量逐字同步） |
+
+**JSONPath 子集（刻意收窄）**：只支持 `$` 根 + `.name` + `["name"]` + `[n]` + `[*]`。
+刻意拒绝过滤表达式 `?()`、脚本 `()`、递归下降 `..`、通配属性 `.*`、切片。
+`[*]` 恒展开为数组（命中 1 个也是数组）。路径未命中 → `MISSING_PARAMS`。
+
+**取值优先级（定案）**：**映射 > 调用方传值 > 步骤固定值**。
+映射覆盖调用方传值时必须记入 `overridden`（留痕），不得静默忽略——
+呼应 AC-5「调用方传值被静默忽略」这一原始缺陷。
+路径未命中且调用方给了值 → 退化用调用方值；仍无值 → `MISSING_PARAMS`。
+
+**预检 vs 运行时**：
+
+| 情形 | 行为 |
+|---|---|
+| 子命令缺失 | 预检**零请求**，`COMMAND_NOT_FOUND` |
+| 写操作未确认 | 预检**零请求**，`CONFIRMATION_REQUIRED` |
+| 步骤静态参数不合法 | 预检**零请求**，`INVALID_PARAMS` / `MISSING_PARAMS` |
+| 某步取值路径未命中 | **该步零请求**；前序步骤已执行的事实写入 `warnings[]`，不伪装成「零请求」 |
+
+**风险只升不降**：步骤自述的 `risk:"read"` 不能把子命令的 `write` 降级
+（与 T7「只读门按 method 派生、不采信客户端自述 risk」同一纪律）；
+扩展侧仍按 HTTP method 独立设门，纵深防御。
+
+**嵌套复合命令不支持**（拒绝并零请求）。
 
 **目的**：把「查列表 → 取 id → 查详情 → 提交」从 Agent 手工串联变成一条命令。
 
@@ -193,18 +224,25 @@
 
 ## 5. Tasks（执行顺序）
 
-| # | 任务 | 依赖 | 落点 |
-|---|---|---|---|
-| 1 | T1 静态推导放开 | — | `api-command-types.ts` / `api-command-service.ts` / `api-command-site-scan.ts` |
-| 2 | T2 路径归一 + method 修复 | — | `api-command-site-scan.ts` / `api-command-generator.ts` |
-| 3 | T4 值落盘放开 + 常量参数可覆盖 | — | `api-command-normalize.ts` / `api-command-cache.ts` / `api-command-generator.ts` / `api-command-render.ts` / `api-command-response-schema.ts` |
-| 4 | T3 请求头放开 | 3 | `api-command-types.ts` / `api-command-render.ts` / `api-command-service.ts` / `api-command-helpers.js` / `background.js` |
-| 5 | T5 导出 / 导入闭环 + 来源标注 | 1,2,3 | `api-command-types.ts` / `api-command-cache.ts` / `api-command-site-scan.ts` / `server.ts` |
-| 6 | T6 缓存一致性 | — | `api-command-cache.ts` |
-| 7 | T7 破坏性默认值 + 只读门按 method 派生 | 4 | `server.ts` / `api-command-service.ts` / `background.js` |
-| 8 | T8 ai_search 修正 | — | `baidu-ai-search.ts` / `api-command-service.ts` |
-| 9 | T9 复合命令 | 1..7 | `api-command-types.ts` / `api-command-render.ts` / `api-command-service.ts` |
-| 10 | 回归 + 文档 | 全部 | `mcp-server/test/*` / `README.md` / `README.zh.md` / `docs/` |
+| # | 任务 | 依赖 | 落点 | commit | 状态 |
+|---|---|---|---|---|---|
+| 1 | T1 静态推导放开 | — | `api-command-types.ts` / `api-command-service.ts` / `api-command-site-scan.ts` | `c60be17` | ✅ |
+| 2 | T2 路径归一 + method 修复 | — | `api-command-site-scan.ts` / `api-command-generator.ts` | `660eb45` | ✅ |
+| 3 | T4 值落盘放开 + 常量参数可覆盖 | — | `api-command-normalize.ts` / `api-command-cache.ts` / `api-command-generator.ts` / `api-command-render.ts` / `api-command-response-schema.ts` | `7b14d7c` | ✅ |
+| 4 | T3 请求头放开 | 3 | `api-command-types.ts` / `api-command-render.ts` / `api-command-service.ts` / `api-command-helpers.js` / `background.js` | `9628be5` | ✅ |
+| 5 | T5 导出 / 导入闭环 + 来源标注 | 1,2,3 | `api-command-types.ts` / `api-command-cache.ts` / `api-command-site-scan.ts` / `server.ts` | `e27a872` | ✅ |
+| 6 | T6 缓存一致性 | — | `api-command-cache.ts` | `5276030` | ✅ |
+| 7 | T7 破坏性默认值 + 只读门按 method 派生 | 4 | `server.ts` / `api-command-service.ts` / `background.js` | `38e6085` | ✅ |
+| 8 | T8 ai_search 修正 | — | `baidu-ai-search.ts` / `api-command-service.ts` | `4c44d8f` + `06a2ff0` | ✅ |
+| 9 | T9 复合命令 | 1..7 | `api-command-types.ts` / `api-command-render.ts` / `api-command-cache.ts` / `api-command-service.ts` / `server.ts` / `api-command-helpers.js` | `ed52b71` | ✅ |
+| 10 | T10a host 交叉引用 + baseURL 侦测 | 1,2 | `api-command-site-scan.ts` / `api-command-types.ts` | `982413e` | ✅ |
+| 11 | T10b README 中英同步 | 1..10 | `README.md` / `README.zh.md` | `78ae4ac` | ✅ |
+| 12 | T10c 规格回填（AC↔实现位置映射） | 1..11 | `docs/api-command-set-upgrade-spec.md` | 本次提交 | ✅ |
+
+**用例规模**：存量 245 条零回归 → 终态 **309 条全绿**（新增 64 条）。
+
+新增用例分布：`api-command-composite.test.mjs` 19（T9）、`api-command-host-infer.test.mjs` 9（T10a）、
+`api-command-types.test.mjs` 常量契约 1、其余分散补入既有测试文件。
 
 **每个任务附带**：至少 1 条新增用例（`node --test`，`dist/` 上跑），存量 245 条零回归。
 
@@ -212,17 +250,51 @@
 
 ## 6. 验收
 
-| # | 验收项 | 口径 |
+| # | 验收项 | 口径 | 实现位置 | 实测结果 |
+|---|---|---|---|---|
+| A1 | 规格驱动路径命中 | petstore OpenAPI：19 个端点路径命中 19/19，0 未命中 | `api-command-site-scan.ts` `parseOpenApiText` / `scanSources` | 19/19 ✅ |
+| A2 | 静态推导召回 | B 站首页默认配置（放开后）：召回 ≥ 50%（基线 0%） | `api-command-service.ts:1087` `loose` → `api-command-site-scan.ts:705` `scanSources` → `:668` `applyHostCrossReference` → `:224` `detectBaseUrlHosts` | **100%**（35/35，loose=false 旧默认 0%）✅ |
+| A3 | 静态推导存活 | B 站首页：实打存活率 ≥ 50%（基线 55%，修复后应更高） | 同 A2（同一批扫描口径） | **68.6%**（24/35，与 oracle 自身上限 68.6% 持平）✅ |
+| A4 | 免开网页调用 | 全新会话 + 页面未开 + 无抓包缓冲区，成功率 ≥ 90% | `api-command-service.ts` `call` → `executeCommandRequest` → 扩展 `background.js:2194` `cmdApiCommandExecute` | ✅ 见下方「A4 实测记录」 |
+| A5 | 导出导入闭环 | 导出 → 清空 → 导入 → 命令条数 / 名称 / 参数 / 响应裁剪规则一致，可直接调用 | `api-command-cache.ts:1127` `export` / `:1174` `import` / `:724` `rewriteCommandHost`；`api-command-service.ts:1344` / `:1356`；`server.ts:993` / `:1006` | 闭环一致，复合命令随包往返 ✅ |
+| A6 | 并发写 | 两个进程先后写不同域名，双方数据都存活 | `api-command-cache.ts:78` `buildCacheTmpName` / `ensureLoaded` / `persist`（写前重读合并） | 双方数据都存活 ✅ |
+| A7 | 参数可覆盖 | 调用方传值必须生效（当前实测被忽略） | `api-command-generator.ts:174` `defaultValue` / `:181` `buildQueryTemplate` / `:194` `buildBodyTemplate`；`api-command-render.ts:145` `renderRequest`；`api-command-service.ts:1647` `filterParamsForCommand` | 调用方传值生效 ✅ |
+| A8 | 测试 | `npm test` 全绿（存量 245 零回归 + 新增用例），`npm run doctor` 0 fail | `mcp-server/test/*` | **309/309 pass**（存量 245 零回归 + 新增 64）；`doctor` 5 pass / 0 warn / 0 fail ✅ |
+| A9 | 文档 | README 中英工具表 + `docs/` 与实现一致 | `README.md` / `README.zh.md` / `docs/api-command-set-upgrade-spec.md` | 中英 19 节同构、工具表各 44 条完全一致 ✅ |
+
+**A2 / A3 实测口径（重要，不可沿用旧口径）**：
+
+- oracle 的裸路径 host 由**实际探测**确定（逐个 GET 候选 host，取返回 2xx 且 content-type 含 json 的那个），
+  **不得**默认记成扫描目标域名。
+- 早期口径把裸路径记成 `www.bilibili.com`，与静态推导犯同样的错，导致召回虚高 100% / 存活只有 7%，**已废弃**。
+- 静态推导口径 = 所有 bundle **一次 `scanSources()` 调用**（与服务一致，跨源交叉引用与 baseURL 侦测需要同批作用域）。
+- 存活判定 = 2xx 且响应体以 `{` / `[` 开头且不含 `"code": -404/-400/-403`；请求带 UA + `referer: https://www.bilibili.com/`。
+- 产出物：`test-artifacts/t10-bilibili-recall.json`（8 bundle / 3.96 MB / oracle 35 条）。
+
+**A2 / A3 的根因与修复**：bundle 里接口路径绝大多数是**裸相对路径**，主机藏在两处——
+协议相对 URL（全文仅 2 条）与 HTTP 客户端 **baseURL**（`baseURL: !s && n.baseURL || a`，`a = "//api.bilibili.com"`）。
+裸路径若挂到扫描目标域名必然 404（实测 `www.bilibili.com/x/web-interface/nav` → 404，
+`api.bilibili.com/x/web-interface/nav` → 200）。修复放在编排层 `scanSources()`（纯函数、批次作用域），
+**只在唯一解时生效，有歧义一律不猜**；解析层 `scanJsText` 不猜 host，保持语义纯净。
+
+**A4 实测记录（免开网页调用）**：
+
+| 断言 | 位置 | 结果 |
 |---|---|---|
-| A1 | 规格驱动路径命中 | petstore OpenAPI：19 个端点路径命中 19/19，0 未命中 |
-| A2 | 静态推导召回 | B 站首页默认配置（放开后）：召回 ≥ 50%（基线 0%） |
-| A3 | 静态推导存活 | B 站首页：实打存活率 ≥ 50%（基线 55%，修复后应更高） |
-| A4 | 免开网页调用 | 全新会话 + 页面未开 + 无抓包缓冲区，成功率 ≥ 90% |
-| A5 | 导出导入闭环 | 导出 → 清空 → 导入 → 命令条数 / 名称 / 参数 / 响应裁剪规则一致，可直接调用 |
-| A6 | 并发写 | 两个进程先后写不同域名，双方数据都存活 |
-| A7 | 参数可覆盖 | 调用方传值必须生效（当前实测被忽略） |
-| A8 | 测试 | `npm test` 全绿（存量 245 零回归 + 新增用例），`npm run doctor` 0 fail |
-| A9 | 文档 | README 中英工具表 + `docs/` 与实现一致 |
+| 抓包缓冲区为空（`networkCaptures.size === 0`） | `test/api-command-security.test.mjs:208` A.1 | ✅ |
+| 未打开任何标签页（`mock.tabs.size === 0`） | 同上 | ✅ |
+| `apiCommandExecute` 不在 `TAB_SCOPED_COMMANDS`（不依赖 tab） | 同上 | ✅ |
+| 仍真正走到 `fetch`（`fetchCalls.length === 1`，URL / method 正确） | 同上 | ✅ |
+| 执行全程不创建抓包会话（执行后 `networkCaptures.size` 仍为 0） | 同上 | ✅ |
+| 响应正常回传（`success:true` / `status:200` / `authRequired:false`） | 同上 | ✅ |
+| `fetch` 带 `credentials:'include'` 与 `redirect:'manual'` | `test/api-command-security.test.mjs:228` A.2 | ✅ |
+| 放开后：非凭据请求头原样下发，凭据头（Cookie / Authorization 等）一律剔除 | `test/api-command-security.test.mjs:279` A.3b | ✅ |
+| 只读模式不可绕过：`risk=write` + `confirm:true` 仍 `READ_ONLY_BLOCKED`，fetch 0 次 | `test/api-command-security.test.mjs:311` A.4 | ✅ |
+| 只读门按 method 派生：`risk=read` 但 `method=POST` 仍被拒 | `test/api-command-security.test.mjs:329` T7 | ✅ |
+
+调用链：MCP `call_api_command` → `api-command-service.ts` `call` → `executeCommandRequest` →
+扩展 `background.js` `cmdApiCommandExecute` → `fetch(credentials:'include')`。
+全程不打开页面、不 attach debugger、不需要抓包缓冲区；Cookie 由 Chrome 自身按最终 URL 匹配。
 
 ---
 
