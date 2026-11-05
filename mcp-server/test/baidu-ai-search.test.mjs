@@ -314,8 +314,13 @@ test("parseBaiduBaikanSse：缺显式标记一律按增量追加（不再用前�
   assert.equal(parseBaiduBaikanSse(real).answer, "==**OpenSpec 是一个 AI 原生、规范驱动开发**。");
 });
 
-test("parseBaiduBikaiN：有显式快照标记才替换（载荷 isFullText / SSE 事件名 full）", () => {
-  const byFlag = snapshotChunk("结论") + snapshotChunk("结论成立。");
+test("parseBaiduBikaiN：AC-14 三个连续「哈」必须拼成「哈哈哈」（基线只得到「哈」）", () => {
+  // 基线的前缀启发式：第二段「哈」以已拼内容「哈」开头且不更短 → 判成快照替换 → 吞字。
+  const raw = textChunk("哈") + textChunk("哈") + textChunk("哈");
+  assert.equal(parseBaiduBaikanSse(raw).answer, "哈哈哈", "重复相邻字符不得被当成快照吞掉");
+});
+
+test("parseBaiduBikaiN：有显式快照标记才替换（载荷 isFullText / SSE 事件名 full）", () => {  const byFlag = snapshotChunk("结论") + snapshotChunk("结论成立。");
   assert.equal(parseBaiduBaikanSse(byFlag).answer, "结论成立。", "isFullText=true → 替换");
 
   const byEvent = snapshotChunkByEvent("结论") + snapshotChunkByEvent("结论成立。");

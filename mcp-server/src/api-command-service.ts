@@ -492,6 +492,7 @@ export class ApiCommandService {
 
     // ① 主通道：SSE 生成流。
     const sse = await this.fetchBaikanSse(query, remaining());
+    const sseAttempts = 1;
     if (sse.ok) {
       const parsed = parseBaiduBaikanSse(sse.text, {
         maxChars: args.maxChars,
@@ -499,7 +500,7 @@ export class ApiCommandService {
       });
       if (parsed.found) {
         if (!parsed.finished) warnings.push(AI_SEARCH_SSE_PARTIAL_WARNING);
-        return this.buildAiSearchResult(query, parsed, "baikan-sse", warnings, startedAt);
+        return this.buildAiSearchResult(query, parsed, "baikan-sse", warnings, startedAt, sseAttempts);
       }
       warnings.push(AI_SEARCH_SSE_EMPTY_WARNING);
     } else {
@@ -521,7 +522,8 @@ export class ApiCommandService {
     if (!answer.found) {
       warnings.push(AI_SEARCH_NOT_FOUND_WARNING);
     }
-    return this.buildAiSearchResult(query, answer, fallback.via, warnings, startedAt);
+    return this.buildAiSearchResult(query, answer, fallback.via, warnings, startedAt,
+      sseAttempts + fallback.attempts);
   }
 
   /** 统一收口返回值：补 query / 通道 / 耗时 / 截断提示。 */
@@ -531,6 +533,7 @@ export class ApiCommandService {
     via: string,
     warnings: string[],
     startedAt: number,
+    attempts = 1,
   ): AiSearchResult {
     const merged = [...warnings];
     if (answer.truncated) {
@@ -543,7 +546,7 @@ export class ApiCommandService {
       sseEndpoint: `${BAIDU_BAIKAN_SSE_ORIGIN}${BAIDU_BAIKAN_SSE_PATH}{{query}}`,
       via,
       durationMs: Date.now() - startedAt,
-      attempts: 1,
+      attempts: Math.max(1, attempts),
       warnings: merged,
     };
   }
@@ -642,17 +645,20 @@ export class ApiCommandService {
   private async fetchMobileSearchHtml(
     query: string,
     timeoutMs: number,
-  ): Promise<{ html: string; via: string; reason: string }> {
+  ): Promise<{ html: string; via: string; reason: string; attempts: number }> {
     const url = buildBaiduAiSearchUrl(query);
-    if (!url) return { html: "", via: "", reason: "query 无法构造搜索地址" };
+    if (!url) return { html: "", via: "", reason: "query 无法构造搜索地址", attempts: 0 };
 
     const deadline = Date.now() + Math.max(1, timeoutMs);
     const remaining = (): number => Math.max(0, deadline - Date.now());
 
     const host = new URL(url).hostname;
+    // attempts 真实计数：扩展通道算一次，Node 直读每次重试各算一次。
+    let attempts = 0;
     const fromExtension = await this.fetchSearchHtmlViaExtension(url, host, remaining());
+    attempts += 1;
     if (fromExtension.ok) {
-      return { html: fromExtension.text, via: `extension:${fromExtension.via || "unknown"}`, reason: "" };
+      return { html: fromExtension.text, via: `extension:${fromExtension.via || "unknown"}`, reason: "", attempts };
     }
 
     let lastReason = "";
@@ -662,6 +668,7 @@ export class ApiCommandService {
         lastReason = lastReason || "总超时预算已耗尽";
         break;
       }
+      attempts += 1;
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), budget);
       try {
@@ -686,7 +693,7 @@ export class ApiCommandService {
             && !text.includes('data-for="baikan"')) {
             lastReason = "被搜索风控拦截";
           } else {
-            return { html: text, via: "node", reason: "" };
+            return { html: text, via: "node", reason: "", attempts };
           }
         }
       } catch (error) {
@@ -705,7 +712,7 @@ export class ApiCommandService {
       }
     }
     const hint = lastReason === "被搜索风控拦截" ? "（百度风控拦截，稍等几十秒重试通常可恢复）" : "";
-    return { html: "", via: "", reason: `${lastReason || "未知原因"}${hint}` };
+    return { html: "", via: "", reason: `${lastReason || "未知原因"}${hint}`, attempts };
   }
 
   /** list_api_commands：精简 CommandCard 列表 + stale / warnings。 */

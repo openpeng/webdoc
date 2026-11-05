@@ -133,4 +133,5 @@ test("T8：主通道快速失败时，兜底通道仍可用剩余预算", async 
   assert.equal(calls.length, 2, "主通道失败后必须尝试兜底通道");
   assert.equal(result.found, false);
   assert.ok(result.warnings.length > 0, "兜底未命中必须给告警");
+  assert.equal(result.attempts, 3, "attempts 必须是真实尝试次数：SSE 1 次 + 扩展 1 次 + Node 直读 1 次");
 });
