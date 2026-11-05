@@ -12,7 +12,7 @@
 import {
   PARAM_PLACEHOLDER_RE, PLACEHOLDER_ONLY_RE, ERROR_SAFE_MESSAGES, HTTP_METHODS,
 } from "./api-command-types.js";
-import { normalizeHostname } from "./api-command-normalize.js";
+import { normalizeHostname, sanitizeRequestHeaders } from "./api-command-normalize.js";
 import type {
   ApiCommand, ApiErrorCode, ApiParam, ExecuteResult, HttpMethod, ParamType,
 } from "./api-command-types.js";
@@ -37,6 +37,8 @@ export interface RenderedRequest {
   url: string;
   method: HttpMethod;
   body?: string;
+  /** 【放开·绿区】已过滤的请求头（凭据头已被剔除）。 */
+  headers?: Record<string, string>;
 }
 
 function asRecord(params: Record<string, unknown> | undefined): Record<string, unknown> {
@@ -137,10 +139,12 @@ function resolveValues(command: ApiCommand, params: Record<string, unknown>): Ma
  *  - 未提供的可选 query 参数整段删除，避免 `{{param}}` 残留进 URL；
  *  - query / path 值统一 encodeURIComponent，body 值保持 number/boolean 类型；
  *  - 渲染后协议与 hostname 二次复核 → INVALID_URL / HOST_MISMATCH_AFTER_RENDER（Q13）。
+ *  - 【放开·绿区】请求头：命令自带模板 + 调用方传入合并，凭据头静默剔除。
  */
 export function renderRequest(
   command: ApiCommand,
   params: Record<string, unknown>,
+  extraHeaders?: Record<string, unknown>,
 ): RenderedRequest {
   const resolved = resolveValues(command, params);
   if (!(HTTP_METHODS as readonly string[]).includes(command.request.method)) {
@@ -193,5 +197,33 @@ export function renderRequest(
     if (Object.keys(out).length > 0) body = JSON.stringify(out);
   }
 
-  return { url, method: command.request.method as HttpMethod, ...(body !== undefined ? { body } : {}) };
+  // 【放开·绿区】请求头合并：
+  //  1) 命令自带模板（值可以是 {{param}} 占位符，也可以是字面量）；
+  //  2) 调用方传入的 headers 覆盖同名模板项；
+  //  3) 凭据黑名单（cookie / authorization / proxy-authorization / set-cookie）静默剔除。
+  const headerTemplate = command.request.headers;
+  const merged: Record<string, unknown> = {};
+  if (headerTemplate && typeof headerTemplate === "object" && !Array.isArray(headerTemplate)) {
+    for (const [key, raw] of Object.entries(headerTemplate as Record<string, unknown>)) {
+      if (typeof raw === "string" && PLACEHOLDER_ONLY_RE.test(raw)) {
+        const name = raw.slice(2, -2);
+        const value = resolved.get(name);
+        if (value === undefined) continue;
+        merged[key] = value;
+      } else {
+        merged[key] = raw;
+      }
+    }
+  }
+  if (extraHeaders && typeof extraHeaders === "object" && !Array.isArray(extraHeaders)) {
+    for (const [key, value] of Object.entries(extraHeaders)) merged[key] = value;
+  }
+  const headers = sanitizeRequestHeaders(merged);
+
+  return {
+    url,
+    method: command.request.method as HttpMethod,
+    ...(body !== undefined ? { body } : {}),
+    ...(Object.keys(headers).length > 0 ? { headers } : {}),
+  };
 }

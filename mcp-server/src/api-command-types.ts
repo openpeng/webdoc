@@ -257,7 +257,7 @@ export const COMMAND_FORBIDDEN_KEYS = [
   "token", "secret", "csrf", "prototype", "constructor", "__proto__",
 ] as const;
 
-export const REQUEST_TEMPLATE_ALLOWED_KEYS = ["method", "urlTemplate", "pathTemplate", "bodyTemplate", "queryTemplate"] as const;
+export const REQUEST_TEMPLATE_ALLOWED_KEYS = ["method", "urlTemplate", "pathTemplate", "bodyTemplate", "queryTemplate", "headers"] as const;
 export const API_PARAM_ALLOWED_KEYS = ["name", "location", "type", "required", "description", "enumCount", "allowedValues", "constant", "defaultValue"] as const;
 export const SCHEMA_FIELD_ALLOWED_KEYS = ["path", "type", "array", "isPagination", "redacted"] as const;
 export const RESPONSE_SCHEMA_ALLOWED_KEYS = ["fields", "depthLimited", "sampleCount"] as const;
@@ -274,12 +274,29 @@ export const DOMAIN_BUCKET_ALLOWED_KEYS = ["host", "updatedAt", "commands"] as c
 export const START_OPTIONS_ALLOWED_KEYS = ["analysisId", "filter", "includeStaticAssets", "maxEndpoints", "captureResponseBody"] as const;
 export const FILTER_ALLOWED_KEYS = ["urlContains", "mimeType"] as const;
 export const STOP_OPTIONS_ALLOWED_KEYS = ["analysisId"] as const;
-export const EXECUTE_OPTIONS_ALLOWED_KEYS = ["url", "method", "hostname", "risk", "body", "maxBodyChars", "timeoutMs"] as const;
+export const EXECUTE_OPTIONS_ALLOWED_KEYS = ["url", "method", "hostname", "risk", "body", "maxBodyChars", "timeoutMs", "headers"] as const;
 /** 客户端注入这些字段一律丢弃（AC-22 关键）。【扩展侧需同步】 */
-export const EXECUTE_OPTIONS_FORBIDDEN_KEYS = ["headers", "confirm", "overrides", "tabId"] as const;
+export const EXECUTE_OPTIONS_FORBIDDEN_KEYS = ["confirm", "overrides", "tabId"] as const;
 
-/** (c) 请求 header 最小白名单：绝不从缓存 / 抓包 / 消息恢复任何 header 值。【扩展侧需同步】 */
+/**
+ * (c) 请求 header **最低保证集**：这两个头由代码无条件补上，不依赖调用方。
+ * 【放开·绿区】放开后不再用它作上限 —— 除凭据头外的任意头都可由调用方传入。
+ * 【扩展侧需同步】
+ */
 export const API_COMMAND_ALLOWED_HEADERS: readonly string[] = ["accept", "content-type"];
+
+/**
+ * 【放开·绿区】请求头**黑名单**：命中即静默剔除（不报错、不落盘、不进日志）。
+ * 放开的是「非凭据头随便带」，凭据头永远是硬边界 —— 否则等于把登录态交给调用方。
+ * 【扩展侧需同步】
+ */
+export const API_COMMAND_FORBIDDEN_HEADERS: readonly string[] = [
+  "cookie", "authorization", "proxy-authorization", "set-cookie",
+];
+/** 请求头字段名合法性（RFC 7230 token），长度上限 128。 */
+export const HEADER_NAME_PATTERN = /^[A-Za-z0-9!#$%&'*+.^_`|~-]{1,128}$/;
+/** 请求头值长度上限。 */
+export const MAX_HEADER_VALUE_LENGTH = 512;
 
 /** (d) 响应敏感字段黑名单：命中即 [REDACTED] 或丢弃，且不纳入 responseFields。【扩展侧需同步】 */
 export const RESPONSE_SENSITIVE_FIELDS: readonly string[] = [
@@ -460,6 +477,8 @@ export interface RequestTemplate {
   pathTemplate: string;           // 含 {id} 的规范化路径
   bodyTemplate?: Record<string, unknown> | null;  // 只含安全字面量与 "{{param}}" 占位
   queryTemplate?: Record<string, string>;
+  /** 【放开·绿区】命令自带的请求头模板：值可以是字面量或 "{{param}}" 占位。 */
+  headers?: Record<string, string>;
 }
 
 export interface CommandHealth {

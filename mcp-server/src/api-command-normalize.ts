@@ -17,7 +17,8 @@ import {
   MAX_PERSISTED_VALUE_LENGTH, MAX_HEADER_NAME_LENGTH, MAX_ERROR_MESSAGE_LENGTH, REDACTED_VALUE,
   SAFE_LITERAL_STRING_RE, JWT_RE, EMAIL_RE, PHONE_RE,
   UUID_PATTERN, NUMERIC_SEGMENT_RE, HEX_ID_RE, HIGH_ENTROPY_SEGMENT_RE,
-  HOSTNAME_PATTERN, API_SENSITIVE_HEADER_RE,
+  HOSTNAME_PATTERN, API_SENSITIVE_HEADER_RE, HEADER_NAME_PATTERN,
+  API_COMMAND_FORBIDDEN_HEADERS, MAX_HEADER_VALUE_LENGTH,
   STATIC_RESOURCE_TYPES, STATIC_ASSET_EXTENSIONS, TELEMETRY_PATH_KEYWORDS,
   NEEDS_REVIEW_DESCRIPTION_PREFIX,
 } from "./api-command-types.js";
@@ -217,6 +218,30 @@ export function redactHeaderNames(names: string[]): string[] {
     if (API_SENSITIVE_HEADER_RE.test(name)) out.add(name);
   }
   return [...out].sort();
+}
+
+/**
+ * 【放开·绿区】请求头过滤：保留**全部非凭据头**，只剔除凭据黑名单。
+ *
+ * 放开前只允许 `accept` / `content-type` 两个头，站点一旦校验
+ * `X-Requested-With` / `Referer` / `Origin` 就一律 403。
+ * 现在：凭据头（cookie / authorization / proxy-authorization / set-cookie）
+ * 静默剔除；字段名非法、值含 CR/LF（header 注入）或超长的头一律丢弃。
+ */
+export function sanitizeRequestHeaders(headers: unknown): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!headers || typeof headers !== "object" || Array.isArray(headers)) return out;
+  for (const [rawName, rawValue] of Object.entries(headers as Record<string, unknown>)) {
+    const name = String(rawName).trim();
+    if (!name || !HEADER_NAME_PATTERN.test(name)) continue;
+    if ((API_COMMAND_FORBIDDEN_HEADERS as readonly string[]).includes(name.toLowerCase())) continue;
+    if (typeof rawValue !== "string" && typeof rawValue !== "number" && typeof rawValue !== "boolean") continue;
+    const value = String(rawValue);
+    if (!value || value.length > MAX_HEADER_VALUE_LENGTH) continue;
+    if (/[\r\n]/.test(value)) continue;
+    out[name] = value;
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------

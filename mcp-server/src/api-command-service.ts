@@ -134,7 +134,7 @@ export interface CallArgs {
   /** 【放开·绿区】响应敏感字段是否强制打码；缺省取 RESPONSE_STRICT_REDACTION_DEFAULT（false）。 */
   strictRedaction?: boolean;
   /** 【放开·绿区】附加请求头（Cookie / Authorization 等凭据头一律剔除）。 */
-  headers?: Record<string, string>;
+  headers?: Record<string, unknown>;
 }
 
 export interface UpdateArgs {
@@ -1250,9 +1250,9 @@ export class ApiCommandService {
     }
 
     // 渲染：path 注入防护 / query 编码 / body 保类型 / 渲染后 host 二次复核。
-    let rendered: { url: string; method: ApiCommand["request"]["method"]; body?: string };
+    let rendered: { url: string; method: ApiCommand["request"]["method"]; body?: string; headers?: Record<string, string> };
     try {
-      rendered = renderRequest(command, params);
+      rendered = renderRequest(command, params, args.headers);
     } catch (err) {
       if (err instanceof RenderError) {
         const result = this.errorResult(command, err.code);
@@ -1278,6 +1278,8 @@ export class ApiCommandService {
       timeoutMs,
     };
     if (rendered.body !== undefined) options.body = rendered.body;
+    // 【放开·绿区】请求头：非凭据头原样下发；凭据头已在渲染层剔除，扩展侧再剔一次。
+    if (rendered.headers && Object.keys(rendered.headers).length > 0) options.headers = rendered.headers;
     const sendParams: Record<string, unknown> = { options };
     if (typeof args.tabId === "number") sendParams.tabId = args.tabId;
 

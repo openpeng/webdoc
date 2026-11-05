@@ -1025,11 +1025,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           commandId: { type: "string", description: "与 name 二选一" },
           name: { type: "string" },
           params: { type: "object", description: "命令参数，键对应 {{param}} 占位符名" },
+          headers: {
+            type: "object",
+            description: "附加请求头（全部非凭据头放行；cookie / authorization / proxy-authorization / set-cookie 静默剔除）",
+          },
           fields: { type: "array", items: { type: "string" }, description: "响应字段白名单覆盖（点路径）" },
           maxBodyChars: { type: "number", description: "默认 50000，clamp 1000..500000" },
           confirm: { type: "boolean", description: "写命令必须显式为 true（仅防误触发，非安全边界）" },
           tabId: { type: "number", description: "可省略；显式传时沿用跨组拒绝" },
           timeoutMs: { type: "number", description: "默认 10000，clamp 100..25000" },
+          strictRedaction: { type: "boolean", description: "响应敏感字段是否强制打码；缺省 false（放开）" },
         },
       },
     },
@@ -1910,10 +1915,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             ? args.params as Record<string, unknown>
             : {},
           fields: Array.isArray(args.fields) ? args.fields as string[] : undefined,
+          headers: args.headers && typeof args.headers === "object" && !Array.isArray(args.headers)
+            ? args.headers as Record<string, unknown>
+            : undefined,
           maxBodyChars: typeof args.maxBodyChars === "number" ? args.maxBodyChars : undefined,
           confirm: args.confirm === true,
           tabId: typeof args.tabId === "number" ? args.tabId : undefined,
           timeoutMs: typeof args.timeoutMs === "number" ? args.timeoutMs : undefined,
+          strictRedaction: typeof args.strictRedaction === "boolean" ? args.strictRedaction : undefined,
         }));
 
       case "update_api_command":

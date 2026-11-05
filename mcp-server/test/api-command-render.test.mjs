@@ -11,6 +11,7 @@ import {
 import { ApiCommandCache } from "../dist/api-command-cache.js";
 import { ApiCommandService } from "../dist/api-command-service.js";
 import { generateCommands } from "../dist/api-command-generator.js";
+import { sanitizeRequestHeaders } from "../dist/api-command-normalize.js";
 import { ERROR_SAFE_MESSAGES, EPOCH_ISO } from "../dist/api-command-types.js";
 
 const DOMAIN = "api.example.com";
@@ -275,6 +276,51 @@ test("集成：缺必填 / 类型错误 / 写命令未确认，ApiCommandService
   assert.equal(Object.hasOwn(sentParams.options, "params"), false);
   assert.equal(Object.hasOwn(sentParams.options, "headers"), false);
   assert.equal(Object.hasOwn(sentParams.options, "confirm"), false);
+});
+
+// ---------------------------------------------------------------------------
+// T3 请求头放开（AC-6）
+// ---------------------------------------------------------------------------
+
+test("T3：调用方传的非凭据请求头原样下发，凭据头一律剔除且不报错", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "webpilot-t3-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const cache = new ApiCommandCache(join(dir, "api-commands.json"));
+  await cache.merge(DOMAIN, [command()], { mode: "full", overwriteManual: false });
+
+  let sentParams = null;
+  const service = new ApiCommandService(cache, async (_type, params) => {
+    sentParams = params;
+    return { success: true, status: 200, body: { ok: true }, durationMs: 5 };
+  });
+  const result = await service.call({
+    domain: DOMAIN, commandId: "cmd_8f3a1c2d90",
+    params: { id: "42" },
+    headers: {
+      "X-Requested-With": "XMLHttpRequest",
+      Referer: "https://example.com/",
+      Cookie: "SECRET_COOKIE_VALUE",
+      Authorization: "Bearer SECRET_AUTH_VALUE",
+    },
+  });
+  assert.equal(result.error, undefined, "凭据头应被静默剔除，而不是报错");
+  assert.ok(sentParams);
+  assert.equal(sentParams.options.headers["X-Requested-With"], "XMLHttpRequest");
+  assert.equal(sentParams.options.headers.Referer, "https://example.com/");
+  assert.equal(Object.hasOwn(sentParams.options.headers, "Cookie"), false);
+  assert.equal(Object.hasOwn(sentParams.options.headers, "Authorization"), false);
+  assert.ok(!JSON.stringify(sentParams.options.headers).includes("SECRET_"));
+});
+
+test("T3：非法请求头（字段名非法 / 值含 CR-LF / 超长）一律丢弃，不进 fetch 入参", () => {
+  const filtered = sanitizeRequestHeaders({
+    "X-Requested-With": "XMLHttpRequest",
+    "Bad Header": "v",
+    "X-Inject": "a\r\nX-Evil: b",
+    "X-Long": "y".repeat(600),
+    Cookie: "SECRET_COOKIE_VALUE",
+  });
+  assert.deepEqual(Object.keys(filtered), ["X-Requested-With"]);
 });
 
 // ---------------------------------------------------------------------------
