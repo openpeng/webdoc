@@ -30,6 +30,22 @@ protobuf/gRPC 体解码**都不适用于**本仓。不要引入 REA 依赖，也
 歧义怎么记、文档锚点怎么校。**纯 bug 定位不需要本 skill 的口径部分**，直接读代码即可
 （例如「某个来源被静默截断了」这类排障，靠的是读实现，不是靠证据口径）。
 
+## 当前 MCP 入口映射
+
+默认工具面收敛为 `browser_page` / `browser_read` / `browser_act` / `browser_debug` / `api_discover` / `api_commands` / `api_call` 七入口，不改变以下证据与覆盖口径。本文和 references 中的 `analyze_page_apis` 等旧名仍可用于定位实现与兼容调用；新调用使用：
+
+| 原入口 | 当前入口 |
+| --- | --- |
+| `analyze_page_apis` | `api_discover`，保留 `start` / `stop_and_analyze` / `analyze_current` / `scan_site` action |
+| `list_api_commands` / `get_api_command` | `api_commands` 的 `list` / `get` |
+| `call_api_command` | 独立 `api_call`，不传 `action`；命令标识及 `params` 沿用原契约 |
+| `import_api_commands` / `export_api_commands` / `update_api_command` | `api_manage` 的 `import` / `export` / `update` |
+| `invalidate_api_commands` / `get_api_command_cache` | `api_manage` 的 `disable` / `delete` / `clear_domain` / `health` |
+
+先 `api_commands({action:"domains"})` 列缓存有命令的域名，再 `list(domain)` 看域名能力，`get(domain, commandId/name)` 看单个接口，检查后走独立 `api_call`；未命中再 `api_discover`。`domains` 纯本地、不接收 `domain` / `tabId`、不依赖浏览器；域名摘要不意味着端点已验证可调用。返回 `{domains:[{domain,total}],warnings:[]}`，只列有缓存命令的域名并按字典序排列；`total` 含禁用/弃用缓存命令，不等于当前可调用数。`list` 默认可能过滤禁用条目，必要时传 `includeDisabled:true` 查看，并阅读 `warnings`。上表 `api_manage` 仅为按需维护的兼容路由，不在默认或高级工具展示列表中，原维护工具名仍兼容。Skill 只描述流程；隐藏名称须由支持直接 MCP 调用的客户端使用，不能假定所有宿主可调用，也不据此增加工具或执行未授权外部写操作。每个 action 只接受其分支 schema 中的字段，必填项缺失或跨分支字段会在执行前拒绝。写命令仍需 `api_call` 的 `confirm:true`，未确认只返回预览、不发请求；确认不替代域名、只读、紧急停止和目标 URL 安全闸门。
+
+高级工具只有服务端显式设置 `WEBPILOT_ENABLE_ADVANCED_TOOLS=1` 才展示；旧名兼容不代表默认推荐。普通多步浏览采用 `browser_read` → `browser_act` → 重读/等待并验证，不强制 task loop；只有高级任务工具可见且调用环境开启 `enable_task_mode` 时使用任务循环。
+
 ## Inputs to collect
 
 开工前必须确认（缺失就问，不要用假设硬上）：

@@ -78,9 +78,31 @@ Clicking **Disconnect** intentionally disables automatic reconnection; use
 | `WEBPILOT_MAX_GROUPS` | `5` | Maximum number of session tab groups (live instances); the oldest idle groups are closed first. |
 | `WEBPILOT_SESSION_ID` | unset | Per-session id injected by the host; becomes the ownership key so each conversation reclaims its own group exactly. |
 | `WEBPILOT_ALLOW_CROSS_AGENT_RECLAIM` | `0` | Allow adopting an idle group that belongs to another session (also inherits its logged-in pages). |
+| `WEBPILOT_ENABLE_ADVANCED_TOOLS` | unset | Only the literal string `1` advertises advanced tools alongside the seven default entrances. Restart/reconnect the MCP client after changing server configuration. |
 | `WEBPILOT_API_COMMAND_DIR` | falls back to `WEBPILOT_TASK_LOG_DIR`, then `.webpilot-task-logs/` | Directory holding the local per-hostname `api-commands.json` cache used by the API command set. |
 
 ## Tools
+
+The default `tools/list` advertises exactly seven entrances:
+
+| Tool | Actions / purpose |
+| --- | --- |
+| `browser_page` | `list_tabs`, `navigate`, `screenshot`, `get_url`, `reload`, `go_back`, `go_forward`, `full_screenshot`, `element_screenshot`, `upload_file`, `download_file`, `save_pdf`, `handle_dialog` |
+| `browser_read` | `info`, `inspect`, `text`, `table`, `resources`, `iframe_text`, `iframe_query`, `shadow_query`, `shadow_text` |
+| `browser_act` | `click`, `type`, `hover`, `press_key`, `scroll`, `select_option`, `drag_drop`, `wait`, `wait_dynamic`, `click_at`, `iframe_click`, `shadow_click`, `shadow_type` |
+| `browser_debug` | `evaluate`, `network_start`, `network_stop`, `network_resources`, `replay`, `console`, `probe_selector`, `selector_cache`, `action_log` |
+| `api_discover` | `start`, `stop_and_analyze`, `analyze_current`, `scan_site` (formerly `analyze_page_apis`) |
+| `api_commands` | `domains`, `list`, `get` — local lookup only |
+| `api_call` | Independent execution by `commandId` or `name`, with `params`; **no `action` field** |
+
+Action branches are strict: missing required fields and fields belonging to another branch are rejected before execution. Read the selected branch's live schema. Use `browser_read({action:"info"})` → `browser_act({action:"click", selector:"..."})` → wait/re-read and verify for ordinary multi-step work. Query `api_commands({action:"domains"})` → `api_commands({action:"list", domain:"example.com"})` → `api_commands({action:"get", domain:"example.com", commandId:"..."})` (or `name`) before calling `api_call`; discover commands only when no usable command exists. `domains` is a purely local summary of domains with cached commands: it accepts no `domain` or `tabId`, needs no browser, and does not establish that endpoints are verified callable. It returns `{domains:[{domain,total}],warnings:[]}`, omitting empty domains and sorting by domain. `total` includes disabled/deprecated cached commands, not a count of currently callable endpoints. `list` may exclude disabled entries by default; use `includeDisabled:true` to inspect them and read any warnings. Writes without `confirm:true` return a preview and send no request. Confirmation does not bypass the domain allowlist, read-only mode, emergency stop, or target-URL validation.
+
+Set the server environment variable `WEBPILOT_ENABLE_ADVANCED_TOOLS=1` to additionally advertise `cleanup_sessions`, `claim_session`, `browser_status`, `browser_config`, `browser_cookie`, `browser_task`, `task_workflow`, `adapter`, `webmcp`, and `ai_search`. Only the literal string `1` enables them. Task/workflow use additionally requires `enable_task_mode` in the calling environment; it is optional, not a prerequisite for multi-step browsing. Session ownership, login state, and safety boundaries are unchanged.
+
+### Compatibility reference
+
+The detailed legacy-name reference below remains callable for existing integrations but is not the default advertised surface. For new calls, use the seven entrances above: page/read/act/debug actions wrap the corresponding browser operations; API domains/list/get use `api_commands`, discovery uses `api_discover`, and execution uses `api_call`. Package/cache maintenance is documented in the browser Skill: `api_manage` and original maintenance names remain server-side compatibility routes but are not advertised, even with advanced tools enabled. A Skill describes procedures, not an execution engine: unlisted names require a client supporting direct MCP calls and cannot be assumed callable from every host. Advanced sections below apply only when their tools are visible (and task mode is enabled for tasks). The same mapping applies to legacy examples in the detailed sections.
+
 
 | Tool | Description |
 | --- | --- |
@@ -93,7 +115,7 @@ Clicking **Disconnect** intentionally disables automatic reconnection; use
 | `click_at` | Click a visible actionable element at coordinates returned by `inspect` or a fresh screenshot. |
 | `type` | Type text into a CSS selector. |
 | `screenshot` | Capture the visible browser area. |
-| `execute_js` | Deprecated and disabled; use the restricted observation tools instead. |
+| `execute_js` | Compatibility alias for page JavaScript execution; new calls use `browser_debug({action:"evaluate", expression:"..."})`. Execution retains browser safety controls. |
 | `list_tabs` | List browser tabs. |
 | `wait_for` | Wait until a locator is visible, attached, or hidden. |
 | `get_action_log` | Read recent action durations and errors (without entered text or scripts). |
@@ -130,7 +152,7 @@ Clicking **Disconnect** intentionally disables automatic reconnection; use
 | `ai_search` | AI search summary: one call returns the full text of Baidu's "AI answer" block plus its cited sources — no page, no capture. Streams from `chat-ws.baidu.com/baikan/conversation` (no signature or token needed), with the mobile SSR page as fallback. |
 
 ## API command set (analyze → sediment → call without opening the page)
-The nine `api_command_*` tools turn one-time network captures into a **per-hostname, local** command set. Two discovery paths can be combined:
+The three default API entrances (`api_discover`, `api_commands`, and independent `api_call`) turn one-time network captures into a **per-hostname, local** command set. The legacy names in the detailed examples below follow the compatibility mapping above. Two discovery paths can be combined:
 1. **Live capture (accurate params and responses).** `analyze_page_apis({action:"start", captureResponseBody:true})` → operate the page's UI → `analyze_page_apis({action:"stop_and_analyze", mode:"merge"})`. The report contains `commandCount`, `needsReview[]`, `diff`, `preservedManualEdits[]`, and `warnings[]`. `analyze_current` parses an existing `start_network_capture` buffer once, without response sampling; its output is always flagged for manual review.
 2. **Static inference (zero UI, whole-site skeleton).** `analyze_page_apis({action:"scan_site", domain:"example.com", sources:[{kind:"js", url:"https://example.com/static/app.js"}, {kind:"openapi", text:"{...}"}]})`. The MCP server reads front-end bundles, specs, and archived traffic **without a browser, debugger, tab, or login session**; merge the skeleton with real captures afterwards. Supported `kind`: `js` / `har` / `openapi` / `commands`; inline `text` takes precedence over `url`. See [SiteScan design](docs/api-command-site-scan-design.md).
 2.1 **Login-state bundle collection (when a bundle needs a session).** Add `collectViaExtension:true` and URL sources are fetched from the extension instead: page-context fetch → service-worker fetch → browser cache (CDP `Page.getResourceContent`), a three-layer fallback that borrows the page's own session, so bundles that return 401 to a plain Node read still come through. `discoverBundles:true` also auto-discovers already-loaded scripts on the current tab. The returned text still goes through **the same `scanSources()`** — there is exactly one scanner — and stays memory-only, never written to disk or logs. See [BundleCollect design](docs/api-command-bundle-collect-design.md).
@@ -194,7 +216,7 @@ Some sites render their real content in an iframe **on a different origin** than
 
 - `get_page_text` on the main page returns only the shell (a few dozen characters), because the body lives in the cross-origin iframe;
 - `iframe_action` reports `No same-origin iframe found` — the browser forbids cross-origin DOM access;
-- `evaluate` / `execute_js` are blocked by the page's CSP (`unsafe-eval` is not allowed).
+- Page-injected eval may be blocked by CSP, but `browser_debug({action:"evaluate", expression:"..."})` can use CDP where injected eval fails. JavaScript can mutate state; never use it to evade authorization or local safety controls.
 
 These are **handled automatically, no manual workaround required**:
 
@@ -233,8 +255,10 @@ from the latest `inspect` result or screenshot.
 
 ## Agent task loop
 
-Use the task tools for multi-step work instead of issuing a long chain of raw
-actions. A task starts with `start_task`, then repeats `observe_task` → one
+Default multi-step work uses `browser_read` → `browser_act` → wait/re-read and
+verify. Use this optional task loop only when advanced task tools are advertised
+and `enable_task_mode` is enabled in the calling environment. A task starts with
+`start_task`, then repeats `observe_task` → one
 `run_task_step` → `verify_task_step`. The server records URL/DOM fingerprints,
 automatically pauses after three identical action/page pairs or five unchanged
 steps, and writes redacted JSONL evidence to `.webpilot-task-logs/` (override

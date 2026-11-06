@@ -403,7 +403,29 @@ function candidateKey(method: HttpMethod, pathTemplate: string, host?: string): 
  * 实测 Confluence 的真实接口在 `/confluence/rest/...`，而裸路径 `/rest/...`
  * 根本到不了 Confluence 的 REST servlet（实测 404），命令集等于全废。
  */
-const CONTEXT_PATH_TOKEN_RE = /(?:\.contextPath\(\)|\.getContextPath\(\)|\.CONTEXT_PATH\b|\bCONTEXT_PATH\b|\bcontextPath\b)\s*\+\s*$/;
+// 这里只匹配直接取值；括号包装由下方配对处理，不能把任意函数返回值当作前缀。
+const CONTEXT_PATH_TOKEN_RE = /(?<![\w$])(?:(?:contextPath|getContextPath)\s*\(\s*\)|(?:CONTEXT_PATH|contextPath)(?![\w$])|(?<![\w$.)\]])\(\s*(?:[\w$]+\s*\.\s*)*(?:contextPath|getContextPath)\s*\)\s*\(\s*\))\s*$/;
+
+function hasContextPathPrefix(before: string): boolean {
+  if (!/\+\s*$/.test(before)) return false;
+  let expression = before.replace(/\+\s*$/, "").trimEnd();
+  // 窗口有限；只剥离成对分组括号，遇到 rewrite(...) 等未知调用立即停止。
+  while (expression) {
+    if (CONTEXT_PATH_TOKEN_RE.test(expression)) return true;
+    if (!expression.endsWith(")")) return false;
+    let depth = 0;
+    let open = -1;
+    for (let i = expression.length - 1; i >= 0; i -= 1) {
+      if (expression[i] === ")") depth += 1;
+      if (expression[i] === "(" && --depth === 0) { open = i; break; }
+    }
+    if (open < 0) return false;
+    const beforeOpen = expression.slice(0, open).trimEnd();
+    if (/[\w$.)\]]$/.test(beforeOpen)) return false;
+    expression = beforeOpen + expression.slice(open + 1, -1).trimEnd();
+  }
+  return false;
+}
 
 /**
  * 字面量拼接前缀：`"/confluence" + "/json/addwatch.action"`。
@@ -490,6 +512,8 @@ export function applyContextPath(
   relativeToContext: boolean,
 ): string {
   if (!relativeToContext) return pathTemplate;
+  // URL 已指定 origin 时不能把应用前缀拼到协议/主机之前。
+  if (/^(?:[a-z][a-z\d+.-]*:|\/\/)/i.test(pathTemplate)) return pathTemplate;
   const prefix = normalizeContextPath(contextPath);
   if (!prefix) return pathTemplate;
   if (pathTemplate === prefix || pathTemplate.startsWith(`${prefix}/`)) return pathTemplate;
@@ -553,7 +577,7 @@ export function scanJsTextDetailed(
     const literalPrefixMatch = LITERAL_PREFIX_RE.exec(beforeWide);
     const literalPrefix = literalPrefixMatch ? literalPrefixMatch[2] : "";
     // 上下文前缀调用：`AJS.contextPath() + "/rest/xxx"` —— 路径是相对的，前缀值另取。
-    const relativeToContext = !literalPrefix && CONTEXT_PATH_TOKEN_RE.test(beforeWide);
+    const relativeToContext = !split.host && !literalPrefix && hasContextPathPrefix(beforeWide);
     const requestContext = hasRequestContext(beforeWide);
 
     const effectivePath = literalPrefix
@@ -580,7 +604,9 @@ export function scanJsTextDetailed(
       ...(relativeToContext ? { relativeToContext: true } : {}),
       ...(requestContext ? { hasRequestContext: true } : {}),
     };
-    const key = candidateKey(method, pathTemplate, split.host);
+    // 补前缀之前，根路径与 context 相对路径不是同一端点。
+    // 两者保留到 scanSources 补齐后再按最终 method+path+host 合并，避免顺序决定召回。
+    const key = `${candidateKey(method, pathTemplate, split.host)}|${relativeToContext ? "context" : "root"}`;
     if (!found.has(key)) found.set(key, candidate);
     if (found.size >= limit) break;
   }

@@ -12,6 +12,8 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { TaskRuntime } from "./task-runtime.js";
+import { createToolSurface } from "./tool-surface.js";
+import { summarizeApiDomains } from "./api-domain-summary.js";
 import { AdapterRegistry } from "./adapters.js";
 import { BrowserBridge } from "./bridge.js";
 import { SelectorCache, isCacheableSelector, isValidIntent } from "./selector-cache.js";
@@ -279,9 +281,7 @@ function dedupeTools<T extends { name: string }>(tools: T[]): T[] {
 }
 
 // 工具列表
-server.setRequestHandler(ListToolsRequestSchema, async () => {
-  return {
-    tools: dedupeTools([
+const toolSurface = createToolSurface(dedupeTools([
       {
         name: "navigate",
         description: "在浏览器中打开指定 URL。",
@@ -603,6 +603,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           properties: {
             tabId: { type: "number" },
             iframeSelector: { type: "string" },
+            iframeIndex: { type: "number", description: "iframe 索引（从 0 开始）" },
             iframeUrlContains: { type: "string", description: "跨域匹配子串，默认 'iframe'" },
             maxChars: { type: "number" },
             maxBodyChars: { type: "number" },
@@ -1124,16 +1125,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
         required: ["query"],
       },
     },
-  ]),
-  };
-});
+  ]));
+
+server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: toolSurface.list() }));
 
 // 工具调用处理
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const { name } = request.params;
-  const args = request.params.arguments ?? {};
-
   try {
+    const { name, args } = toolSurface.resolve(request.params.name, request.params.arguments ?? {});
     let result: any;
 
     switch (name) {
@@ -1909,6 +1908,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           path: typeof args.path === "string" ? args.path : "",
           overwrite: args.overwrite === true,
         }));
+
+      case "list_api_domains":
+        return apiToolCall(async () => summarizeApiDomains(await apiCommandService.cacheReport()));
 
       case "list_api_commands":
         return apiToolCall(async () => apiCommandService.list({
