@@ -185,7 +185,7 @@ function buildRequest(entry, params) {
   } else {
     const encoding = entry?.bodyEncoding ?? "json";
     if (encoding === "multipart") {
-      fail(`条目 ${entry.id} 需要 multipart 请求体，本客户端不支持手工构造（请改用 --params-file 直传或用本仓 call_api_command）`, 2);
+      fail(`条目 ${entry.id} 需要 multipart 请求体，本客户端不手工构造 multipart（--params-file 只覆盖参数、不改编码）；请改用本仓 call_api_command（扩展侧构造 multipart）`, 2);
     }
     if (encoding === "form") {
       body = new URLSearchParams(Object.entries(bodyObj).map(([k, v]) => [k, typeof v === "string" ? v : JSON.stringify(v)])).toString();
@@ -216,7 +216,7 @@ function pick(obj, path) {
     if (cur === null || cur === undefined) return null;
     cur = cur[part];
   }
-  return cur;
+  return cur === undefined ? null : cur;
 }
 
 /** 单条目执行；返回 {ok, ...}。校验类错误直接退出码 2（零网络请求）。 */
