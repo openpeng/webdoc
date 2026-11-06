@@ -29,7 +29,8 @@ import {
   SITE_SCAN_MAX_ENDPOINTS, SITE_SCAN_REVIEW_REASON, SITE_SCAN_NO_SOURCE_WARNING,
   SITE_SCAN_SOURCE_FAILED_WARNING, SITE_SCAN_CONSERVATIVE_RISK_WARNING,
   SITE_SCAN_CROSS_HOST_COMMAND_WARNING,
-  SITE_SCAN_DEFAULT_LOOSE, SITE_SCAN_DEFAULT_TRUST_SPEC,
+  SITE_SCAN_DEFAULT_LOOSE, SITE_SCAN_DEFAULT_TRUST_SPEC, SITE_SCAN_DEFAULT_PROVENANCE,
+  AMBIGUITY_HOST_WARNING, AMBIGUITY_BASE_URL_WARNING, AMBIGUITY_SOURCE_CONFLICT_WARNING,
   RESPONSE_STRICT_REDACTION_DEFAULT,
   BUNDLE_COLLECT_MAX_SOURCES, BUNDLE_COLLECT_DEFAULT_SOURCES,
   BUNDLE_COLLECT_MAX_SOURCE_BYTES,
@@ -42,7 +43,7 @@ import type {
   ListResult, ExecuteResult, CommandCard, CommandSummary, CacheReport,
   RawCapturedRecord, ResponseBodySample, ResponseSchema, NormalizedRecord,
   Risk, ReviewItem, GenerateContext, SiteScanKind, SiteScanSource,
-  CompositeStepResult,
+  CompositeStepResult, CommandProvenance,
 } from "./api-command-types.js";
 import { ApiCommandCache } from "./api-command-cache.js";
 import type { CommandPatch, ExportResult, ImportResult } from "./api-command-cache.js";
@@ -60,6 +61,7 @@ import {
 } from "./api-command-render.js";
 import type { CompositeStepPlan } from "./api-command-render.js";
 import { scanSources, toScanRecords, checkScanUrl, extractFinishedCommands } from "./api-command-site-scan.js";
+import { buildCoverage } from "./api-command-evidence.js";
 import type { AnalyzeAction, AnalyzeArgs } from "./api-command-args.js";
 import { rewriteCommandHost, toCommand } from "./api-command-cache.js";
 import {
@@ -166,6 +168,11 @@ export class ServiceError extends Error {
 // ===========================================================================
 
 const EMPTY_DIFF: AnalysisDiff = { added: 0, updated: 0, removed: 0, skipped: 0, reviewRequired: 0 };
+
+/** 命令缺少 provenance 时的兜底（缺失即未知，不臆造档位）。 */
+const UNKNOWN_PROVENANCE: CommandProvenance = {
+  tier: "unknown", endpoint: "unknown", params: "unknown", response: "unknown",
+};
 
 /**
  * ai_search 的取页参数。
@@ -1044,6 +1051,10 @@ export class ApiCommandService {
     }
 
     const maxEndpoints = clampInt(args.maxEndpoints, 1, SITE_SCAN_MAX_ENDPOINTS, SITE_SCAN_MAX_ENDPOINTS);
+    // 【绿区·配置化】证据分级开关：三态语义 —— undefined 走默认值，显式 false 依然是 false。
+    const withProvenance = args.provenance === undefined
+      ? SITE_SCAN_DEFAULT_PROVENANCE
+      : args.provenance === true;
     // 输入来源层级（必须在「零候选提前返回」之前落定，否则报告里看不到层级）。
     report.bundleSource = extensionCount > 0 ? "extension"
       : nodeFetchCount > 0 ? "node-html"
@@ -1082,6 +1093,7 @@ export class ApiCommandService {
       forceNeedsReview: false,
       emptyResponseSchema: true,
       sourceOrigin: "scan",
+      provenance: withProvenance,
     };
     const generated = generateCommands(groups, ctx);
 
@@ -1151,6 +1163,24 @@ export class ApiCommandService {
     report.preservedManualEdits = preservedManualEdits;
     report.stale = stale;
     report.sampledResponseCount = 0;
+
+    // 【证据分级 + 覆盖率】歧义与分档统计。
+    // 歧义只在开启 provenance 时显式暴露 —— 关闭时保持旧产物形状（完全可回退）。
+    if (withProvenance) {
+      const ambiguities = scanned.ambiguities ?? [];
+      const hostAmbiguityCount = ambiguities.filter((item) => item.kind === "host").length;
+      const baseUrlAmbiguityCount = ambiguities.filter((item) => item.kind === "baseUrl").length;
+      const conflictCount = ambiguities.filter((item) => item.kind === "sourceConflict").length;
+      if (hostAmbiguityCount > 0) report.warnings.push(AMBIGUITY_HOST_WARNING);
+      if (baseUrlAmbiguityCount > 0) report.warnings.push(AMBIGUITY_BASE_URL_WARNING);
+      if (conflictCount > 0) report.warnings.push(AMBIGUITY_SOURCE_CONFLICT_WARNING);
+      report.coverage = buildCoverage({
+        endpointCount: groups.length,
+        provenances: commands.map((command) => command.source?.provenance ?? UNKNOWN_PROVENANCE),
+        verifiedCount: commands.filter((command) => command.source?.provenance?.response === "observed").length,
+        ambiguities,
+      });
+    }
     return report;
   }
 
@@ -1218,6 +1248,10 @@ export class ApiCommandService {
 
     // 4) 响应 schema：schema Map 的 key 必须是 endpointKey(method, pathTemplate)。
     const schema = buildSchemaMap(filtered.kept, samples, analyzeCurrent);
+    // 【绿区·配置化】证据分级开关：三态语义 —— undefined 走默认值，显式 false 依然是 false。
+    const withProvenance = args.provenance === undefined
+      ? SITE_SCAN_DEFAULT_PROVENANCE
+      : args.provenance === true;
     const ctx: GenerateContext = {
       domain,
       analysisId: replyAnalysisId,
@@ -1227,6 +1261,7 @@ export class ApiCommandService {
       scheme: inferScheme(records),
       forceNeedsReview: analyzeCurrent,
       emptyResponseSchema: analyzeCurrent,
+      provenance: withProvenance,
     };
 
     // 5) 命令生成（纯函数；不读墙钟、不读环境变量）
@@ -1273,6 +1308,20 @@ export class ApiCommandService {
     report.preservedManualEdits = mergeResult.preservedManualEdits;
     report.stale = mergeResult.stale;
     report.sampledResponseCount = samples.length;
+    // 【证据分级 + 覆盖率】抓包通道：端点与参数均为真实观测（observed），
+    // 响应档位取决于是否真拿到响应样本 —— 没有样本就是 unknown，不冒充已覆盖。
+    if (withProvenance) {
+      report.coverage = buildCoverage({
+        endpointCount: groups.length,
+        provenances: generated.commands.map(
+          (command) => command.source?.provenance ?? UNKNOWN_PROVENANCE,
+        ),
+        verifiedCount: generated.commands.filter(
+          (command) => command.source?.provenance?.response === "observed",
+        ).length,
+        ambiguities: [],
+      });
+    }
     return report;
   }
 

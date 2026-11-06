@@ -292,25 +292,53 @@
       },
       {
         "id": "T12",
-        "title": "代码审查缺陷修复：占位 baseURL 泄漏 / 变量绑定首匹配掩盖歧义 / 取值留痕信号混用",
+        "title": "传输层布尔强转缺陷修复：未传的开关被压成 false，摧毁 scan_site 三项文档默认值",
         "owner": "xiaopeng.lei",
         "dependsOn": [
           "T9",
           "T10"
         ],
         "files": [
-          "mcp-server/src/api-command-site-scan.ts",
-          "mcp-server/src/api-command-render.ts",
+          "mcp-server/src/api-command-args.ts",
+          "mcp-server/src/server.ts",
           "mcp-server/src/api-command-service.ts",
-          "mcp-server/src/api-command-types.ts",
-          "mcp-server/test/api-command-host-infer.test.mjs",
-          "mcp-server/test/api-command-composite.test.mjs"
+          "mcp-server/test/api-command-args.test.mjs"
         ],
         "acceptanceCriteria": [],
-        "acceptance": "独立 verifier 会话审查 T9/T10 新代码，3 个可复现缺陷全部修复：(D1) 占位默认 baseURL api.domain.com 在 `baseURL: <expr> || <var>` 形态下未被排除，裸路径被挂到占位 host，命令必然打不通；(D2) 回查变量绑定只取首个匹配，把「变量被重新赋值」这一真实歧义藏起来；(D3) 取值命中与未命中共用 overridden 留痕信号，导致告警与事实相反。修复前基线实测 6 条新用例失败，修复后全绿；真实 B 站主 bundle 复测召回未回退",
+        "acceptance": "server.ts 对 trustSpec / loosePaths / discoverBundles 等可选开关一律用 args.X === true 归一化，未传（undefined）被压成 false，摧毁服务层「undefined → 默认值」语义；真实 MCP 调用 analyze_page_apis action=scan_site 返回 endpointCount=0 / commandCount=0，直调解析层对同一份 JS 却有 1 条候选。修复后默认参数端点数 >= 1，显式传 false 仍为 0；新增用例 >= 1 条且修复前基线实测失败",
         "status": "done",
         "commit": "171d327",
         "completion_note": "D1（high）：传输层 server.ts 用 args.X === true 归一化可选布尔开关，把未传（undefined）压成显式 false，摧毁服务层 loosePaths / trustSpec / discoverBundles 三项「undefined → 默认值（true）」语义；真实 MCP 调用 analyze_page_apis action=scan_site 返回 endpointCount=0 / commandCount=0（裸路径识别、method 判定、bundle 自动发现全失效），直调解析层 scanJsText 对同一份 JS 却有 1 条候选 → 定位为传输层与服务层行为不一致，而非解析层缺陷。修复：新增纯函数层 mcp-server/src/api-command-args.ts（AnalyzeAction/AnalyzeArgs 契约 + toBooleanArg 三态/二态 + toAnalyzeArgs 归一化入口），server.ts 只剩一行 apiCommandService.analyze(toAnalyzeArgs(args))；显式传 false 仍是 false（放开是默认值不是强制值）。新增 9 条回归用例，基线复核时其中 5 条在修复前实测失败。"
+      },
+      {
+        "id": "T13",
+        "title": "证据分级 + 歧义显式 + coverage 报告：借鉴 REA 的证据口径，让命令自证可信度、让多解证据不静默拍平",
+        "owner": "xiaopeng.lei",
+        "dependsOn": [
+          "T9",
+          "T10",
+          "T11",
+          "T12"
+        ],
+        "files": [
+          "mcp-server/src/api-command-types.ts",
+          "mcp-server/src/api-command-evidence.ts",
+          "mcp-server/src/api-command-site-scan.ts",
+          "mcp-server/src/api-command-normalize.ts",
+          "mcp-server/src/api-command-generator.ts",
+          "mcp-server/src/api-command-cache.ts",
+          "mcp-server/src/api-command-service.ts",
+          "mcp-server/src/api-command-args.ts",
+          "mcp-server/src/server.ts",
+          "browser-extension/api-command-helpers.js",
+          "mcp-server/test/api-command-evidence.test.mjs",
+          "mcp-server/test/api-command-types.test.mjs"
+        ],
+        "acceptanceCriteria": [],
+        "acceptance": "借鉴 REA 的口径而非代码（不引入 REA 依赖：需 Node 22+/24+ 与 Hopper/Ghidra 等本地逆向引擎、manifest 格式私有、其 Evidence 格式不兼容；其二进制/应用逆向主体、sticky provider、HAR/SAZ/qlog 解码器、protobuf/gRPC 体解码对本项目均不适用）。落地三条：(a) 证据分级 —— COMMAND_TIERS 四档，CommandProvenance 按端点/参数/响应三维分别判定、总档位取最弱；(b) 歧义显式 —— scanSources 同键候选合并（来源种类并集 + 参数名并集）并产出 host / baseUrl / sourceConflict 三类歧义，全部不猜只记录；(c) coverage 报告 —— 报告输出 coverage 段（byTier + byDimension 三维拆分 + verifiedCount + ambiguities + nextHints）。provenance 三态开关：未传 → SITE_SCAN_DEFAULT_PROVENANCE(true)，显式 false 仍是 false，置 false 时产物形状与旧版完全一致。新增用例 >= 1 条（实交付 28 条），修复前基线实测 >= 1 条失败",
+        "status": "done",
+        "commit": "T13",
+        "completion_note": "档位映射：抓包→observed，规格（OpenAPI/声明式命令包）与人工命令→derived，静态扫描+JS bundle→inferred，扫描+HAR 归档流量→observed，无来源→unknown；响应维度有样本才 observed 否则恒 unknown。总档位取三维最弱；多来源合并取最强档（弱证据不否定强观测）。byDimension 拆分的原因：静态推导的响应档位恒 unknown，只看 byTier 会被这一维拉平、失去区分度。sourceConflict 的判据经过一次修正——初版按「参数集不同」判冲突会误报（HAR 只记某次请求的参数、OpenAPI 声明全量），改为按同一 (method, pathTemplate) 被不同来源归到不同真实 host 判定。新增纯函数层 mcp-server/src/api-command-evidence.ts（无 IO / 无 Date / 无环境变量，可 node --test 直测）。cache 层 rebuildProvenance 缺失或非法时整体省略、不臆造档位。扩展侧 SOURCE_ALLOWED_KEYS / PROVENANCE_ALLOWED_KEYS / COMMAND_TIERS 逐字同步。新增 28 条回归用例，基线复核时其中 10 条在修复前实测失败；真实 B 站主 bundle 复测召回未回退（113 候选 / 48 个归属 api.bilibili.com，与 T11 基线一致），并检出 1 条真阳性歧义（/x/web-interface/nav 候选 api.bilibili.com + main-api.biligame.com）"
       }
     ]
   },
@@ -323,7 +351,7 @@
         "updatedAt": "2026-11-05",
         "branch": "feature/webpilot-api-command-set-s1137748852001393342",
         "baseCommit": "e4b2ec9",
-        "testResult": "npm test 326/326 pass（309 + T11 审查回归 8 条 + T12 传输层修复回归 9 条）；npm run doctor 5 pass / 3 info / 0 warn / 0 fail",
+        "testResult": "npm test 354/354 pass（309 + T11 审查回归 8 条 + T12 传输层修复回归 9 条 + T13 证据分级回归 28 条）；npm run doctor 5 pass / 3 info / 0 warn / 0 fail",
         "acceptanceEvidence": {
           "AC_1": "petstore OpenAPI 路径命中 19/19",
           "AC_2": "B 站静态推导召回 100%（35/35，loose=false 旧默认 0%）",
@@ -361,6 +389,19 @@
           "baselineFailures": 6,
           "realSiteRecheck": "真实 B 站主 bundle 1605288 字节：113 候选 / 48 个归属 api.bilibili.com，host 推断告警仍触发，无候选被占位 host 污染 —— 收紧未造成召回回退",
           "evidence": "test-artifacts/test-coverage-result.v1.json -> codeReviewRounds[0]"
+        },
+        "provenanceCoverage": {
+          "task": "T13",
+          "inspiration": "REA（Reverse Engineer Anything）的证据口径，不引入其代码",
+          "tiers": ["observed", "derived", "inferred", "unknown"],
+          "dimensions": ["endpoint", "params", "response"],
+          "ambiguityKinds": ["host", "baseUrl", "sourceConflict"],
+          "switch": "provenance 三态：未传 → SITE_SCAN_DEFAULT_PROVENANCE(true)；显式 false 仍是 false；置 false 时命令不带 source.provenance、报告不带 coverage 段",
+          "liveEvidence": "stdio JSON-RPC 直连新构建 dist/server.js：三源(js+har+openapi) → endpointCount=3 / commandCount=3，coverage.byDimension.endpoint={observed:1, inferred:2}、byDimension.response 全 unknown、verifiedCount=0、ambiguities=[]、3 条 nextHints；负向对照 provenance=false → 无 coverage 段、仍产出 endpointCount=1 / commandCount=1",
+          "realSiteRecheck": "真实 B 站主 bundle 1605288 字节复测：113 候选 / 48 个归属 api.bilibili.com，与 T11 基线完全一致（召回未回退）；并检出 1 条真阳性歧义（/x/web-interface/nav 候选 api.bilibili.com + main-api.biligame.com）",
+          "regressionTests": 28,
+          "baselineFailures": 10,
+          "evidence": "mcp-server/test/api-command-evidence.test.mjs；specs/design.md 第八节 §8.1 实现位置映射表"
         }
       }
     ]

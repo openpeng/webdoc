@@ -985,6 +985,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           discoverBundles: { type: "boolean", description: "scan_site 绿区开关：从 tabId 对应页面自动发现已加载的 JS bundle 并补采，默认 false（隐含 collectViaExtension）" },
           bundleMaxSources: { type: "number", description: "bundle 补采条数上限，默认 6，clamp 1..10" },
           bundleUseBrowserCache: { type: "boolean", description: "是否允许 CDP 读浏览器缓存里已加载过的原始字节兜底，默认 true" },
+          provenance: { type: "boolean", description: "是否为命令标注证据档位（observed/derived/inferred/unknown）并在报告里输出 coverage 覆盖率段，默认 true；置 false 完全回退到旧产物形状" },
         },
         required: ["action"],
       },

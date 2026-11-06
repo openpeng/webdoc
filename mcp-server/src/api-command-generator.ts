@@ -26,6 +26,7 @@ import {
   isForbiddenParamName, isSensitiveFieldName, sanitizeParamName,
 } from "./api-command-normalize.js";
 import { deriveResponseFields, emptyResponseSchema } from "./api-command-response-schema.js";
+import { deriveProvenance } from "./api-command-evidence.js";
 import type {
   HttpMethod, Risk, EndpointGroup, ApiCommand, ApiParam, RequestTemplate,
   ResponseSchema, ReviewItem, GenerateContext, GenerationResult, CommandSourceOrigin,
@@ -308,6 +309,7 @@ export function generateCommands(groups: EndpointGroup[], ctx: GenerateContext):
     ? ctx.sourceOrigin
     : "capture";
   const strictRedaction = ctx?.strictRedaction === true;
+  const withProvenance = ctx?.provenance === true;
   const schemaMap = ctx?.schema instanceof Map ? ctx.schema : new Map<string, ResponseSchema>();
 
   const commands: ApiCommand[] = [];
@@ -392,6 +394,16 @@ export function generateCommands(groups: EndpointGroup[], ctx: GenerateContext):
         generatedBy,
         origin: sourceOrigin,
         ...(crossHost ? { crossHost: true } : {}),
+        // 证据档位：来源种类 / 通道来源决定端点与参数档位，
+        // 响应档位只看是否真有样本（静态推导恒为 unknown）。
+        ...(withProvenance ? {
+          provenance: deriveProvenance({
+            sourceKinds: group.sourceKinds,
+            origin: sourceOrigin,
+            hasResponseSample: schema.sampleCount > 0,
+            hasObservedParams: sourceOrigin === "capture",
+          }),
+        } : {}),
       },
       health: {
         hits: 0, misses: 0, consecutiveFailures: 0, disabled: false, totalDurationMs: 0,

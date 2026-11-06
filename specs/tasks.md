@@ -43,7 +43,7 @@
   - 验收：AC-5 通过（调用方传 `params.nickname="lisi"` 实际发出 `lisi`，基线发出 `zhangsan`）；标量样本值可落盘且字符串长度 ≤ 200；`strictRedaction` 默认 false；新增用例 ≥ 1 条
 
 - [x] **2.4** T3 请求头放开：全部非凭据头放行，仅剔除 `Cookie` / `Authorization` / `Proxy-Authorization` / `Set-Cookie`（负责人：xiaopeng.lei）
-  - **完成**：`9628be5` — `API_COMMAND_FORBIDDEN_HEADERS` 剔除凭据头，其余全量下发；`EXECUTE_OPTIONS_ALLOWED_KEYS` 含 `headers`；两端常量逐字同步。用例：`api-command-render.test.mjs:285`/`:315`、`api-command-security.test.mjs:279`、`api-command-types.test.mjs:234`。
+  - **完成**：`9628be5` — `API_COMMAND_FORBIDDEN_HEADERS` 剔除凭据头，其余全量下发；`EXECUTE_OPTIONS_ALLOWED_KEYS` 含 `headers`；两端常量逐字同步。用例：`api-command-render.test.mjs:285`/`:315`、`api-command-security.test.mjs:279`、`api-command-types.test.mjs:236`。
   - 落点：`api-command-types.ts` / `api-command-render.ts` / `api-command-service.ts` / **[扩展侧]** `browser-extension/api-command-helpers.js` `rebuildExecuteOptions()` / `browser-extension/background.js` `cmdApiCommandExecute()`
   - 验收：AC-6 通过（请求含 `X-Requested-With`，不含 `Cookie` / `Authorization`）；`EXECUTE_OPTIONS_ALLOWED_KEYS` 含 `headers`；两端常量逐字同步断言通过；新增用例 ≥ 1 条
 
@@ -68,7 +68,7 @@
   - 验收：AC-14 通过（三个连续「哈」拼接得「哈哈哈」，基线得「哈」）；收到结束标记即返回已收内容；无 ~4× 超时放大；新增用例 ≥ 1 条
 
 - [x] **2.9** T9 复合命令（多步编排）—— 排最后，前置依赖 2.1–2.8 全部完成（负责人：xiaopeng.lei）
-  - **完成**：`ed52b71` — `ApiCommand.steps` + JSONPath 取值 + 显式映射表；`call` 走多步编排分支；预检零请求；风险只升不降；拒绝嵌套复合命令；随命令包导入导出。用例：`api-command-composite.test.mjs` 19 条、`api-command-types.test.mjs:213`。
+  - **完成**：`ed52b71` — `ApiCommand.steps` + JSONPath 取值 + 显式映射表；`call` 走多步编排分支；预检零请求；风险只升不降；拒绝嵌套复合命令；随命令包导入导出。用例：`api-command-composite.test.mjs` 19 条、`api-command-types.test.mjs:215`。
   - 落点：`api-command-types.ts`（`ApiCommand.steps`）/ `api-command-render.ts`（`resolveCompositeSteps()`）/ `api-command-service.ts` `call()`
   - 前置：**0.1** 取值路径语法须先与用户确认
   - 验收：AC-3、AC-4 在复合命令路径同样成立（缺参 → `MISSING_PARAMS`、`risk=write` 未确认 → `CONFIRMATION_REQUIRED`，均零网络请求）；上一步响应按 `from` 路径取值注入下一步 `params`；新增用例 ≥ 1 条
@@ -89,10 +89,15 @@
   - 落点：`mcp-server/src/api-command-site-scan.ts` `detectBaseUrlHosts()` / `mcp-server/src/api-command-render.ts` `applyStepMappings()` / `mcp-server/src/api-command-service.ts` `callComposite()` / `mcp-server/src/api-command-types.ts` `SITE_SCAN_PLACEHOLDER_BASE_HOST`
   - 验收：修复后 `npm test` **317/317 pass**（309 + 8，2.12 完成后为 326/326）；修复前基线实测 6 条新用例失败；真实 B 站主 bundle（1605288 字节）复测召回未回退（113 候选中 48 个归属 `api.bilibili.com`，host 推断告警仍触发，无候选被占位 host 污染）
 
+- [x] **2.13** T13 证据分级 + 歧义显式 + coverage 报告：借鉴 REA 的「证据口径」，让每条命令自证可信度、让多解证据显式暴露而非静默拍平（负责人：xiaopeng.lei）
+  - **完成**：`T13` — 借鉴 REA（Reverse Engineer Anything）的**口径**而非代码（不引入 REA 依赖：需 Node 22+/24+ 与 Hopper/Ghidra 等本地引擎、manifest 格式私有、其 Evidence 格式不兼容；其二进制/应用逆向主体、sticky provider、HAR/SAZ/qlog 解码器、protobuf/gRPC 体解码对本项目均不适用）。落地三条纪律：(a) **证据分级** —— 新增 `COMMAND_TIERS`（`observed` / `derived` / `inferred` / `unknown`）+ `COMMAND_TIER_STRENGTH` + `CommandProvenance`，按**端点 / 参数 / 响应三维分别判定**、总档位取最弱；档位映射：抓包→`observed`，规格（OpenAPI / 声明式命令包）与人工命令→`derived`，静态扫描 + JS bundle→`inferred`，扫描 + HAR 归档流量→`observed`，无来源→`unknown`；响应维度有样本才 `observed`，否则恒 `unknown`。(b) **歧义显式** —— `scanSources()` 由「同键首胜丢弃」改为**同键候选合并**（来源种类并集 + 参数名并集），并产出 `ambiguities` 三类（`host` 同一路径多 host 证据 / `baseUrl` 客户端 baseURL 多候选 / `sourceConflict` 同一 (method, pathTemplate) 被不同来源归到不同真实 host），全部「不猜」只记录。(c) **coverage 报告** —— 报告新增 `coverage` 段（`byTier` + `byDimension` 三维拆分 + `verifiedCount` + `ambiguities` + `nextHints`）；`byDimension` 拆三维的原因：静态推导的响应档位恒 `unknown`，只看 `byTier` 会被这一维拉平成全 `unknown`、失去区分度。新增纯函数层 `mcp-server/src/api-command-evidence.ts`（无 IO / 无 `Date` / 无环境变量，可 `node --test` 直测）。开关 `provenance` 三态：未传 → `SITE_SCAN_DEFAULT_PROVENANCE`（true），显式 false 仍是 false（放开是默认值不是强制值），置 false 时命令不带 `source.provenance`、报告不带 `coverage` 段，产物形状与旧版完全一致。用例：`api-command-evidence.test.mjs` 28 条、`api-command-types.test.mjs:196`/`:236`（两端常量 parity 扩到 `PROVENANCE_ALLOWED_KEYS` / `COMMAND_TIERS`）。
+  - 落点：`mcp-server/src/api-command-types.ts`（`:645` `COMMAND_TIERS` / `:649` `COMMAND_TIER_STRENGTH` / `:662` `CommandProvenance` / `:674` `SCAN_AMBIGUITY_KINDS` / `:699` `AnalysisCoverage` / `:274` `SOURCE_ALLOWED_KEYS` / `:276` `PROVENANCE_ALLOWED_KEYS` / `:1091` `SITE_SCAN_DEFAULT_PROVENANCE`） / `mcp-server/src/api-command-evidence.ts`（新建，`:146` `deriveProvenance()` / `:240` `buildCoverage()` / `:184` `makeAmbiguity()`） / `mcp-server/src/api-command-site-scan.ts`（`:705` `applyHostCrossReference()` 返回 `{ inferred, ambiguities }` / `:753` `scanSources()` 同键合并 / `:481` HAR 跨 origin 统计 / `:867` `toScanRecords()` 透传 `sourceKinds`） / `mcp-server/src/api-command-normalize.ts`（`:520` `groupEndpoints()` 取来源并集） / `mcp-server/src/api-command-generator.ts`（`:312` 开关 / `:400` 写入 `source.provenance`） / `mcp-server/src/api-command-cache.ts`（`:599` `rebuildProvenance()`，缺失或非法即整体省略、**不臆造档位**） / `mcp-server/src/api-command-service.ts`（`:1055` / `:1252` 三态开关 / `:1177` / `:1314` 输出 `report.coverage`） / `mcp-server/src/api-command-args.ts`（`:37` `TRI_STATE_BOOLEANS` 含 `provenance`） / `mcp-server/src/server.ts`（`:988` inputSchema 新增 `provenance`） / **[扩展侧]** `browser-extension/api-command-helpers.js`（`:188` / `:190` / `:192` 常量逐字同步）
+  - 验收：`npm test` **354/354 pass**（326 + 28）；基线复核——`git stash` 回退接线层后新增用例 **10 条 FAIL**（#13/#14/#15/#16/#17/#18/#19/#21/#23/#26，逐条对应合并 / tier / 冲突 / host 歧义 / baseURL 歧义 / 透传 / 生成 / 缓存往返 / coverage），恢复后全绿；`npm run build` tsc 零诊断；live 实测（stdio JSON-RPC 直连新构建 `dist/server.js`）三源（js + har + openapi）→ `endpointCount=3 / commandCount=3`，`coverage.byDimension.endpoint={observed:1, inferred:2}`、`byDimension.response` 全 `unknown`、`verifiedCount=0`、`ambiguities=[]`、3 条 nextHints；负向对照 `provenance=false` → **无 coverage 段**、仍产出 `endpointCount=1 / commandCount=1`；真实 B 站主 bundle（1605288 字节）复测召回**未回退**（113 候选 / 48 个归属 `api.bilibili.com`，与 T11 基线完全一致），并正确检出 1 条真阳性歧义（`/x/web-interface/nav` 候选 `api.bilibili.com` + `main-api.biligame.com`）；三项本地硬边界（域名白名单 / 紧急停止 / 目标 URL 校验）**一行未改**
+
 ## Phase 3：测试（QA）
 
 - [x] **3.1** 功能测试与回归（负责人：xiaopeng.lei）
-  - **完成**：`npm test` → **326/326 pass**（存量 245 条零回归 + 新增 81 条：T1–T10 累计 64 条 + T11 审查回归 8 条 + T12 传输层修复回归 9 条）；`npm run doctor` → 5 pass / 3 info / 0 warn / 0 fail。AC-11 专项：扩展域名白名单外目标被拒且零网络请求（`api-command-security.test.mjs:363`/`:395`）；AC-3 / AC-4：缺参与未确认均零网络请求（`api-command-render.test.mjs:227`）。
+  - **完成**：`npm test` → **354/354 pass**（存量 245 条零回归 + 新增 109 条：T1–T10 累计 64 条 + T11 审查回归 8 条 + T12 传输层修复回归 9 条 + T13 证据分级回归 28 条）；`npm run doctor` → 5 pass / 3 info / 0 warn / 0 fail。AC-11 专项：扩展域名白名单外目标被拒且零网络请求（`api-command-security.test.mjs:363`/`:395`）；AC-3 / AC-4：缺参与未确认均零网络请求（`api-command-render.test.mjs:227`）；T13 专项：新增用例在修复前基线实测 10 条 FAIL（回退接线层验证），恢复后 28/28 通过。
   - 范围：`npm test` 全绿（存量 245 条零回归 + 各批次新增用例）；`npm run doctor` 0 fail；AC 全部通过，无阻断性 Bug
   - 专项回归：AC-11 —— 扩展域名白名单外的目标被拒绝且零网络请求（硬边界不变）；AC-3 / AC-4 —— 缺参与未确认均零网络请求
   - 验收：AC-1 ~ AC-14 全部通过，无阻断性 Bug
@@ -103,7 +108,7 @@
   - 验收：AC-1 / AC-2 / AC-5 / AC-6 / AC-7 / AC-9 / AC-13 指标达标并留证（数据落 `test-artifacts/`）
 
 - [x] **3.3** 文档同步（负责人：xiaopeng.lei）
-  - **完成**：`78ae4ac` + `442f3e1` + `171d327` — README 工具表新增 `export_api_commands` / `import_api_commands`；放开项说明按 T1–T10 实现重写；新增复合命令与 host 归属说明；中英 19 节同构、工具表各 44 条完全一致；`docs/api-command-set-upgrade-spec.md` §6 补「实现位置 + 实测结果」列；T12 后按新 HEAD `171d327` 重校 `specs/design.md` 第八节与覆盖报告的全部 file:line 引用（`api-command-service.ts` / `server.ts` 行号整体前移），并回填 T12 缺陷与 9 条回归用例。
+  - **完成**：`78ae4ac` + `442f3e1` + `171d327` + `211fcbf` + 本次提交 — README 工具表新增 `export_api_commands` / `import_api_commands`；放开项说明按 T1–T10 实现重写；新增复合命令与 host 归属说明；中英 19 节同构、工具表各 44 条完全一致；`docs/api-command-set-upgrade-spec.md` §6 补「实现位置 + 实测结果」列；T12 后按新 HEAD `171d327` 重校 `specs/design.md` 第八节与覆盖报告的全部 file:line 引用（`api-command-service.ts` / `server.ts` 行号整体前移），并回填 T12 缺陷与 9 条回归用例；**T13 后再次全量重校** —— 新增 `api-command-evidence.ts` 与多处契约常量导致 8 个源文件行号再次整体漂移，`specs/design.md`（含新增 §8.1 T13 实现位置映射表）、`docs/api-command-set-upgrade-spec.md`、`test-artifacts/test-coverage-result.v1.json` 中的全部 `file:line` 已逐条核对到**确切标识符**（不只是非空行），并同步 326 → 354 用例计数与 T13 能力段落。
   - 范围：README / README.zh.md 工具表新增 `export_api_commands` / `import_api_commands` 并更新放开项说明；`docs/api-command-set-upgrade-spec.md` 与实现对齐
   - 验收：README 中英一致且与 `spec.md` 契约一致；`docs/` 描述与实际实现逐条对齐
 
@@ -114,7 +119,7 @@
 
 ---
 
-**执行结果（2026-11-05）**：`npm test` 326/326 pass ｜ `npm run doctor` 5 pass / 3 info / 0 warn / 0 fail ｜ 14/14 AC 通过 ｜ 代码审查 T11 修复 3 个可复现缺陷（补 8 条回归用例）+ T12 修复 1 个传输层强转可复现缺陷（补 9 条回归用例）｜ 基线 gap 0 阻断 ｜ 本机部署实测通过（orbit §2.5 非 CI 路径）。
+**执行结果（2026-11-05）**：`npm test` 354/354 pass ｜ `npm run doctor` 5 pass / 3 info / 0 warn / 0 fail ｜ 14/14 AC 通过 ｜ 代码审查 T11 修复 3 个可复现缺陷（补 8 条回归用例）+ T12 修复 1 个传输层强转可复现缺陷（补 9 条回归用例）+ T13 证据分级 / 歧义显式 / coverage 报告（补 28 条回归用例，修复前基线实测 10 条 FAIL）｜ 基线 gap 0 阻断 ｜ 本机部署实测通过（orbit §2.5 非 CI 路径）。
 
 **产出物索引**：
 
@@ -123,5 +128,7 @@
 | 覆盖结果（AC ↔ 用例 ↔ 实现位置） | `test-artifacts/test-coverage-result.v1.json` |
 | 真实站点复刻率数据 | `test-artifacts/t10-bilibili-recall.json` |
 | 升级规格（含 AC↔实现位置表） | `docs/api-command-set-upgrade-spec.md` |
+| T13 证据分级 / 歧义 / coverage 回归用例 | `mcp-server/test/api-command-evidence.test.mjs` |
+| T13 纯函数层（档位推导 / 歧义构造 / coverage 聚合） | `mcp-server/src/api-command-evidence.ts` |
 | 任务状态 | `task-list.json` |
 
