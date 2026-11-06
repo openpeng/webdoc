@@ -529,6 +529,12 @@ export function groupEndpoints(records: NormalizedRecord[]): EndpointGroup[] {
       groups.set(key, group);
     }
     group.records.push(rec);
+    // 来源种类取并集：同一端点被多个来源观察到时，证据档位由最强来源决定。
+    if (Array.isArray(rec.sourceKinds) && rec.sourceKinds.length > 0) {
+      const kinds = new Set(group.sourceKinds ?? []);
+      for (const kind of rec.sourceKinds) kinds.add(kind);
+      group.sourceKinds = [...kinds];
+    }
   }
   return [...groups.values()];
 }

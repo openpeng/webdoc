@@ -34,6 +34,7 @@ const TRI_STATE_BOOLEANS = [
   "loosePaths",
   "discoverBundles",
   "bundleUseBrowserCache",
+  "provenance",
 ] as const;
 
 type TriStateBoolean = (typeof TRI_STATE_BOOLEANS)[number];
@@ -90,6 +91,14 @@ export interface AnalyzeArgs {
   bundleMaxSources?: number;
   /** 是否允许 CDP 浏览器缓存层兜底（读已加载过的原始字节），默认 true。 */
   bundleUseBrowserCache?: boolean;
+  /**
+   * 【绿区·配置化放开】是否为命令标注证据档位（provenance）并在报告里输出覆盖率段。
+   *
+   * 三态：undefined = 走编排层默认值（`SITE_SCAN_DEFAULT_PROVENANCE`）；
+   * 显式 true / false 均按调用方意愿生效 —— **显式传 false 依然是 false**，
+   * 放开是默认值而非强制值，回退路径完好。
+   */
+  provenance?: boolean;
 }
 
 function asRecord(value: unknown): Record<string, unknown> {

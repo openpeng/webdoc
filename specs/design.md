@@ -36,13 +36,14 @@
 
 ### 4.1 核心思路
 
-- **改动点 1（发现覆盖 / T1+T2）**：`api-command-types.ts` 新增 `SITE_SCAN_DEFAULT_LOOSE` / `SITE_SCAN_DEFAULT_TRUST_SPEC` 两个默认放开常量；`api-command-service.ts` `scanSite()`（`:837`）改用常量取默认值；`api-command-site-scan.ts` `inferMethod()`（`:177`）扩展识别 `axios({method})` / 对象字面量 `method:` / `$.ajax({type})`，`toPathTemplate()`（`:207`）识别协议相对 URL 并把 host 从路径中剥离，`SiteScanCandidate` 增 `host?` 字段。
-- **改动点 2（值落盘与参数可覆盖 / T4）**：`api-command-normalize.ts` 新增 `isPersistableLiteral()`（任意标量、字符串长度上限）替换 `isSafeLiteral()`（`:120`）作为落盘判据；`api-command-generator.ts` `buildBodyTemplate()`（`:186`）/ `buildQueryTemplate()`（`:173`）把恒定参数改写成 `{{name}}` 占位符、真值落到 `param.defaultValue`；`api-command-render.ts` `renderRequest()`（`:141`）优先用调用方入参、缺省才回落 `defaultValue`；`api-command-response-schema.ts`（`:227` / `:236`）的 `REDACTED_VALUE` 改为受 `strictRedaction` 开关控制，默认不强制打码。
-- **改动点 3（请求头放开 / T3）**：`api-command-types.ts` 新增 `API_COMMAND_FORBIDDEN_HEADERS = ["cookie","authorization","proxy-authorization","set-cookie"]`，`API_COMMAND_ALLOWED_HEADERS`（`:271`）从「上限」降级为「最低保证集」，`EXECUTE_OPTIONS_ALLOWED_KEYS`（`:266`）加入 `headers`；`browser-extension/api-command-helpers.js` `rebuildExecuteOptions()`（`:446`）接受并按黑名单剔除 `headers`；`browser-extension/background.js` `cmdApiCommandExecute()`（`:2190`）把过滤后的头拼进 `fetch`。
-- **改动点 4（导出导入闭环 / T5）**：`api-command-types.ts` `ApiCommand` 新增 `source.origin`（`capture` / `scan` / `spec` / `manual`）；`api-command-cache.ts` 新增 `export()` / `import()`；`api-command-site-scan.ts` `parseCommandSetText()`（`:438`）同时接受成品格式（`request.urlTemplate` / `risk` / `responseFields` / `manuallyEdited` / `note`）；`mcp-server/src/server.ts` 工具注册区（`:948`–`:991`）新增 `export_api_commands` / `import_api_commands`。
-- **改动点 5（缓存一致性与破坏性默认值 / T6+T7）**：`api-command-cache.ts` `persist()`（`:576`）写前重读磁盘并按 hostname 合并、tmp 名改唯一；`ensureLoaded()`（`:504`）读失败置 `loadFailed`，该状态下只写本次新增域名；`server.ts` `invalidate_api_commands` 分支（`:1931`）+ `api-command-service.ts` `invalidate()`（`:655`）只认字面量 `clear_domain`，其余一律 `INVALID_PARAMS`；`browser-extension/background.js` `assertCommandAllowed()`（`:126`）只读门改按 `options.method` 派生，不再采信客户端上报的 `risk`。
-- **改动点 6（ai_search 修正 / T8）**：`baidu-ai-search.ts` `parseBaiduBaikanSse()`（`:427`）增量/快照判定去掉前缀启发式，改用事件显式标记、缺标记一律按增量追加；`api-command-service.ts` `fetchBaikanSse()`（`:533`）改 `ReadableStream` 逐段读取、收到结束标记即返回；`aiSearch()`（`:449`）的 `timeoutMs` 改为跨通道总预算。
-- **改动点 7（复合命令 / T9）**：`api-command-types.ts` `ApiCommand` 新增 `steps?: CommandStep[]`；`api-command-render.ts` 新增 `resolveCompositeSteps()` 按 `from` 路径取值注入下一步 `params`；`api-command-service.ts` `call()`（`:1156`）按序执行子命令并合并结果。
+- **改动点 1（发现覆盖 / T1+T2）**：`api-command-types.ts` 新增 `SITE_SCAN_DEFAULT_LOOSE` / `SITE_SCAN_DEFAULT_TRUST_SPEC` 两个默认放开常量；`api-command-service.ts` `scanSite()`（`:927`）改用常量取默认值；`api-command-site-scan.ts` `inferMethod()`（`:290`）扩展识别 `axios({method})` / 对象字面量 `method:` / `$.ajax({type})`，`toPathTemplate()`（`:331`）识别协议相对 URL 并把 host 从路径中剥离，`SiteScanCandidate` 增 `host?` 字段。
+- **改动点 2（值落盘与参数可覆盖 / T4）**：`api-command-normalize.ts` 新增 `isPersistableLiteral()`（`:170`，任意标量、字符串长度上限）替换 `isSafeLiteral()`（`:121`）作为落盘判据；`api-command-generator.ts` `buildBodyTemplate()`（`:195`）/ `buildQueryTemplate()`（`:182`）把恒定参数改写成 `{{name}}` 占位符、真值落到 `param.defaultValue`；`api-command-render.ts` `renderRequest()`（`:145`）优先用调用方入参、缺省才回落 `defaultValue`；`api-command-response-schema.ts`（`:235` / `:244`）的 `REDACTED_VALUE` 改为受 `strictRedaction` 开关控制，默认不强制打码。
+- **改动点 3（请求头放开 / T3）**：`api-command-types.ts` 新增 `API_COMMAND_FORBIDDEN_HEADERS = ["cookie","authorization","proxy-authorization","set-cookie"]`，`API_COMMAND_ALLOWED_HEADERS`（`:308`）从「上限」降级为「最低保证集」，`EXECUTE_OPTIONS_ALLOWED_KEYS`（`:289`）加入 `headers`；`browser-extension/api-command-helpers.js` `rebuildExecuteOptions()`（`:493`）接受并按黑名单剔除 `headers`；`browser-extension/background.js` `cmdApiCommandExecute()`（`:2194`）把过滤后的头拼进 `fetch`。
+- **改动点 4（导出导入闭环 / T5）**：`api-command-types.ts` `ApiCommand` 新增 `source.origin`（`capture` / `scan` / `spec` / `manual`）；`api-command-cache.ts` 新增 `export()` / `import()`；`api-command-site-scan.ts` `parseCommandSetText()`（`:595`）同时接受成品格式（`request.urlTemplate` / `risk` / `responseFields` / `manuallyEdited` / `note`）；`mcp-server/src/server.ts` 工具注册区（`:948`–`:1017`，`export_api_commands` 在 `:994`、`import_api_commands` 在 `:1007`）新增 `export_api_commands` / `import_api_commands`。
+- **改动点 5（缓存一致性与破坏性默认值 / T6+T7）**：`api-command-cache.ts` `persist()`（`:909`）写前重读磁盘并按 hostname 合并、tmp 名改唯一；`ensureLoaded()`（`:777`）读失败置 `loadFailed`，该状态下只写本次新增域名；`server.ts` `invalidate_api_commands` 分支（`:1958`）+ `api-command-service.ts` `invalidate()`（`:744`）只认字面量 `clear_domain`，其余一律 `INVALID_PARAMS`；`browser-extension/background.js` `assertCommandAllowed()`（`:126`）只读门改按 `options.method` 派生，不再采信客户端上报的 `risk`。
+- **改动点 6（ai_search 修正 / T8）**：`baidu-ai-search.ts` `parseBaiduBaikanSse()`（`:427`）增量/快照判定去掉前缀启发式，改用事件显式标记、缺标记一律按增量追加；`api-command-service.ts` `fetchBaikanSse()`（`:540`）改 `ReadableStream` 逐段读取、收到结束标记即返回；`aiSearch()`（`:456`）的 `timeoutMs` 改为跨通道总预算。
+- **改动点 7（复合命令 / T9）**：`api-command-types.ts` `ApiCommand` 新增 `steps?: CommandStep[]`；`api-command-render.ts` 新增 `resolveCompositeSteps()` 按 `from` 路径取值注入下一步 `params`；`api-command-service.ts` `call()`（`:1379`）按序执行子命令并合并结果。
+- **改动点 8（证据分级 / 歧义显式 / coverage 报告 / T13）**：借鉴 REA（Reverse Engineer Anything）的「证据口径」而非其代码 —— REA 的核心主张是「缺失的覆盖是未知，不是没有」，本项目落到三条可验证的纪律上：(a) **证据分级** —— `api-command-types.ts`（`:645` `COMMAND_TIERS` / `:649` `COMMAND_TIER_STRENGTH` / `:662` `CommandProvenance`）新增 `observed` / `derived` / `inferred` / `unknown` 四档，档位按**端点 / 参数 / 响应三维分别判定**，总档位取最弱一档（端点再确定、响应靠猜，整条命令仍不可信）；(b) **歧义显式** —— `api-command-site-scan.ts`（`:705` `applyHostCrossReference()` / `:753` `scanSources()`）不再静默拍平，同键候选**合并**（来源种类并集 + 参数名并集）并产出 `ambiguities`（`:674` `SCAN_AMBIGUITY_KINDS`：`host` / `baseUrl` / `sourceConflict`），全部「不猜」只记录；(c) **coverage 报告** —— `api-command-service.ts`（`:1177` / `:1314`）输出 `report.coverage`（`:699` `AnalysisCoverage`），含 `byTier` 与 `byDimension` 三维拆分、歧义清单与下一步提示。新增纯函数层 `mcp-server/src/api-command-evidence.ts`（`deriveProvenance()` / `weakestTier()` / `buildCoverage()` / `hostAmbiguity()` / `baseUrlAmbiguity()`，无 IO、无 `Date`、无环境变量，可 `node --test` 直测）。开关 `provenance` 三态（未传 → `SITE_SCAN_DEFAULT_PROVENANCE`（`:1091`）= true；显式 false 仍是 false），置 false 时产物形状与旧版完全一致，可一键回退。
 
 ### 4.2 方案图
 
@@ -95,6 +96,7 @@ flowchart TD
 - [x] 验收标准13（对应 AC-13）：petstore OpenAPI 19 个端点产出 19 条命令且路径 19/19 命中。
 - [x] 验收标准14（对应 AC-14）：SSE 连续相同字符的增量片段拼接后不丢字。
 - [x] 验收标准15（对应 A8）：`npm test` 全绿（存量 245 条零回归 + 每批次新增用例），`npm run doctor` 0 fail。
+- [x] 验收标准16（对应 T13）：命令按证据档位（`observed` / `derived` / `inferred` / `unknown`）标注，端点 / 参数 / 响应三维分别判定且总档位取最弱；歧义（`host` / `baseUrl` / `sourceConflict`）显式列出而不猜；报告输出 `coverage` 段且各档计数自洽；`provenance=false` 时产物形状与旧版完全一致。
 
 ## 七、风险（必须）
 
@@ -107,6 +109,7 @@ flowchart TD
 | 缓存写前重读合并引入新的写竞争 | 同 hostname 仍 last-writer-wins | 合并按 hostname 粒度；tmp 文件名带 pid + 时间戳避免互相覆盖；合并逻辑用双进程用例覆盖（AC-9） |
 | 改动面大（跨 MCP 侧与扩展侧，14 个源文件） | 一处回归可能影响既有 245 条用例 | 按 T1–T10 顺序分批，每批一个 commit 且独立可测；每批先跑 `npm test` 再推进 |
 | 扩展侧与 Node 侧常量漂移 | 请求头/敏感字段名单不一致，出现隐蔽行为差异 | 两端常量逐字同步，并在 `npm test` 中加同步断言 |
+| T13 档位误标导致用户过度信任命令 | 把静态推断的命令当成实测可用，调用后大面积失败 | 档位按端点 / 参数 / 响应**三维分别判定**、总档位取最弱（响应结构恒为 `unknown` 时整条命令不可能是 `observed`）；`coverage.byDimension` 单独暴露三维，避免只看总档位误读；歧义一律显式列出不猜 |
 
 ---
 
@@ -114,25 +117,25 @@ flowchart TD
 
 > 每条 AC 映射到实现位置（接口/方法），保证 spec→design 可追溯。四层扫描完整映射见 full 版。
 
-> **行号已于 2026-11-05 逐条复核**（原稿行号随实现漂移已失效，本表按当前 HEAD `171d327` 重校 —— T12 传输层参数归一化重构后 `api-command-service.ts` / `server.ts` 行号整体前移，已重新逐条核对）。
+> **行号已于 2026-11-05 逐条复核**（原稿行号随实现漂移已失效，本表按当前 HEAD `171d327` 重校 —— T12 传输层参数归一化重构后 `api-command-service.ts` / `server.ts` 行号整体前移，已重新逐条核对）。**T13 证据分级批次后再次重校**：新增 `api-command-evidence.ts` 与多处契约常量，`api-command-types.ts` / `api-command-site-scan.ts` / `api-command-cache.ts` / `api-command-generator.ts` / `api-command-service.ts` / `api-command-args.ts` / `server.ts` / `browser-extension/api-command-helpers.js` 的行号再次整体漂移，本表与 `test-artifacts/test-coverage-result.v1.json` 中的全部 `file:line` 已逐条核对到**确切标识符**（不只是非空行）。
 > 每条 AC 的**执行证据用例**见 `test-artifacts/test-coverage-result.v1.json`（14/14 通过，gap 已显式登记）。
 
 | AC ID | 实现位置（接口/方法） | 证据用例 | 备注 |
 |-------|----------------------|---------|------|
-| AC-1 | `api-command-service.ts:1053`（`scanSite()` 内的 loose 取值） + `api-command-types.ts:921` `SITE_SCAN_DEFAULT_LOOSE` + `api-command-site-scan.ts:725` `scanSources()` | `api-command-site-scan.test.mjs:500` | 默认 `loosePaths` 放开为 true |
-| AC-2 | `api-command-site-scan.ts:287` `inferMethod()` + `api-command-types.ts:929` `SITE_SCAN_DEFAULT_TRUST_SPEC` + `api-command-service.ts:1090`/`:1127` trustSpec 与 risk 覆盖 | `api-command-site-scan.test.mjs:523` | GET/HEAD/OPTIONS → `read` |
-| AC-3 | `api-command-render.ts:85` `validateParams()` + `api-command-service.ts:1330` `call()` + `:1517` `callComposite()` | `api-command-render.test.mjs:227`、`api-command-composite.test.mjs:291` | 缺参 → `MISSING_PARAMS`，渲染前拦截；复合命令同样受此门禁 |
-| AC-4 | `api-command-service.ts:1330` `call()` + `:1517` `callComposite()` | `api-command-render.test.mjs:227`、`api-command-composite.test.mjs:262` | `risk=write` 未确认 → `CONFIRMATION_REQUIRED` |
-| AC-5 | `api-command-generator.ts:194` `buildBodyTemplate()` + `:181` `buildQueryTemplate()` + `api-command-render.ts:145` `renderRequest()` + `api-command-service.ts:1735` `filterParamsForCommand()` | `api-command-render.test.mjs:354`/`:367`/`:378` | 常量改写为 `{{name}}` 占位符，调用方值优先 |
-| AC-6 | `api-command-types.ts:313` `API_COMMAND_FORBIDDEN_HEADERS` + `:287` `EXECUTE_OPTIONS_ALLOWED_KEYS` + `browser-extension/api-command-helpers.js:236` `sanitizeRequestHeaders()` / `:489` `rebuildExecuteOptions()` + `browser-extension/background.js:2194` `cmdApiCommandExecute()` | `api-command-render.test.mjs:285`/`:315`、`api-command-security.test.mjs:279` | 仅剔 `Cookie` / `Authorization` 等凭据头 |
-| AC-7 | `api-command-cache.ts:1127` `export()` + `:1174` `import()` + `:724` `rewriteCommandHost()` + `server.ts:993` / `:1006` 工具注册 | `api-command-cache.test.mjs:113`、`api-command-composite.test.mjs:447` | 导出导入闭环；复合命令随包往返 |
-| AC-8 | `api-command-site-scan.ts:578` `parseCommandSetText()` | `api-command-site-scan.test.mjs:662`、`api-command-cache.test.mjs:164` | 成品格式优先，保全 `request.urlTemplate` / `risk` / `responseFields` / `manuallyEdited` / `note` |
-| AC-9 | `api-command-cache.ts:891` `persist()` + `:759` `ensureLoaded()` + `:78` `buildCacheTmpName()` | `api-command-cache.test.mjs:529`/`:553`/`:569`/`:587` | 写前重读按 hostname 合并 + 唯一 tmp 名 + `loadFailed` 保护 |
-| AC-10 | `server.ts:1957` `invalidate_api_commands` 分支 + `api-command-service.ts:737` `invalidate()` | `api-command-security.test.mjs:711` | 只认字面量 `clear_domain`，其余 `INVALID_PARAMS` 且不删数据 |
-| AC-11 | `browser-extension/background.js:126` `assertCommandAllowed()` + `browser-extension/api-command-helpers.js:364` `assertApiTargetUrl()` | `api-command-security.test.mjs:363`/`:395`/`:412` | 硬边界，一行不改 |
+| AC-1 | `api-command-service.ts:1064`（`scanSite()` 内的 loose 取值） + `api-command-types.ts:1074` `SITE_SCAN_DEFAULT_LOOSE` + `api-command-site-scan.ts:753` `scanSources()` | `api-command-site-scan.test.mjs:500` | 默认 `loosePaths` 放开为 true |
+| AC-2 | `api-command-site-scan.ts:290` `inferMethod()` + `api-command-types.ts:1082` `SITE_SCAN_DEFAULT_TRUST_SPEC` + `api-command-service.ts:1102`/`:1105` trustSpec 与 risk 覆盖 | `api-command-site-scan.test.mjs:523` | GET/HEAD/OPTIONS → `read` |
+| AC-3 | `api-command-render.ts:85` `validateParams()` + `api-command-service.ts:1379` `call()` + `:1566` `callComposite()` | `api-command-render.test.mjs:227`、`api-command-composite.test.mjs:291` | 缺参 → `MISSING_PARAMS`，渲染前拦截；复合命令同样受此门禁 |
+| AC-4 | `api-command-service.ts:1379` `call()` + `:1566` `callComposite()` | `api-command-render.test.mjs:227`、`api-command-composite.test.mjs:262` | `risk=write` 未确认 → `CONFIRMATION_REQUIRED` |
+| AC-5 | `api-command-generator.ts:195` `buildBodyTemplate()` + `:182` `buildQueryTemplate()` + `api-command-render.ts:145` `renderRequest()` + `api-command-service.ts:1784` `filterParamsForCommand()` | `api-command-render.test.mjs:354`/`:367`/`:378` | 常量改写为 `{{name}}` 占位符，调用方值优先 |
+| AC-6 | `api-command-types.ts:315` `API_COMMAND_FORBIDDEN_HEADERS` + `:289` `EXECUTE_OPTIONS_ALLOWED_KEYS` + `browser-extension/api-command-helpers.js:240` `sanitizeRequestHeaders()` / `:493` `rebuildExecuteOptions()` + `browser-extension/background.js:2194` `cmdApiCommandExecute()` | `api-command-render.test.mjs:285`/`:315`、`api-command-security.test.mjs:279` | 仅剔 `Cookie` / `Authorization` 等凭据头 |
+| AC-7 | `api-command-cache.ts:1145` `export()` + `:1192` `import()` + `:742` `rewriteCommandHost()` + `server.ts:994` / `:1007` 工具注册 | `api-command-cache.test.mjs:113`、`api-command-composite.test.mjs:494` | 导出导入闭环；复合命令随包往返 |
+| AC-8 | `api-command-site-scan.ts:595` `parseCommandSetText()` | `api-command-site-scan.test.mjs:662`、`api-command-cache.test.mjs:164` | 成品格式优先，保全 `request.urlTemplate` / `risk` / `responseFields` / `manuallyEdited` / `note` |
+| AC-9 | `api-command-cache.ts:909` `persist()` + `:777` `ensureLoaded()` + `:79` `buildCacheTmpName()` | `api-command-cache.test.mjs:529`/`:553`/`:569`/`:587` | 写前重读按 hostname 合并 + 唯一 tmp 名 + `loadFailed` 保护 |
+| AC-10 | `server.ts:1958` `invalidate_api_commands` 分支 + `api-command-service.ts:744` `invalidate()` | `api-command-security.test.mjs:711` | 只认字面量 `clear_domain`，其余 `INVALID_PARAMS` 且不删数据 |
+| AC-11 | `browser-extension/background.js:126` `assertCommandAllowed()` + `browser-extension/api-command-helpers.js:368` `assertApiTargetUrl()` | `api-command-security.test.mjs:363`/`:395`/`:412` | 硬边界，一行不改 |
 | AC-12 | `browser-extension/background.js:126` `assertCommandAllowed()`（只读门按 `options.method` 派生） | `api-command-security.test.mjs:329`/`:311` | 不再采信客户端自述 `risk` |
-| AC-13 | `api-command-site-scan.ts:503` `parseOpenApiText()` + `:725` `scanSources()` + `:189` `splitProtocolRelativeUrl()` + `:688` `applyHostCrossReference()` + `:225` `detectBaseUrlHosts()` | `api-command-site-scan.test.mjs:574`/`:581`/`:609`、`api-command-host-infer.test.mjs:60`–`:94` | 规格驱动路径命中 19/19；T10a 跨源 host 交叉引用 + baseURL 侦测 |
-| AC-14 | `baidu-ai-search.ts:427` `parseBaiduBaikanSse()` + `api-command-service.ts:533` `fetchBaikanSse()` + `:501` `buildAiSearchResult()` + `:449` `aiSearch()` | `baidu-ai-search.test.mjs:317`、`api-command-ai-search.test.mjs:47`/`:83`/`:116` | 增量判定改显式标记 + 流式读取 + 跨通道总预算 + attempts 真实计数 |
+| AC-13 | `api-command-site-scan.ts:520` `parseOpenApiText()` + `:725` `scanSources()` + `:192` `splitProtocolRelativeUrl()` + `:705` `applyHostCrossReference()` + `:228` `detectBaseUrlHosts()` | `api-command-site-scan.test.mjs:574`/`:581`/`:609`、`api-command-host-infer.test.mjs:60`–`:94` | 规格驱动路径命中 19/19；T10a 跨源 host 交叉引用 + baseURL 侦测 |
+| AC-14 | `baidu-ai-search.ts:427` `parseBaiduBaikanSse()` + `api-command-service.ts:540` `fetchBaikanSse()` + `:508` `buildAiSearchResult()` + `:456` `aiSearch()` | `baidu-ai-search.test.mjs:317`、`api-command-ai-search.test.mjs:47`/`:83`/`:116` | 增量判定改显式标记 + 流式读取 + 跨通道总预算 + attempts 真实计数 |
 
 **基线 gap 处置（显式登记，不伪造自动映射）**：
 
@@ -140,6 +143,27 @@ flowchart TD
 |---|---|
 | `NO_ENDPOINT_DISCOVERED` | 本项目暴露的是 MCP 工具而非 HTTP 路由，端点抽取器识别到 0 个端点。改用本表 + `test-artifacts/test-coverage-result.v1.json` 人工映射；后续如需自动映射需为 MCP 工具注册补一层端点适配器（本期非目标） |
 | `UNMAPPED_ACCEPTANCE_CRITERIA` | 每批次新增用例在测试名中显式标注 `Tn`，覆盖产物按标注逐条人工回填用例编号与证据引用 |
+
+### 8.1 T13 证据分级 / 歧义显式 / coverage 报告 —— 实现位置映射
+
+> T13 不新增 AC，是**在既有 14 条 AC 之上叠加的能力**（借鉴 REA 的证据口径）。
+> 档位映射：抓包 → `observed`；规格（OpenAPI / 声明式命令包）与人工命令 → `derived`；
+> 静态扫描 + JS bundle → `inferred`；扫描 + HAR 归档流量 → `observed`；无来源 → `unknown`。
+> 响应维度：有样本 → `observed`，否则恒 `unknown`。
+
+| 能力 | 实现位置（接口/方法） | 证据用例 |
+|---|---|---|
+| 档位契约（`COMMAND_TIERS` / `COMMAND_TIER_STRENGTH` / `CommandProvenance` 三维） | `api-command-types.ts:645` / `:649` / `:662` | `api-command-evidence.test.mjs:73` / `:118` |
+| 档位推导（纯函数，无 IO） | `api-command-evidence.ts:41` `normalizeTier()` / `:48` `weakestTier()` / `:78` `tierForSourceKind()` / `:89` `tierForSourceKinds()` / `:111` `tierForOrigin()` / `:146` `deriveProvenance()` | `api-command-evidence.test.mjs:84` / `:91` / `:102` / `:110` / `:118` |
+| 歧义构造（`host` / `baseUrl` / `sourceConflict`） | `api-command-evidence.ts:184` `makeAmbiguity()` / `:205` `hostAmbiguity()` / `:212` `baseUrlAmbiguity()`；`api-command-types.ts:674` `SCAN_AMBIGUITY_KINDS` | `api-command-evidence.test.mjs:158` / `:170` / `:314` / `:342` / `:362` |
+| 同键候选合并 + 歧义产出 | `api-command-site-scan.ts:753` `scanSources()` / `:705` `applyHostCrossReference()` / `:481` HAR 跨 origin 统计 / `:867` `toScanRecords()`（`:905` 透传 `sourceKinds`） | `api-command-evidence.test.mjs:265` / `:279` / `:291` / `:376` |
+| coverage 聚合（`byTier` + `byDimension` 三维拆分） | `api-command-evidence.ts:240` `buildCoverage()` / `:279` `coverageCountsConsistent()`；`api-command-types.ts:699` `AnalysisCoverage` | `api-command-evidence.test.mjs:189` / `:212` / `:231` / `:241` |
+| 命令落盘带 `source.provenance` | `api-command-generator.ts:312` `generateCommands()` 开关 / `:400` `deriveProvenance()` 写入；`api-command-cache.ts:599` `rebuildProvenance()`（缺失即省略，不臆造档位） | `api-command-evidence.test.mjs:393` / `:418` / `:442` / `:480` |
+| 报告 `coverage` 段 + 歧义告警 | `api-command-service.ts:1055` 抓包通道开关 / `:1177` `report.coverage` / `:1252` scan 通道开关 / `:1314` `report.coverage`；`api-command-types.ts:419`–`:421` 三条固定告警文案 / `:423`–`:427` 五条 coverage 提示 | `api-command-evidence.test.mjs:525` / `:544` / `:558` / `:562` |
+| 三态开关（未传 → 默认 true，显式 false 仍是 false） | `api-command-args.ts:32` `TRI_STATE_BOOLEANS`（`:37` 含 `provenance`）/ `:118` `toBooleanArg()` / `:133` `toAnalyzeArgs()`；`api-command-types.ts:1091` `SITE_SCAN_DEFAULT_PROVENANCE` | `api-command-evidence.test.mjs:418` / `:544` / `:558` |
+| 工具入参暴露 | `server.ts:988` `analyze_page_apis` inputSchema 的 `provenance` 布尔项 | `api-command-evidence.test.mjs:544` |
+| 两端常量逐字同步 | `api-command-types.ts:274` `SOURCE_ALLOWED_KEYS`（含 `provenance`）/ `:276` `PROVENANCE_ALLOWED_KEYS`；`browser-extension/api-command-helpers.js:188` / `:190` / `:192` | `api-command-types.test.mjs:196` / `:236` |
+
 
 ---
 

@@ -185,7 +185,11 @@ const REQUEST_TEMPLATE_ALLOWED_KEYS = ['method', 'urlTemplate', 'pathTemplate', 
 const API_PARAM_ALLOWED_KEYS = ['name', 'location', 'type', 'required', 'description', 'enumCount', 'allowedValues', 'constant', 'defaultValue'];
 const SCHEMA_FIELD_ALLOWED_KEYS = ['path', 'type', 'array', 'isPagination', 'redacted'];
 const RESPONSE_SCHEMA_ALLOWED_KEYS = ['fields', 'depthLimited', 'sampleCount'];
-const SOURCE_ALLOWED_KEYS = ['analysisId', 'analyzedAt', 'generatedBy', 'origin', 'crossHost'];
+const SOURCE_ALLOWED_KEYS = ['analysisId', 'analyzedAt', 'generatedBy', 'origin', 'crossHost', 'provenance'];
+/** source.provenance 的子字段白名单 —— 逐字同步。 */
+const PROVENANCE_ALLOWED_KEYS = ['tier', 'endpoint', 'params', 'response'];
+/** 证据档位（由强到弱）—— 逐字同步。 */
+const COMMAND_TIERS = ['observed', 'derived', 'inferred', 'unknown'];
 const HEALTH_ALLOWED_KEYS = [
   'hits', 'misses', 'consecutiveFailures', 'disabled', 'totalDurationMs',
   'lastSuccessAt', 'lastFailureAt', 'lastError', 'drifted', 'authRequired',

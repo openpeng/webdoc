@@ -34,12 +34,15 @@ import {
 } from "./api-command-types.js";
 import type {
   SiteScanKind, SiteScanCandidate, SiteScanResult,
-  NormalizedRecord, HttpMethod,
+  NormalizedRecord, HttpMethod, ScanAmbiguity,
 } from "./api-command-types.js";
 import {
   normalizeHostname, isSensitiveFieldName, sanitizeParamName, templatePath,
   isValidHostname,
 } from "./api-command-normalize.js";
+import {
+  hostAmbiguity, baseUrlAmbiguity, makeAmbiguity,
+} from "./api-command-evidence.js";
 
 // ===========================================================================
 // 1. URL 安全（SSRF 防护）—— 纯函数，由编排层在 fetch 之前调用
@@ -432,6 +435,8 @@ export function parseHarText(text: string, opts: ScanParseOptions = {}): SiteSca
   const log = (data as Record<string, unknown> | null)?.log as Record<string, unknown> | undefined;
   const entries = Array.isArray(log?.entries) ? log?.entries as unknown[] : [];
   const found = new Map<string, SiteScanCandidate>();
+  // 同一路径在归档流量里出现过哪些 origin（host）—— 供歧义检测使用。
+  const hostsByKey = new Map<string, Set<string>>();
   for (const raw of entries) {
     const entry = raw as Record<string, unknown> | null;
     const request = entry?.request as Record<string, unknown> | undefined;
@@ -460,8 +465,20 @@ export function parseHarText(text: string, opts: ScanParseOptions = {}): SiteSca
       origin: "har",
     };
     const key = candidateKey(method, pathTemplate);
+    const observedHost = normalizeHostname(parsed.hostname);
+    if (observedHost) {
+      const hosts = hostsByKey.get(key);
+      if (hosts) hosts.add(observedHost);
+      else hostsByKey.set(key, new Set([observedHost]));
+    }
     if (!found.has(key)) found.set(key, candidate);
     if (found.size >= limit) break;
+  }
+  // 归档流量里同一路径跨多个 origin 时，**不猜**哪个才是目标站 ——
+  // 显式记下观测到的 origin 集合，交由歧义检测暴露给调用方。
+  for (const [key, hosts] of hostsByKey) {
+    const candidate = found.get(key);
+    if (candidate && hosts.size > 1) candidate.observedHosts = [...hosts].sort();
   }
   return [...found.values()];
 }
@@ -688,7 +705,7 @@ export interface ScanSourcesOptions extends ScanParseOptions {
 function applyHostCrossReference(
   collected: Array<{ kind: SiteScanKind; candidates: SiteScanCandidate[]; text: string }>,
   baseUrlHosts: string[],
-): number {
+): { inferred: number; ambiguities: ScanAmbiguity[] } {
   const hostByPath = new Map<string, Set<string>>();
   for (const { kind, candidates } of collected) {
     if (kind !== "js") continue;
@@ -699,6 +716,9 @@ function applyHostCrossReference(
       else hostByPath.set(candidate.pathTemplate, new Set([candidate.host]));
     }
   }
+  const ambiguities: ScanAmbiguity[] = [];
+  // baseURL 有多个候选时，**整批**都无法推断 host —— 只记一次，不按候选数重复记。
+  const baseUrlAmb = baseUrlHosts.length > 1 ? baseUrlAmbiguity(baseUrlHosts) : undefined;
   let inferred = 0;
   for (const { kind, candidates } of collected) {
     if (kind !== "js") continue;
@@ -712,14 +732,22 @@ function applyHostCrossReference(
         continue;
       }
       // 路径本身有多个 host 证据 → 有歧义，不猜。
-      if (hosts && hosts.size > 1) continue;
+      // 【歧义显式】以前这里是静默 continue，调用方无从得知「这条端点的主机归属不确定」。
+      if (hosts && hosts.size > 1) {
+        const ambiguity = hostAmbiguity(candidate.pathTemplate, [...hosts]);
+        if (ambiguity) ambiguities.push(ambiguity);
+        continue;
+      }
       // 路径没有任何 host 证据，但客户端 baseURL 唯一 → 挂到 baseURL 主机上。
-      if (baseUrlHosts.length !== 1) continue;
+      if (baseUrlHosts.length !== 1) {
+        if (baseUrlAmb) ambiguities.push(baseUrlAmb);
+        continue;
+      }
       candidate.host = baseUrlHosts[0];
       inferred += 1;
     }
   }
-  return inferred;
+  return { inferred, ambiguities };
 }
 
 export function scanSources(
@@ -759,22 +787,73 @@ export function scanSources(
   const baseUrlHosts = [...new Set(collected.flatMap(({ kind, text }) => (
     kind === "js" ? detectBaseUrlHosts(text ?? "") : []
   )))];
-  const hostInferred = applyHostCrossReference(collected, baseUrlHosts);
-  if (hostInferred > 0) warnings.push(SITE_SCAN_HOST_INFERRED_WARNING);
+  const crossRef = applyHostCrossReference(collected, baseUrlHosts);
+  if (crossRef.inferred > 0) warnings.push(SITE_SCAN_HOST_INFERRED_WARNING);
+  const ambiguities: ScanAmbiguity[] = [...crossRef.ambiguities];
 
-  for (const { candidates } of collected) {
+  // 同键候选**合并**（不再首胜丢弃）：
+  //  - 来源种类取并集（决定证据档位：HAR 观测 > 规格声明 > bundle 推断）；
+  //  - 参数名取并集（多源各自看到一部分参数时，合并后参数集更完整）。
+  //
+  // 注：**参数集不同不算冲突** —— HAR 只记录了某一次请求里出现的参数，
+  // 规格声明的是完整参数集，两者天然不同；那是「观察面不同」，不是「证据矛盾」。
+  for (const { kind, candidates } of collected) {
     for (const candidate of candidates) {
       const key = candidateKey(candidate.method, candidate.pathTemplate, candidate.host);
-      if (!merged.has(key)) merged.set(key, candidate);
+      const existing = merged.get(key);
+      if (!existing) {
+        merged.set(key, { ...candidate, sourceKinds: [kind] });
+        if (merged.size >= perSource) break;
+        continue;
+      }
+      const kinds = [...new Set([...(existing.sourceKinds ?? []), kind])];
+      merged.set(key, {
+        ...existing,
+        queryNames: [...new Set([...existing.queryNames, ...candidate.queryNames])],
+        bodyNames: [...new Set([...existing.bodyNames, ...candidate.bodyNames])],
+        sourceKinds: kinds,
+      });
       if (merged.size >= perSource) break;
     }
     if (merged.size >= perSource) break;
   }
+
+  // 归档流量里同一路径跨多个 origin → 显式歧义（不猜哪个才是目标站）。
+  for (const candidate of merged.values()) {
+    if (!candidate.observedHosts || candidate.observedHosts.length <= 1) continue;
+    const ambiguity = hostAmbiguity(candidate.pathTemplate, candidate.observedHosts);
+    if (ambiguity && !ambiguities.some((item) => item.kind === "host"
+      && item.pathTemplate === candidate.pathTemplate)) {
+      ambiguities.push(ambiguity);
+    }
+  }
+
+  // 同一 (method, pathTemplate) 被不同来源归到了**不同的真实 host** → 来源互相矛盾。
+  // 这时两条命令都会落盘，但只有一条可能是对的 —— 必须显式告诉调用方去核对。
+  const hostsByEndpoint = new Map<string, Set<string>>();
+  for (const candidate of merged.values()) {
+    if (!candidate.host) continue;
+    const key = `${candidate.method}\u0000${candidate.pathTemplate}`;
+    const hosts = hostsByEndpoint.get(key);
+    if (hosts) hosts.add(candidate.host);
+    else hostsByEndpoint.set(key, new Set([candidate.host]));
+  }
+  for (const [key, hosts] of hostsByEndpoint) {
+    if (hosts.size <= 1) continue;
+    const pathTemplate = key.slice(key.indexOf("\u0000") + 1);
+    const ambiguity = makeAmbiguity("sourceConflict", [...hosts].sort(), pathTemplate);
+    if (!ambiguities.some((item) => item.kind === "sourceConflict"
+      && item.pathTemplate === pathTemplate)) {
+      ambiguities.push(ambiguity);
+    }
+  }
+
   return {
     candidates: [...merged.values()],
     sourcesRead,
     bytesRead,
     warnings: [...new Set(warnings)],
+    ambiguities,
   };
 }
 
@@ -822,6 +901,8 @@ export function toScanRecords(candidates: SiteScanCandidate[], domain: string): 
         resourceType: "fetch",
         timestamp: index * 2 + variant,
         headerNames: [],
+        // 来源种类随记录透传 → 分组时取并集 → 生成层据此判定证据档位。
+        ...(candidate.sourceKinds ? { sourceKinds: [...candidate.sourceKinds] } : {}),
       });
     }
   });

@@ -36,11 +36,12 @@ import {
 } from "./api-command-normalize.js";
 import { stableCommandId } from "./api-command-generator.js";
 import { parseJsonPath, isStepValueMapping } from "./api-command-render.js";
+import { normalizeTier } from "./api-command-evidence.js";
 import type {
   ApiCommand, ApiParam, ApiCommandCacheFile, DomainBucket, CacheLoadDiagnostics,
   CacheReport, CommandCard, CommandSummary, ListResult, AnalysisDiff, AnalysisMode,
   RequestTemplate, ResponseSchema, SchemaField, CommandHealth, Risk, HttpMethod,
-  ApiErrorCode, CommandSourceOrigin, CommandStep,
+  ApiErrorCode, CommandSourceOrigin, CommandStep, CommandProvenance,
 } from "./api-command-types.js";
 
 // ===========================================================================
@@ -578,13 +579,30 @@ function rebuildSource(raw: any): ApiCommand["source"] {
   const origin = (COMMAND_SOURCE_ORIGINS as readonly string[]).includes(originRaw)
     ? originRaw as CommandSourceOrigin
     : "capture";
+  // 证据档位：逐字段重建；缺失或非法时整体省略（不臆造档位）。
+  const provenance = rebuildProvenance(source.provenance);
   return {
     analysisId: typeof source.analysisId === "string" ? source.analysisId.slice(0, 128) : "",
     analyzedAt: isoOr(source.analyzedAt, EPOCH_ISO),
     generatedBy: typeof source.generatedBy === "string" ? source.generatedBy.slice(0, 64) : GENERATED_BY,
     origin,
     ...(source.crossHost === true ? { crossHost: true } : {}),
+    ...(provenance ? { provenance } : {}),
   };
+}
+
+/**
+ * 重建证据档位：逐字段白名单重建，非法档位一律归为 unknown。
+ *
+ * 缺省返回 undefined —— 老缓存没有这个字段时**不补**（保持旧产物形状不变）。
+ */
+function rebuildProvenance(raw: any): CommandProvenance | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+  const endpoint = normalizeTier(raw.endpoint);
+  const params = normalizeTier(raw.params);
+  const response = normalizeTier(raw.response);
+  const tier = normalizeTier(raw.tier);
+  return { tier, endpoint, params, response };
 }
 
 function rebuildHealth(raw: any, needsMigration: boolean): CommandHealth {

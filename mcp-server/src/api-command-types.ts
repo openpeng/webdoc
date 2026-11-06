@@ -271,7 +271,9 @@ export const REQUEST_TEMPLATE_ALLOWED_KEYS = ["method", "urlTemplate", "pathTemp
 export const API_PARAM_ALLOWED_KEYS = ["name", "location", "type", "required", "description", "enumCount", "allowedValues", "constant", "defaultValue"] as const;
 export const SCHEMA_FIELD_ALLOWED_KEYS = ["path", "type", "array", "isPagination", "redacted"] as const;
 export const RESPONSE_SCHEMA_ALLOWED_KEYS = ["fields", "depthLimited", "sampleCount"] as const;
-export const SOURCE_ALLOWED_KEYS = ["analysisId", "analyzedAt", "generatedBy", "origin", "crossHost"] as const;
+export const SOURCE_ALLOWED_KEYS = ["analysisId", "analyzedAt", "generatedBy", "origin", "crossHost", "provenance"] as const;
+/** source.provenance 的子字段白名单：逐字段重建，未知键一律丢弃。 */
+export const PROVENANCE_ALLOWED_KEYS = ["tier", "endpoint", "params", "response"] as const;
 export const HEALTH_ALLOWED_KEYS = [
   "hits", "misses", "consecutiveFailures", "disabled", "totalDurationMs",
   "lastSuccessAt", "lastFailureAt", "lastError", "drifted", "authRequired",
@@ -410,6 +412,21 @@ export const CACHE_LOAD_FAILED_WARNING = "缓存读取失败，本次只写入�
 export const NEEDS_REVIEW_DESCRIPTION_PREFIX = "[需人工复核] ";
 
 // ============================================================================
+// 10b. 证据分级 / 歧义 / 覆盖率的固定文案（全部不含样本值、host 值、URL 值）
+// ============================================================================
+
+/** 歧义显式化后的固定说明文案（只给条数，不回显任何 host / 路径）。 */
+export const AMBIGUITY_HOST_WARNING = "部分静态推导端点的 host 存在多个候选证据，已按「不猜」原则跳过推断，对应端点仍挂在扫描目标域名上";
+export const AMBIGUITY_BASE_URL_WARNING = "前端客户端配置了多个 baseURL 候选，已按「不猜」原则跳过 host 推断";
+export const AMBIGUITY_SOURCE_CONFLICT_WARNING = "部分端点在多个数据源中被观测到且证据不一致，已合并为同一条命令并标记来源冲突，请人工复核参数";
+/** coverage.nextHints 的固定文案：每条都指向一个可执行的下一步。 */
+export const COVERAGE_HINT_MISSING_RESPONSE = "部分命令缺少响应体样本，响应结构处于未知状态；可开启 captureResponseBody 重新分析以提升证据档位";
+export const COVERAGE_HINT_INFERRED = "部分命令仅由前端代码静态推断得出，路径与参数需用真实流量复核";
+export const COVERAGE_HINT_DERIVED = "部分命令由规格或命令包声明推导而来，未经过真实响应验证";
+export const COVERAGE_HINT_AMBIGUOUS = "部分端点存在互斥证据，命令可能指向错误主机；建议补充 HAR 归档流量或人工确认 host";
+export const COVERAGE_HINT_UNVERIFIED = "部分命令未经真实请求验证，直接调用可能失败；建议先在浏览器中复现一次以确认端点可用";
+
+// ============================================================================
 // 11. 抓包归一化记录与响应体样本（设计 3.2）
 // ============================================================================
 
@@ -454,6 +471,12 @@ export interface NormalizedRecord {
   resourceType?: string;
   timestamp: number;
   headerNames: string[];
+  /**
+   * 该记录由哪些来源种类观察到（静态推导通道专用；抓包通道缺省）。
+   *
+   * 记录级携带来源种类，分组时取并集，生成命令时据此判定证据档位。
+   */
+  sourceKinds?: SiteScanKind[];
 }
 
 export interface EndpointGroup {
@@ -462,6 +485,8 @@ export interface EndpointGroup {
   pathParams: string[];
   records: NormalizedRecord[];
   host: string;
+  /** 组内记录观察到的来源种类并集（静态推导通道专用）。 */
+  sourceKinds?: SiteScanKind[];
 }
 
 // ============================================================================
@@ -596,6 +621,105 @@ export interface ApiCommandSource {
    * 且该 host 与调用方传入的 domain 不同时置 true。执行时仍走扩展侧域名白名单。
    */
   crossHost?: boolean;
+  /**
+   * 证据分级（借鉴 REA 的 evidence basis 口径）。
+   *
+   * 与 `origin` 正交：`origin` 说的是「走哪条通道来的」，`provenance` 说的是
+   * 「这条端点有多硬的证据支撑」。同属 scan 通道的候选，HAR 归档流量是
+   * observed，OpenAPI 声明是 derived，前端 bundle 字符串推断是 inferred。
+   */
+  provenance?: CommandProvenance;
+}
+
+/**
+ * 证据档位，由强到弱：**observed > derived > inferred > unknown**。
+ *
+ * - `observed`：真实观测到的请求（抓包 / HAR 归档流量）；
+ * - `derived`：由权威声明推导（OpenAPI 规格 / 声明式命令包 / 人工录入）；
+ * - `inferred`：由前端代码静态推断（bundle 里的路径字面量）；
+ * - `unknown`：无任何证据来源。
+ *
+ * 分档的意义：让「这条命令能不能直接用」可排序，而不是只看一个 0..1 的
+ * confidence 数字（数字不可比、不可解释）。
+ */
+export const COMMAND_TIERS = ["observed", "derived", "inferred", "unknown"] as const;
+export type CommandTier = typeof COMMAND_TIERS[number];
+
+/** 档位强度排序（数字越大越硬）。取最弱档时用。 */
+export const COMMAND_TIER_STRENGTH: Readonly<Record<CommandTier, number>> = {
+  observed: 3,
+  derived: 2,
+  inferred: 1,
+  unknown: 0,
+};
+
+/**
+ * 单条命令的证据分级。
+ *
+ * 三个维度分别判定，**总档位取三者中最弱的一档** —— 命令整体的可信度由
+ * 最不确定的那一环决定（端点再确定，响应结构靠猜，整条命令仍不可放心用）。
+ */
+export interface CommandProvenance {
+  /** 总档位 = endpoint / params / response 三维中最弱的一档。 */
+  tier: CommandTier;
+  /** 端点身份（method + path + host）的证据档位。 */
+  endpoint: CommandTier;
+  /** 参数集合的证据档位。 */
+  params: CommandTier;
+  /** 响应结构的证据档位。 */
+  response: CommandTier;
+}
+
+/** 歧义种类。 */
+export const SCAN_AMBIGUITY_KINDS = ["host", "baseUrl", "sourceConflict"] as const;
+export type ScanAmbiguityKind = typeof SCAN_AMBIGUITY_KINDS[number];
+
+/**
+ * 扫描期歧义：**同一份证据支持多个互斥结论**，且我们选择不猜。
+ *
+ * 以前这些情况是静默丢弃候选（`continue`）或静默取首个（`merged.set` 首胜），
+ * 调用方无从得知「少了一条命令」。现在显式记录下来。
+ */
+export interface ScanAmbiguity {
+  kind: ScanAmbiguityKind;
+  /** 涉及的路径模板（baseUrl 歧义时为 undefined）。 */
+  pathTemplate?: string;
+  /** 互斥候选（host / baseUrl）；来源冲突时为空数组。 */
+  candidates: string[];
+  /** 互斥候选个数。 */
+  candidateCount: number;
+}
+
+/**
+ * 覆盖率与可信度报告。
+ *
+ * 借鉴 REA 的 coverage 口径：**缺失即 unknown，而非「不存在」** ——
+ * 未观测到的部分计入 unknown，不冒充「已覆盖」。
+ */
+export interface AnalysisCoverage {
+  /** 本次分析产出的端点数。 */
+  endpointCount: number;
+  /** 本次分析产出的命令数。 */
+  commandCount: number;
+  /** 按**总档位**统计命令数（各档之和 == commandCount）。 */
+  byTier: Record<CommandTier, number>;
+  /**
+   * 三维分别统计：回答「不确定性到底出在哪一维」。
+   *
+   * 静态推导通道的响应档位恒为 unknown，因此单看 byTier 会被这一维拉平 ——
+   * byDimension 才能看出「端点其实是有证据的，只是响应结构没观测到」。
+   */
+  byDimension: {
+    endpoint: Record<CommandTier, number>;
+    params: Record<CommandTier, number>;
+    response: Record<CommandTier, number>;
+  };
+  /** 响应结构已被真实样本验证过的命令数（response 档位为 observed）。 */
+  verifiedCount: number;
+  /** 显式歧义清单。 */
+  ambiguities: ScanAmbiguity[];
+  /** 下一步该补什么的提示（固定文案 + 计数，不含任何样本值）。 */
+  nextHints: string[];
 }
 
 /** 对外精简视图（analyze / list 返回）。 */
@@ -691,6 +815,12 @@ export interface AnalysisReport {
    * `inline` = 只用了调用方内联文本。其它分析动作为 undefined。
    */
   bundleSource?: string;
+  /**
+   * 覆盖率与可信度报告（证据分级 + 歧义显式）。
+   *
+   * 缺省表示本次分析未开启证据分级（provenance=false），与旧版报告等价。
+   */
+  coverage?: AnalysisCoverage;
 }
 
 export interface ListResult {
@@ -841,6 +971,13 @@ export interface GenerateContext {
   emptyResponseSchema?: boolean;
   /** 来源标注：capture（抓包）/ scan（静态推导）/ spec（规格）/ manual（人工）。 */
   sourceOrigin?: CommandSourceOrigin;
+  /**
+   * 是否为命令标注证据档位（provenance）。
+   *
+   * 缺省 undefined = **不标注**（与旧版产物等价）；显式 true / false 才生效。
+   * 这是配置化放开 —— 显式传 false 依然是 false，可完全回退到旧行为。
+   */
+  provenance?: boolean;
   /** 扫描目标域名；候选自带 host 且与之不同时，命令标记 crossHost。 */
   crossHostBaseDomain?: string;
   /** 【放开·绿区】响应敏感字段是否强制打码；默认 false。 */
@@ -899,6 +1036,20 @@ export interface SiteScanCandidate {
    * 缺省表示与扫描目标域名同源。
    */
   host?: string;
+  /**
+   * 该端点被哪些来源种类观察到（js / har / openapi / commands）。
+   *
+   * 缺省表示只有 `origin` 那一种。同键候选合并后此处是**并集** ——
+   * 证据档位由最强的来源决定（HAR 观测 > OpenAPI 声明 > bundle 推断）。
+   */
+  sourceKinds?: SiteScanKind[];
+  /**
+   * 归档流量（HAR）里该路径被观测到的全部 origin（host），仅当跨 origin 时出现。
+   *
+   * 出现即意味着「这条路径挂在哪个主机上」存在互斥证据 —— 调用方据此显式知晓，
+   * 而不是被静默拍平到扫描目标域名上。
+   */
+  observedHosts?: string[];
 }
 
 export interface SiteScanResult {
@@ -906,6 +1057,8 @@ export interface SiteScanResult {
   sourcesRead: number;
   bytesRead: number;
   warnings: string[];
+  /** 显式歧义清单：证据支持多个互斥结论且我们选择不猜。 */
+  ambiguities?: ScanAmbiguity[];
 }
 
 /** 【放开·黄区】允许扫描内网 / 回环地址；默认 false，需调用方显式开启（SSRF 风险）。 */
@@ -927,6 +1080,15 @@ export const SITE_SCAN_DEFAULT_LOOSE = true;
  * 改回 false 即可回到保守模式。
  */
 export const SITE_SCAN_DEFAULT_TRUST_SPEC = true;
+
+/**
+ * 【放开·绿区·配置化】证据分级（provenance）默认是否开启。
+ *
+ * 开启后：命令落盘带 `source.provenance`（observed / derived / inferred / unknown），
+ * 分析报告额外输出 `coverage` 段（分档计数 + 歧义清单 + 下一步提示）。
+ * 改为 false 即可完全回退到旧产物形状 —— 代码不删除，只是开关关闭。
+ */
+export const SITE_SCAN_DEFAULT_PROVENANCE = true;
 
 export const SITE_SCAN_REVIEW_REASON = "静态推导产物：接口来自前端代码 / 规格 / 归档流量，未经真实响应验证，参数与响应结构需人工复核";
 export const SITE_SCAN_NO_SOURCE_WARNING = "未提供任何可读数据源，未生成命令；可传 sources（url 或 text）";

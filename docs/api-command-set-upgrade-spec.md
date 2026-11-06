@@ -220,6 +220,58 @@
 
 **目的**：把「查列表 → 取 id → 查详情 → 提交」从 Agent 手工串联变成一条命令。
 
+### T13 · 证据分级 + 歧义显式 + coverage 报告
+
+> 借鉴 REA（Reverse Engineer Anything）的**口径**而非代码。不引入 REA 依赖：它需 Node 22+/24+ 与
+> Hopper / Ghidra 等本地逆向引擎、manifest 格式私有、其 `Evidence` 格式与本项目不兼容。
+> 其二进制 / 应用逆向主体、sticky provider、HAR / SAZ / qlog 解码器、protobuf / gRPC 体解码
+> 对本项目均不适用。真正借鉴的是它的一句主张 —— **「缺失的覆盖是未知，不是没有」**：
+> 本项目落地为「缺失的响应证据 = `unknown`，不是 `observed`」。
+
+| 文件 | 改动 |
+|---|---|
+| `api-command-types.ts` | 新增 `COMMAND_TIERS`（`observed`/`derived`/`inferred`/`unknown`）、`COMMAND_TIER_STRENGTH`（3/2/1/0）、`CommandProvenance`（`tier` + `endpoint`/`params`/`response` 三维）、`SCAN_AMBIGUITY_KINDS`（`host`/`baseUrl`/`sourceConflict`）、`ScanAmbiguity`、`AnalysisCoverage`；`SOURCE_ALLOWED_KEYS` 追加 `provenance`，新增 `PROVENANCE_ALLOWED_KEYS`；新增 `SITE_SCAN_DEFAULT_PROVENANCE = true` 与 3 条歧义告警 + 5 条 coverage 提示固定文案 |
+| `api-command-evidence.ts`（新建，纯函数层） | `normalizeTier()` / `weakestTier()` / `tierForSourceKind()` / `tierForSourceKinds()` / `tierForOrigin()` / `deriveProvenance()` / `sameSourceKinds()` / `makeAmbiguity()` / `hostAmbiguity()` / `baseUrlAmbiguity()` / `buildCoverage()` / `coverageCountsConsistent()`。无 IO、无 `Date`、无环境变量，`node --test` 可直测 |
+| `api-command-site-scan.ts` | `applyHostCrossReference()` 改返回 `{ inferred, ambiguities }`；`parseHarText()` 统计同路径跨 origin 并记 `observedHosts`；`scanSources()` 同键候选**合并**（来源种类并集 + 参数名并集）而非首胜丢弃，并产出三类歧义；`toScanRecords()` 透传 `sourceKinds` |
+| `api-command-normalize.ts` | `groupEndpoints()` 取 `sourceKinds` 并集 |
+| `api-command-generator.ts` | `generateCommands()` 新增 `ctx.provenance` 开关，把 `deriveProvenance()` 结果写入 `source.provenance` |
+| `api-command-cache.ts` | `rebuildSource()` 新增 `rebuildProvenance()`：逐字段重建，缺失或非法时**整体省略、不臆造档位** |
+| `api-command-service.ts` | 抓包通道与 scan 通道都接 `provenance` 三态开关；两条通道都输出 `report.coverage`；歧义按类推送对应 warning |
+| `api-command-args.ts` | `TRI_STATE_BOOLEANS` 追加 `provenance`（三态，undefined 原样透传） |
+| `server.ts` | `analyze_page_apis` inputSchema 新增 `provenance` 布尔项（默认 true，置 false 完全回退） |
+| `browser-extension/api-command-helpers.js` | `SOURCE_ALLOWED_KEYS` 追加 `provenance`；新增 `PROVENANCE_ALLOWED_KEYS` 与 `COMMAND_TIERS`（两端常量逐字同步） |
+
+**档位映射（口径）**：
+
+| 证据来源 | 端点档位 |
+|---|---|
+| 抓包实测（capture） | `observed` |
+| 规格声明（OpenAPI / 声明式命令包） | `derived` |
+| 人工命令（manual） | `derived` |
+| 静态扫描 + JS bundle | `inferred` |
+| 静态扫描 + HAR 归档流量 | `observed` |
+| 无来源 | `unknown` |
+
+- **总档位取三维最弱**：端点再确定、响应靠猜，整条命令仍不可信。
+- **多来源合并取最强档**：同一端点既在 HAR 又在 bundle 里，bundle 的弱证据不构成对端点身份的否定。
+- **响应维度恒定**：有样本才 `observed`，否则恒 `unknown`。
+- **`byDimension` 拆分的原因**：静态推导的响应档位恒 `unknown`，只看 `byTier` 会被这一维拉平成全 `unknown`、失去区分度；拆成三维后才能看出「端点其实有证据，只是响应结构没观测到」。
+
+**歧义三类（全部「不猜」，只记录）**：
+
+| 类别 | 判据 |
+|---|---|
+| `host` | 同一路径在多个 host 上有证据（含 HAR 同路径跨多个 origin） |
+| `baseUrl` | 客户端配置的 baseURL 有多个候选 |
+| `sourceConflict` | 同一 `(method, pathTemplate)` 被不同来源归到**不同的真实 host** |
+
+> `sourceConflict` 的判据经过一次修正：初版按「参数集不同」判冲突 —— 实测 HAR 只记某次请求的参数、
+> OpenAPI 声明的是全量，两者天然不同，会被误报。**参数集不同 ≠ 证据矛盾**，已改为按真实 host 分歧判定。
+
+**行为**：命令带 `source.provenance`（端点 / 参数 / 响应三维档位 + 总档位），报告带 `coverage` 段
+（`endpointCount` / `commandCount` / `byTier` / `byDimension` / `verifiedCount` / `ambiguities` / `nextHints`）。
+`provenance=false` 时命令不带该字段、报告不带 `coverage` 段，**产物形状与旧版完全一致**。
+
 ---
 
 ## 5. Tasks（执行顺序）
@@ -238,11 +290,14 @@
 | 10 | T10a host 交叉引用 + baseURL 侦测 | 1,2 | `api-command-site-scan.ts` / `api-command-types.ts` | `982413e` | ✅ |
 | 11 | T10b README 中英同步 | 1..10 | `README.md` / `README.zh.md` | `78ae4ac` | ✅ |
 | 12 | T10c 规格回填（AC↔实现位置映射） | 1..11 | `docs/api-command-set-upgrade-spec.md` | 本次提交 | ✅ |
+| 13 | T11 代码审查缺陷修复（占位 baseURL / 变量绑定首匹配 / 取值留痕信号混用） | 9,10 | `api-command-site-scan.ts` / `api-command-render.ts` / `api-command-service.ts` / `api-command-types.ts` | `cd4c78a` | ✅ |
+| 14 | T12 传输层布尔强转修复（未传开关被压成 false） | 1..11 | `api-command-args.ts` / `server.ts` / `api-command-service.ts` | `171d327` | ✅ |
+| 15 | T13 证据分级 + 歧义显式 + coverage 报告（借鉴 REA 证据口径） | 1..14 | `api-command-types.ts` / `api-command-evidence.ts` / `api-command-site-scan.ts` / `api-command-normalize.ts` / `api-command-generator.ts` / `api-command-cache.ts` / `api-command-service.ts` / `api-command-args.ts` / `server.ts` / `api-command-helpers.js` | 本次提交 | ✅ |
 
-**用例规模**：存量 245 条零回归 → 终态 **326 条全绿**（新增 81 条：T1–T10 累计 64 条 + T11 审查回归 8 条 + T12 传输层修复回归 9 条）。
+**用例规模**：存量 245 条零回归 → 终态 **354 条全绿**（新增 109 条：T1–T10 累计 64 条 + T11 审查回归 8 条 + T12 传输层修复回归 9 条 + T13 证据分级回归 28 条）。
 
 新增用例分布：`api-command-composite.test.mjs` 19（T9）、`api-command-host-infer.test.mjs` 9（T10a）、
-`api-command-types.test.mjs` 常量契约 1、其余分散补入既有测试文件。
+`api-command-evidence.test.mjs` 28（T13）、`api-command-types.test.mjs` 常量契约 1、其余分散补入既有测试文件。
 
 **每个任务附带**：至少 1 条新增用例（`node --test`，`dist/` 上跑），存量 245 条零回归。
 
@@ -253,14 +308,15 @@
 | # | 验收项 | 口径 | 实现位置 | 实测结果 |
 |---|---|---|---|---|
 | A1 | 规格驱动路径命中 | petstore OpenAPI：19 个端点路径命中 19/19，0 未命中 | `api-command-site-scan.ts` `parseOpenApiText` / `scanSources` | 19/19 ✅ |
-| A2 | 静态推导召回 | B 站首页默认配置（放开后）：召回 ≥ 50%（基线 0%） | `api-command-service.ts:1053` `loose` → `api-command-site-scan.ts:725` `scanSources` → `:688` `applyHostCrossReference` → `:225` `detectBaseUrlHosts` | **100%**（35/35，loose=false 旧默认 0%）✅ |
+| A2 | 静态推导召回 | B 站首页默认配置（放开后）：召回 ≥ 50%（基线 0%） | `api-command-service.ts:1064` `loose` → `api-command-site-scan.ts:753` `scanSources` → `:705` `applyHostCrossReference` → `:228` `detectBaseUrlHosts` | **100%**（35/35，loose=false 旧默认 0%）✅ |
 | A3 | 静态推导存活 | B 站首页：实打存活率 ≥ 50%（基线 55%，修复后应更高） | 同 A2（同一批扫描口径） | **68.6%**（24/35，与 oracle 自身上限 68.6% 持平）✅ |
 | A4 | 免开网页调用 | 全新会话 + 页面未开 + 无抓包缓冲区，成功率 ≥ 90% | `api-command-service.ts` `call` → `executeCommandRequest` → 扩展 `background.js:2194` `cmdApiCommandExecute` | ✅ 见下方「A4 实测记录」 |
-| A5 | 导出导入闭环 | 导出 → 清空 → 导入 → 命令条数 / 名称 / 参数 / 响应裁剪规则一致，可直接调用 | `api-command-cache.ts:1127` `export` / `:1174` `import` / `:724` `rewriteCommandHost`；`api-command-service.ts:1310` / `:1356`；`server.ts:993` / `:1006` | 闭环一致，复合命令随包往返 ✅ |
-| A6 | 并发写 | 两个进程先后写不同域名，双方数据都存活 | `api-command-cache.ts:78` `buildCacheTmpName` / `ensureLoaded` / `persist`（写前重读合并） | 双方数据都存活 ✅ |
-| A7 | 参数可覆盖 | 调用方传值必须生效（当前实测被忽略） | `api-command-generator.ts:174` `defaultValue` / `:181` `buildQueryTemplate` / `:194` `buildBodyTemplate`；`api-command-render.ts:145` `renderRequest`；`api-command-service.ts:1613` `filterParamsForCommand` | 调用方传值生效 ✅ |
-| A8 | 测试 | `npm test` 全绿（存量 245 零回归 + 新增用例），`npm run doctor` 0 fail | `mcp-server/test/*` | **326/326 pass**（存量 245 零回归 + 新增 81）；`doctor` 5 pass / 0 warn / 0 fail ✅ |
+| A5 | 导出导入闭环 | 导出 → 清空 → 导入 → 命令条数 / 名称 / 参数 / 响应裁剪规则一致，可直接调用 | `api-command-cache.ts:1145` `export` / `:1192` `import` / `:742` `rewriteCommandHost`；`api-command-service.ts:1359` / `:1371`；`server.ts:994` / `:1007` | 闭环一致，复合命令随包往返 ✅ |
+| A6 | 并发写 | 两个进程先后写不同域名，双方数据都存活 | `api-command-cache.ts:79` `buildCacheTmpName` / `ensureLoaded` / `persist`（写前重读合并） | 双方数据都存活 ✅ |
+| A7 | 参数可覆盖 | 调用方传值必须生效（当前实测被忽略） | `api-command-normalize.ts:656` `param.defaultValue` / `api-command-generator.ts:182` `buildQueryTemplate` / `:195` `buildBodyTemplate`；`api-command-render.ts:145` `renderRequest`；`api-command-service.ts:1784` `filterParamsForCommand` | 调用方传值生效 ✅ |
+| A8 | 测试 | `npm test` 全绿（存量 245 零回归 + 新增用例），`npm run doctor` 0 fail | `mcp-server/test/*` | **354/354 pass**（存量 245 零回归 + 新增 109）；`doctor` 5 pass / 0 warn / 0 fail ✅ |
 | A9 | 文档 | README 中英工具表 + `docs/` 与实现一致 | `README.md` / `README.zh.md` / `docs/api-command-set-upgrade-spec.md` | 中英 19 节同构、工具表各 44 条完全一致 ✅ |
+| A10 | 证据分级 + 歧义显式 + coverage 报告（T13） | 每条命令按 `observed`/`derived`/`inferred`/`unknown` 标注证据档位（端点 / 参数 / 响应三维分别判定，总档位取最弱）；多解证据显式列为歧义而不猜；报告输出 `coverage` 段且各档计数自洽；`provenance=false` 时产物形状与旧版完全一致 | `api-command-types.ts:645` `COMMAND_TIERS` / `:662` `CommandProvenance` / `:674` `SCAN_AMBIGUITY_KINDS` / `:699` `AnalysisCoverage` / `:1091` `SITE_SCAN_DEFAULT_PROVENANCE`；`api-command-evidence.ts:146` `deriveProvenance()` / `:184` `makeAmbiguity()` / `:240` `buildCoverage()`；`api-command-site-scan.ts:753` `scanSources()`；`api-command-service.ts:1177` / `:1314` `report.coverage`；`api-command-args.ts:37` `TRI_STATE_BOOLEANS`；`server.ts:988` inputSchema | live 实测：三源 → `endpointCount=3 / commandCount=3`，`byDimension.endpoint={observed:1, inferred:2}`、`byDimension.response` 全 `unknown`、`verifiedCount=0`、`ambiguities=[]`、3 条 nextHints；负向对照 `provenance=false` → 无 `coverage` 段；真实 B 站 bundle 复测召回未回退（113 候选 / 48 个归属 `api.bilibili.com`）并检出 1 条真阳性歧义 ✅ |
 
 **A2 / A3 实测口径（重要，不可沿用旧口径）**：
 
