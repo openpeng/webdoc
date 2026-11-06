@@ -250,24 +250,41 @@ Referer: https://confluence.gaodunwangxiao.com/confluence/
 
 ## 七、交付物
 
-| 文件 | 用途 |
-|---|---|
-| `docs/confluence-replication/confluence-catalog.json` | **唯一事实源**：182 条目 / 11 资源域 / 证据档位 / 风险 / 参数形态 / 实测记录 / 已知坑 |
-| `docs/confluence-replication/confluence-api.mjs` | 目录驱动客户端（零第三方依赖），凭据只从 `--cookie-file` / `--cookie` / `CONFLUENCE_COOKIE` 读 |
-| `docs/confluence-replication/gen-catalog-doc.mjs` | 目录文档生成器：fail-closed 校验 + 幂等 + 不回写事实源 |
-| `docs/confluence-replication/confluence-action-catalog.md` | 按资源域组织的可读目录（**生成产物**，勿手改） |
-| `docs/confluence-replication/README.md` | 快速上手：凭据怎么拿 / 怎么用 / 接口形态速查 / 坑位 / 与规范的有意偏离 |
-| `docs/confluence-replication-report.md` | 本报告 |
+交付物按**两条操作路径**组织，两条路径读同一份事实源：
+
+- **方案 B（首选）**：WebPilot MCP 命令集 —— 复用浏览器登录态，`call_api_command` 直接调，不需要导 cookie。
+- **方案 A（离线补充）**：目录驱动的 Node 客户端 —— 无浏览器环境（脚本 / CI）时使用。
+
+| 文件 | 路径 | 用途 |
+|---|---|---|
+| `confluence-catalog.json` | 方案 A/B 共同 | **唯一事实源**：182 条目 / 11 资源域 / 证据档位 / 风险 / 参数形态 / 实测记录 / 已知坑 |
+| `mcp-playbook.md` | **方案 B** | 主手册：查→核→调→写→沉淀 五步流程、工具清单、实测坑位、方案分工 |
+| `mcp-index.mjs` | **方案 B** | 索引器：把目录条目与上游命令集缓存对齐，给出每条端点该用哪个 `commandId`、能不能调；fail-closed |
+| `confluence-api.mjs` | 方案 A | 目录驱动客户端（零第三方依赖），凭据只从 `--cookie-file` / `--cookie` / `CONFLUENCE_COOKIE` 读 |
+| `gen-catalog-doc.mjs` | 方案 A/B 共同 | 目录文档生成器：fail-closed 校验 + 幂等 + 不回写事实源 |
+| `confluence-action-catalog.md` | 方案 A/B 共同 | 按资源域组织的可读目录（**生成产物**，勿手改） |
+| `README.md` | — | 入口：两条路径怎么选 / 各自怎么用 / 接口形态速查 / 坑位 / 与规范的有意偏离 |
+| `docs/confluence-replication-report.md` | — | 本报告 |
 
 用法示例：
 
 ```bash
+# 方案 B：生成索引（对齐目录 ↔ 上游命令集缓存），再按索引取 commandId 去 call_api_command
+node docs/confluence-replication/mcp-index.mjs --out index.md
+#   自检输出：目录 182 条 = 可直接调 122 + 仅裸形态 60；上游 217 条，其中目录未收录 35 条（勿用）
+
+# 方案 A：离线客户端
 node docs/confluence-replication/confluence-api.mjs --list
 node docs/confluence-replication/confluence-api.mjs \
   --action get-plugins-servlet-confluence-placeholder-unknown-attachment \
   --from-catalog --cookie-file <你的 cookie 文件>
+
 node docs/confluence-replication/gen-catalog-doc.mjs     # 重新生成可读目录
 ```
+
+**两条路径的覆盖差异（实测）**：目录 182 条全部是带前缀形态，方案 A 全部可打；但上游命令集缓存里
+同相对路径的裸形态与带前缀形态并存（60 组），方案 B 当前只有 **122 条**能直接调，60 条仍受
+`applyContextPath()` 缺口影响（详见第八章）。
 
 ---
 
