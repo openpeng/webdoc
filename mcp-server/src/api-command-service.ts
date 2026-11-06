@@ -25,12 +25,14 @@ import {
   API_EXEC_TIMEOUT_MS, API_EXEC_TIMEOUT_MIN_MS, API_EXEC_TIMEOUT_DEFAULT_MS,
   NO_CACHE_LIST_WARNING, ANALYZE_CURRENT_REVIEW_REASON, MISSING_SAMPLE_REVIEW_REASON,
   SITE_SCAN_KINDS, SITE_SCAN_MAX_SOURCES, SITE_SCAN_MAX_TEXT_CHARS,
+  SITE_SCAN_SAZ_MAX_BASE64_CHARS,
   SITE_SCAN_MAX_TOTAL_BYTES, SITE_SCAN_MAX_SOURCE_BYTES, SITE_SCAN_FETCH_TIMEOUT_MS,
   SITE_SCAN_MAX_ENDPOINTS, SITE_SCAN_REVIEW_REASON, SITE_SCAN_NO_SOURCE_WARNING,
   SITE_SCAN_SOURCE_FAILED_WARNING, SITE_SCAN_CONSERVATIVE_RISK_WARNING,
   SITE_SCAN_CROSS_HOST_COMMAND_WARNING,
   SITE_SCAN_DEFAULT_LOOSE, SITE_SCAN_DEFAULT_TRUST_SPEC, SITE_SCAN_DEFAULT_PROVENANCE,
   AMBIGUITY_HOST_WARNING, AMBIGUITY_BASE_URL_WARNING, AMBIGUITY_SOURCE_CONFLICT_WARNING,
+  COVERAGE_SCOPE_BATCH_FALLBACK_WARNING,
   RESPONSE_STRICT_REDACTION_DEFAULT,
   BUNDLE_COLLECT_MAX_SOURCES, BUNDLE_COLLECT_DEFAULT_SOURCES,
   BUNDLE_COLLECT_MAX_SOURCE_BYTES,
@@ -60,8 +62,8 @@ import {
   resolveCompositeSteps, applyStepMappings,
 } from "./api-command-render.js";
 import type { CompositeStepPlan } from "./api-command-render.js";
-import { scanSources, toScanRecords, checkScanUrl, extractFinishedCommands } from "./api-command-site-scan.js";
-import { buildCoverage } from "./api-command-evidence.js";
+import { scanSources, toScanRecords, checkScanUrl, extractFinishedCommands, normalizeContextPath } from "./api-command-site-scan.js";
+import { buildCoverage, countDistinctEndpoints } from "./api-command-evidence.js";
 import type { AnalyzeAction, AnalyzeArgs } from "./api-command-args.js";
 import { rewriteCommandHost, toCommand } from "./api-command-cache.js";
 import {
@@ -851,6 +853,36 @@ export class ApiCommandService {
   }
 
   /**
+   * 读取一个**二进制**远端数据源（Fiddler SAZ 归档），返回 base64 文本。
+   *
+   * 与 fetchScanSource 同款安全约束（URL 已过 checkScanUrl、redirect:manual、
+   * credentials:omit、独立超时、单源 2MB 上限），区别只有一点：
+   * 按字节读而不是按文本读 —— 按文本读会把 ZIP 里的二进制打坏，解包必然失败。
+   */
+  private async fetchScanSourceBinary(url: string, timeoutMs?: number): Promise<{ ok: boolean; base64: string }> {
+    const timeout = clampInt(timeoutMs, 100, 30000, SITE_SCAN_FETCH_TIMEOUT_MS);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeout);
+    try {
+      const response = await fetch(url, {
+        method: "GET",
+        redirect: "manual",
+        credentials: "omit",
+        headers: { accept: "*/*" },
+        signal: controller.signal,
+      });
+      if (!response.ok) return { ok: false, base64: "" };
+      const buffer = Buffer.from(await response.arrayBuffer());
+      if (buffer.length > SITE_SCAN_MAX_SOURCE_BYTES) return { ok: false, base64: "" };
+      return { ok: true, base64: buffer.toString("base64") };
+    } catch {
+      return { ok: false, base64: "" };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
    * 登录态补采：把「取文本」下沉到扩展侧（页面上下文 → SW → 浏览器缓存三层），
    * 本层只负责发消息 + 回包校验 + 汇总，**不做任何解析**。
    *
@@ -865,7 +897,7 @@ export class ApiCommandService {
     policy: { domain: string; allowPrivateHosts?: boolean; allowCrossHost?: boolean; extraHosts?: string[] },
     urls: string[],
     warnings: Set<string>,
-  ): Promise<Map<string, string>> {
+  ): Promise<{ sources: Map<string, string>; contextPath: string }> {
     const collected = new Map<string, string>();
     const maxSources = clampInt(args.bundleMaxSources, 1, BUNDLE_COLLECT_MAX_SOURCES, BUNDLE_COLLECT_DEFAULT_SOURCES);
     const hosts = [policy.domain, ...(policy.extraHosts ?? [])].filter(Boolean);
@@ -887,9 +919,13 @@ export class ApiCommandService {
     } catch {
       // 扩展离线 / 超时：不阻断静态推导，退回 Node 直读。
       warnings.add(BUNDLE_COLLECT_NO_EXTENSION_WARNING);
-      return collected;
+      return { sources: collected, contextPath: "" };
     }
     for (const warning of stringArray(reply.warnings)) warnings.add(warning);
+
+    // 【应用上下文路径】扩展侧在页面上下文求到的前缀（Confluence 的 /confluence 等）。
+    // 回包不可信 —— 只接受「以 / 开头、无协议 / 查询串 / .. 」的路径，其余一律丢弃。
+    const contextPath = normalizeContextPath(reply.contextPath);
 
     const replied = Array.isArray(reply.sources) ? reply.sources as unknown[] : [];
     const requested = urls.slice(0, BUNDLE_COLLECT_MAX_SOURCES).length;
@@ -914,7 +950,7 @@ export class ApiCommandService {
         warnings.add(BUNDLE_COLLECT_TAB_HINT_WARNING);
       }
     }
-    return collected;
+    return { sources: collected, contextPath };
   }
 
   /**
@@ -948,6 +984,8 @@ export class ApiCommandService {
     // 第一遍：先落 URL 白名单并去重。扩展补采与 Node 直读共用同一份放行清单，
     // 绝不让「Node 读不到就转扩展」变成绕过 checkScanUrl 的旁路。
     const scanUrls: string[] = [];
+    // SAZ 归档（.saz）不是 JS bundle：走 Node 直读（按字节读再 base64），不进扩展补采。
+    const sazUrls: string[] = [];
     const seenUrls = new Set<string>();
     for (const raw of rawSources) {
       const item = asRecord(raw);
@@ -962,6 +1000,8 @@ export class ApiCommandService {
       }
       if (seenUrls.has(verdict.url)) continue;
       seenUrls.add(verdict.url);
+      // SAZ 归档同样要过 URL 校验（协议 / hostname / 不跟随跳转），只是不进扩展补采。
+      if (kindValue === "fiddler_saz") { sazUrls.push(verdict.url); continue; }
       scanUrls.push(verdict.url);
     }
 
@@ -970,14 +1010,18 @@ export class ApiCommandService {
     // 【放开·绿区】scan_site 的默认输入源改为「扩展侧 bundle 发现优先 → Node 直读兜底」：
     // 扩展侧能借页面上下文看到**浏览器实际加载的全部 bundle**（Node 侧 HTML 正则通常只看到
     // 其中一小部分），且能借登录态取到受保护的脚本。前提是有 tabId；没有 tabId 时回退纯 Node。
-    const hasRemoteSource = scanUrls.length > 0;
+    const hasRemoteSource = scanUrls.length > 0 || sazUrls.length > 0;
     const wantDiscovery = args.discoverBundles === true
       || (args.discoverBundles !== false && !hasRemoteSource && typeof args.tabId === "number");
     const allowExtension = args.collectViaExtension === true || wantDiscovery;
     const needExtension = allowExtension && (scanUrls.length > 0 || wantDiscovery);
-    const extensionTexts = needExtension
+    const extensionResult = needExtension
       ? await this.collectBundlesViaExtension(args, policy, scanUrls, warnings)
-      : new Map<string, string>();
+      : { sources: new Map<string, string>(), contextPath: "" };
+    const extensionTexts = extensionResult.sources;
+    // 【应用上下文路径】扩展侧借页面上下文取到的前缀（Confluence 的 /confluence 等）。
+    // 取不到就留空 —— 相对路径会保持原样，并由 scanSources 给出显式告警。
+    const contextPath = extensionResult.contextPath;
 
     // 记录已被 sources 消费的补采 URL，剩下的才是 discover 发现的新 bundle。
     const consumedExtensionUrls = new Set<string>();
@@ -1009,7 +1053,18 @@ export class ApiCommandService {
       const kind = kindValue as SiteScanKind;
       let text = "";
       if (typeof item.text === "string" && item.text.length > 0) {
-        text = item.text.slice(0, SITE_SCAN_MAX_TEXT_CHARS);
+        if (kind === "fiddler_saz") {
+          // SAZ 内联的是 base64 文本：**绝不截断**。
+          // 从中间切断的 base64 必然解包失败，且失败是静默的（0 候选、无告警），
+          // 看上去像「这个站没有接口」。所以只能整体放行或整体拒绝。
+          if (item.text.length > SITE_SCAN_SAZ_MAX_BASE64_CHARS) {
+            warnings.add(SITE_SCAN_SOURCE_FAILED_WARNING);
+            continue;
+          }
+          text = item.text;
+        } else {
+          text = item.text.slice(0, SITE_SCAN_MAX_TEXT_CHARS);
+        }
         inlineCount += 1;
         // 成品格式命令包已在上一步单独处理，不再进候选管线（避免字段被降级）。
         if (kind === "commands" && extractFinishedCommands(text).length > 0) continue;
@@ -1019,6 +1074,13 @@ export class ApiCommandService {
           warnings.add(verdict.reason ?? SITE_SCAN_SOURCE_FAILED_WARNING);
           continue;
         }
+        // SAZ 归档是**二进制**：按文本读会把压缩包打坏，必须按字节读再 base64 化。
+        if (kind === "fiddler_saz") {
+          const fetched = await this.fetchScanSourceBinary(verdict.url, args.scanTimeoutMs);
+          if (!fetched.ok || !fetched.base64) { warnings.add(SITE_SCAN_SOURCE_FAILED_WARNING); continue; }
+          text = fetched.base64;
+          nodeFetchCount += 1;
+        } else {
         // 优先用扩展补采结果（含登录态）；没取到再退回 Node 直读（公开可读的 bundle）。
         text = extensionTexts.get(verdict.url) ?? "";
         if (text) { consumedExtensionUrls.add(verdict.url); extensionCount += 1; }
@@ -1028,8 +1090,12 @@ export class ApiCommandService {
           text = fetched.text;
           nodeFetchCount += 1;
         }
+        }
       }
-      if (!text || text.length > SITE_SCAN_MAX_SOURCE_BYTES) {
+      // 单源配额按 kind 区分：SAZ 走 base64 配额（4/3 膨胀），其余仍按原文本/字节上限。
+      // 与上面「SAZ 绝不截断」配套：要么整体过闸，要么整体被拒（附固定告警），不做半截放行。
+      const textCap = kind === "fiddler_saz" ? SITE_SCAN_SAZ_MAX_BASE64_CHARS : SITE_SCAN_MAX_SOURCE_BYTES;
+      if (!text || text.length > textCap) {
         warnings.add(SITE_SCAN_SOURCE_FAILED_WARNING);
         continue;
       }
@@ -1060,9 +1126,11 @@ export class ApiCommandService {
       : nodeFetchCount > 0 ? "node-html"
       : inlineCount > 0 ? "inline"
       : "none";
+    // 应用上下文路径：空串 = 站点在根路径（已确认）；undefined = 没取到（未启用扩展 / 没给 tabId）。
+    report.contextPath = needExtension ? contextPath : undefined;
     // 【放开·绿区】loosePaths 默认 true：现代站点（/x/...、/pgc/...）在保守模式下产出为 0。
     const loose = args.loosePaths === undefined ? SITE_SCAN_DEFAULT_LOOSE : args.loosePaths === true;
-    const scanned = scanSources(prepared, { domain, loose, maxEndpoints });
+    const scanned = scanSources(prepared, { domain, loose, maxEndpoints, contextPath });
     for (const warning of warnings) report.warnings.push(warning);
     for (const warning of scanned.warnings) {
       if (!report.warnings.includes(warning)) report.warnings.push(warning);
@@ -1131,6 +1199,9 @@ export class ApiCommandService {
     const freshIds = new Set(commands.map((command) => command.commandId));
     const cards: CommandCard[] = [];
     let crossHostCount = 0;
+    // 域名级覆盖率要用**合并后**的该域全量命令 —— 本次批次只是它的一个子集。
+    // 每个 host 桶 = 一个域名，各自留存全量命令（覆盖率按域名分别算）。
+    const listedByHost = new Map<string, CommandCard[]>();
     for (const [host, hostCommands] of byHost) {
       const mergeResult = await this.cache.merge(host, hostCommands, {
         mode,
@@ -1146,6 +1217,7 @@ export class ApiCommandService {
       stale.push(...mergeResult.stale);
       const listed = await this.cache.list(host, { includeDisabled: true });
       cards.push(...listed.commands.filter((card) => freshIds.has(card.commandId)));
+      listedByHost.set(host, listed.commands);
       crossHostCount += hostCommands.filter((command) => command.source?.crossHost === true).length;
     }
     if (crossHostCount > 0) report.warnings.push(SITE_SCAN_CROSS_HOST_COMMAND_WARNING);
@@ -1174,11 +1246,35 @@ export class ApiCommandService {
       if (hostAmbiguityCount > 0) report.warnings.push(AMBIGUITY_HOST_WARNING);
       if (baseUrlAmbiguityCount > 0) report.warnings.push(AMBIGUITY_BASE_URL_WARNING);
       if (conflictCount > 0) report.warnings.push(AMBIGUITY_SOURCE_CONFLICT_WARNING);
+      // 【覆盖率口径】按**域名**算真实覆盖率：
+      //  - 分母 = 该域名缓存里的**全量**命令（不是本次批次）——
+      //    批次口径会把整域可信度高估（实测：批次显示 observed=10/unknown=4 像是 71%，
+      //    而域名缓存实为 54 条，真实覆盖只有 10/54 ≈ 19%）；
+      //  - 跨 host 的命令各自属于**另一个域名**，单独给一份覆盖率，不混进主域名分母；
+      //  - 取不到域名全量时**如实标成 batch 口径**并告警 —— 把批次冒充全域就是虚高。
+      const domainCards = listedByHost.get(domain) ?? [];
+      const hasDomainScope = domainCards.length > 0;
+      const scopeCards = hasDomainScope ? domainCards : cards;
+      if (!hasDomainScope) report.warnings.push(COVERAGE_SCOPE_BATCH_FALLBACK_WARNING);
+      const domainProvenances: Record<string, CommandProvenance[]> = {};
+      for (const [host, hostCards] of listedByHost) {
+        domainProvenances[host] = hostCards.map((card) => card.provenance ?? UNKNOWN_PROVENANCE);
+      }
       report.coverage = buildCoverage({
-        endpointCount: groups.length,
-        provenances: commands.map((command) => command.source?.provenance ?? UNKNOWN_PROVENANCE),
-        verifiedCount: commands.filter((command) => command.source?.provenance?.response === "observed").length,
+        scope: hasDomainScope ? "domain" : "batch",
+        batchCommandCount: commands.length,
+        // 端点数按 method + host + pathTemplate 去重 —— 命令数 ≠ 端点数。
+        endpointCount: countDistinctEndpoints(scopeCards.map((card) => ({
+          method: card.method,
+          pathTemplate: card.pathTemplate,
+          host: hasDomainScope ? domain : undefined,
+        }))),
+        provenances: scopeCards.map((card) => card.provenance ?? UNKNOWN_PROVENANCE),
+        verifiedCount: scopeCards.filter((card) => card.provenance?.response === "observed").length,
         ambiguities,
+        // 批次对照：同一批命令单独算一份，调用方能直接看出批次口径虚高多少。
+        batchProvenances: commands.map((command) => command.source?.provenance ?? UNKNOWN_PROVENANCE),
+        domainProvenances,
       });
     }
     return report;
@@ -1310,16 +1406,41 @@ export class ApiCommandService {
     report.sampledResponseCount = samples.length;
     // 【证据分级 + 覆盖率】抓包通道：端点与参数均为真实观测（observed），
     // 响应档位取决于是否真拿到响应样本 —— 没有样本就是 unknown，不冒充已覆盖。
+    //
+    // 【覆盖率口径】与 scan_site 统一：按**域名全量**（合并后缓存里的该域全部命令）统计，
+    // 而不是本次批次。批次口径会把整域可信度高估 —— 实测 Confluence 抓包批次显示
+    // observed=10/unknown=4（看着像 71%），而该域缓存实为 54 条，真实覆盖仅 10/54 ≈ 19%。
+    //
+    // 取不到该域全量时**如实标成 batch 口径**并告警：把批次冒充全域就是虚高。
     if (withProvenance) {
+      const hasDomainScope = listed.commands.length > 0;
+      const scopeCards = hasDomainScope ? listed.commands : cards;
+      if (!hasDomainScope) report.warnings.push(COVERAGE_SCOPE_BATCH_FALLBACK_WARNING);
       report.coverage = buildCoverage({
-        endpointCount: groups.length,
-        provenances: generated.commands.map(
-          (command) => command.source?.provenance ?? UNKNOWN_PROVENANCE,
+        scope: hasDomainScope ? "domain" : "batch",
+        batchCommandCount: generated.commands.length,
+        // 端点数按 method + host + pathTemplate 去重 —— 命令数 ≠ 端点数。
+        endpointCount: countDistinctEndpoints(scopeCards.map((card) => ({
+          method: card.method,
+          pathTemplate: card.pathTemplate,
+          host: hasDomainScope ? domain : undefined,
+        }))),
+        provenances: scopeCards.map(
+          (card) => card.provenance ?? UNKNOWN_PROVENANCE,
         ),
-        verifiedCount: generated.commands.filter(
-          (command) => command.source?.provenance?.response === "observed",
+        verifiedCount: scopeCards.filter(
+          (card) => card.provenance?.response === "observed",
         ).length,
         ambiguities: [],
+        // 批次对照：同一批命令单独算一份，调用方能直接看出批次口径虚高多少。
+        batchProvenances: generated.commands.map(
+          (command) => command.source?.provenance ?? UNKNOWN_PROVENANCE,
+        ),
+        ...(hasDomainScope ? {
+          domainProvenances: {
+            [domain]: scopeCards.map((card) => card.provenance ?? UNKNOWN_PROVENANCE),
+          },
+        } : {}),
       });
     }
     return report;

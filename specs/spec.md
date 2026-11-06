@@ -48,7 +48,7 @@
 
 | BR ID | 条件 | 处理动作/结果 | 错误码 |
 |-------|------|---------------|--------|
-| BR-1 | 静态推导来源非权威规格（js / har） | 按真实 method 判定 risk；命令标注来源 `scan`；`needsReview` 只保留 1 条来源标注 | — |
+| BR-1 | 静态推导来源非权威规格（js / har / fiddler_saz） | 按真实 method 判定 risk；命令标注来源 `scan`；`needsReview` 只保留 1 条来源标注 | — |
 | BR-2 | 路径参数取值含 `/` `?` `#`（原始或 URL 解码后） | 拒绝渲染，零网络请求 | `UNSAFE_PATH_PARAM` |
 | BR-3 | 渲染后 URL 的 hostname 与命令所属域名不一致 | 拒绝渲染，零网络请求 | `HOST_MISMATCH_AFTER_RENDER` |
 | BR-4 | 请求头名命中 `cookie` / `authorization` / `proxy-authorization` / `set-cookie` | 静默剔除，不报错、不落盘 | — |
@@ -70,7 +70,7 @@
 | 路径 | `analyze_page_apis`（`action=scan_site`） |
 | 方法 | MCP tool call |
 | 鉴权 | 不需要 |
-| 说明 | 直接读取 JS bundle / HAR / OpenAPI / 声明式命令包，一次拿到整站接口骨架；不经过浏览器、不依赖标签页与登录会话 |
+| 说明 | 直接读取 JS bundle / HAR / Fiddler SAZ 归档 / OpenAPI / 声明式命令包，一次拿到整站接口骨架；不经过浏览器、不依赖标签页与登录会话 |
 
 ### Request
 

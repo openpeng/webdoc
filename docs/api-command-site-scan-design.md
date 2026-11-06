@@ -69,11 +69,11 @@
 
 ```mermaid
 flowchart LR
-  A["sources: js / har / openapi / commands<br/>text 内联 或 url"] --> B{"checkScanUrl<br/>协议·凭据·私网·同源"}
+  A["sources: js / har / fiddler_saz / openapi / commands<br/>text 内联 或 url"] --> B{"checkScanUrl<br/>协议·凭据·私网·同源"}
   B -- 拒绝 --> W["固定安全 warning<br/>不回显 URL"]
   B -- 通过且为 url --> C["fetchScanSource<br/>credentials:omit · redirect:manual<br/>8s 超时 · 单源 2MB"]
   B -- text --> D
-  C --> D["scanSources 纯函数<br/>四类解析 → 候选去重/限额"]
+  C --> D["scanSources 纯函数<br/>五类解析 → 候选去重/限额"]
   D --> E["toScanRecords<br/>双变体记录 → 参数识别"]
   E --> F["groupEndpoints + generateCommands<br/>复用既有纯函数管线"]
   F --> G["默认 risk=write<br/>强制 needsReview · 空 schema"]
@@ -95,7 +95,7 @@ flowchart LR
 | --- | --- | --- | --- |
 | `action` | `"scan_site"` | 必填 | 静态推导入口 |
 | `domain` | string | **必填** | 精确 hostname；不绑定标签，无法按当前页推断 |
-| `sources` | `[{kind,url?,text?}]` | `[]` | `kind ∈ js / har / openapi / commands`；`text` 优先于 `url` |
+| `sources` | `[{kind,url?,text?}]` | `[]` | `kind ∈ js / har / fiddler_saz / openapi / commands`；`text` 优先于 `url`；`fiddler_saz` 的 text 收 base64 的 .saz 本体 / raw HTTP 文本 / HTTP XML 文本 |
 | `maxEndpoints` | number | 200 | clamp 1..200 |
 | `mode` | `full` / `merge` | `merge` | 复用既有合并语义，人工修正默认保留 |
 | `overwriteManual` | boolean | `false` | 同上 |
@@ -106,6 +106,21 @@ flowchart LR
 | `scanTimeoutMs` | number | 8000 | clamp 100..30000 |
 
 返回复用 `AnalysisReport`，附加固定诊断 warning：`静态推导读取 N 个数据源，产出 M 个端点候选（无响应体样本）`。
+
+### 3.1 覆盖率口径：按域名算，不按批次算
+
+`coverage` 段的 `scope` 显式标注统计口径，调用方不必再自己拿批次当分母去算：
+
+| 字段 | 含义 |
+| --- | --- |
+| `scope` | `"domain"` = 统计的是**该域名自己的全量命令集**；`"batch"` = 只统计到本次批次的命令（取不到该域名全量时的诚实回退） |
+| `denominator` | 显式分母（该口径下的命令总数），不再让调用方自行推断 |
+| `coverageRate` | 真实覆盖率 = **端点维度** observed / `denominator`（0..1，保留 3 位小数）。分子刻意不用总档位：总档位取三维最弱，静态推导通道的响应维恒 `unknown`，拿总档位当分子会把「端点已被真实流量观测到」也算成 0 |
+| `dimensionRates` | 端点 / 参数 / 响应三维各自的 observed 比例（分母同为 `denominator`） |
+| `batchStats` | 本次**批次**的同口径统计（`commandCount` / `byTier` / `coverageRate`），与域名口径并列，批次虚高一眼可见 |
+| `byDomain` | 按域名分别给 `commandCount` / `byTier` / `coverageRate`，跨域命令不被算丢 |
+
+取不到该域名全量命令集时，`scope` 落回 `"batch"` 并附固定告警 `COVERAGE_SCOPE_BATCH_FALLBACK_WARNING`（不回显 host / 路径），**不把批次冒充成全域**。`endpointCount` 改为按 `method + host + pathTemplate` 去重后的真实端点数，不再拿命令数冒充端点数。
 
 典型调用：
 
@@ -127,11 +142,14 @@ flowchart LR
 
 | 文件 | 类型 | 职责 |
 | --- | --- | --- |
-| `mcp-server/src/api-command-types.ts` | 修改（末尾追加 §13） | SiteScan 常量、类型、固定安全文案；**未改任何既有常量值** |
-| `mcp-server/src/api-command-site-scan.ts` | 新增 | 无 IO 纯函数：URL 安全校验 + 四类解析 + 记录适配 |
+| `mcp-server/src/api-command-types.ts` | 修改（末尾追加 §13） | SiteScan 常量、类型、固定安全文案；**未改任何既有常量值**（`SOURCE_ALLOWED_KEYS` / `PROVENANCE_ALLOWED_KEYS` / `COMMAND_TIERS` 与扩展侧逐字一致，未动） |
+| `mcp-server/src/api-command-site-scan.ts` | 新增 | 无 IO 纯函数：URL 安全校验 + 五类解析 + 记录适配 |
+| `mcp-server/src/api-command-saz.ts` | 新增 | 无 IO 纯函数：Fiddler SAZ（ZIP）归档解码 —— 只用 node:zlib 的 inflateRawSync，不碰文件系统 / 网络 / 时钟 |
 | `mcp-server/src/api-command-service.ts` | 修改（增量） | `scanSite()` 编排 + `fetchScanSource()`（本层唯一新 IO）+ 分派 |
 | `mcp-server/src/server.ts` | 修改（增量） | `analyze_page_apis` schema 的 action enum 与新入参、case 传参 |
 | `mcp-server/test/api-command-site-scan.test.mjs` | 新增 | 19 个用例 |
+| `mcp-server/test/api-command-fiddler-saz.test.mjs` | 新增 | 13 个用例：Fiddler SAZ 来源（base64 归档本体 / HTTP XML / raw HTTP）+ 证据档位（observed）+ 跨 origin 歧义 + 解析层无 IO |
+| `mcp-server/test/api-command-coverage-scope.test.mjs` | 新增 | 10 个用例：覆盖率口径（显式分母 / 真实覆盖率 / 批次对照 / 按域名明细 / scope 诚实回退） |
 | `docs/api-command-site-scan-design.md` | 新增 | 本文 |
 | `README.md` / `README.zh.md` / `docs/task-sedimentation-guide.md` | 修改 | 工具说明、安全边界、推荐流程同步 |
 

@@ -62,6 +62,13 @@ const BUNDLE_COLLECT_VIAS = ['page', 'worker', 'cache'];
 const BUNDLE_COLLECT_EMPTY_WARNING = '扩展侧未发现可补采的 JS bundle（页面可能尚未加载脚本或尚未登录）';
 const BUNDLE_COLLECT_FAILED_WARNING = '部分 bundle 在页面上下文 / Service Worker / 浏览器缓存三层均未取到，已跳过并使用直读兜底';
 const BUNDLE_COLLECT_TRUNCATED_WARNING = '补采内容超过单源或总量配额，已截断或跳过';
+/**
+ * 应用上下文路径（context path）长度上限 —— 逐字同步。
+ *
+ * 上下文路径（如 Confluence 的 /confluence）会被拼进命令 URL，
+ * 它的来源是**页面里的 JS**（AJS.contextPath() 等），属于不可信输入。
+ */
+const API_CONTEXT_PATH_MAX_LENGTH = 128;
 
 // ============================================================================
 // 3. 正则与路径归一规则（同步 §3，逐字复制）
@@ -447,6 +454,26 @@ function apiCheckBundleUrl(rawUrl, hosts) {
     .filter(Boolean);
   if (!allowed.length || !allowed.includes(host)) return { ok: false, host, reason: 'host' };
   return { ok: true, host, reason: '', url: parsed.toString() };
+}
+
+/**
+ * 应用上下文路径（context path）归一化（纯函数）。
+ *
+ * 上下文路径会**拼进命令 URL**，来源是页面里的 JS（`AJS.contextPath()` 等），
+ * 属于不可信输入 —— 这里只接受「以 / 开头、无协议 / 查询串 / 片段 / `..` / 反斜杠 / 空白 /
+ * 引号」且长度不超上限的路径，其余一律丢弃（退化为「站点部署在根路径」）。
+ *
+ * 与 api-command-site-scan.ts 的 normalizeContextPath() 语义一致。
+ */
+function normalizeApiContextPath(raw) {
+  if (typeof raw !== 'string') return '';
+  const value = raw.trim();
+  if (!value || value === '/') return '';
+  if (value.length > API_CONTEXT_PATH_MAX_LENGTH) return '';
+  if (value.charAt(0) !== '/') return '';
+  if (value.indexOf('?') >= 0 || value.indexOf('#') >= 0 || value.indexOf('//') >= 0) return '';
+  if (value.indexOf('..') >= 0 || value.indexOf('\\') >= 0 || /[\s"']/.test(value)) return '';
+  return value.charAt(value.length - 1) === '/' ? value.slice(0, -1) : value;
 }
 
 /** apiBundleCollect 的 msg.options 白名单重建（BUNDLE_COLLECT_ALLOWED_KEYS）。 */

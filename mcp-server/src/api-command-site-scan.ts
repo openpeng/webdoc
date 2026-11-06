@@ -23,14 +23,19 @@
 import {
   SITE_SCAN_MAX_SOURCES,
   SITE_SCAN_MAX_TEXT_CHARS,
+  SITE_SCAN_SAZ_MAX_BASE64_CHARS,
   SITE_SCAN_MAX_ENDPOINTS,
   SITE_SCAN_CROSS_HOST_WARNING,
   SITE_SCAN_PRIVATE_HOST_WARNING,
   SITE_SCAN_SOURCE_FAILED_WARNING,
   SITE_SCAN_HOST_INFERRED_WARNING,
+  SITE_SCAN_CONTEXT_PATH_APPLIED_WARNING,
+  SITE_SCAN_CONTEXT_PATH_MISSING_WARNING,
+  SITE_SCAN_NOISE_PATH_WARNING,
   SITE_SCAN_PLACEHOLDER_BASE_HOST,
   TELEMETRY_PATH_KEYWORDS,
   HTTP_METHODS,
+  API_CONTEXT_PATH_MAX_LENGTH,
 } from "./api-command-types.js";
 import type {
   SiteScanKind, SiteScanCandidate, SiteScanResult,
@@ -43,6 +48,9 @@ import {
 import {
   hostAmbiguity, baseUrlAmbiguity, makeAmbiguity,
 } from "./api-command-evidence.js";
+import {
+  decodeSazArchive, looksLikeSazArchive,
+} from "./api-command-saz.js";
 
 // ===========================================================================
 // 1. URL 安全（SSRF 防护）—— 纯函数，由编排层在 fetch 之前调用
@@ -118,7 +126,7 @@ export function checkScanUrl(rawUrl: string, policy: ScanUrlPolicy): ScanUrlVerd
 // ===========================================================================
 
 /** 明显不是 API 的静态资源后缀。 */
-const STATIC_SUFFIX_RE = /\.(?:js|mjs|cjs|jsx|ts|tsx|css|scss|map|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|eot|mp3|mp4|webm|pdf|zip|html?|txt|json|xml)(?:$|[?#])/i;
+const STATIC_SUFFIX_RE = /\.(?:js|mjs|cjs|jsx|ts|tsx|css|scss|less|map|png|jpe?g|gif|svg|webp|ico|woff2?|ttf|eot|mp3|mp4|webm|pdf|zip|html?|xhtml|txt|json|xml|soy|vm)(?:$|[?#])/i;
 /** API 路径前缀提示；loose=false 时只接受这些高置信前缀。 */
 const API_PATH_HINT_RE = /^\/(?:api|rest|rpc|graphql|v\d+(?:\.\d+)?|service|services|internal|ajax|data|query|gateway|web|app|open|interface|interface_v\d+|cgi|mtop|zuul|bff)(?:\/|$)/i;
 /** 常见业务动作词，用于放宽判定。 */
@@ -379,6 +387,116 @@ function candidateKey(method: HttpMethod, pathTemplate: string, host?: string): 
 }
 
 // ===========================================================================
+// 2.5 应用上下文路径（context path）与请求上下文识别
+// ===========================================================================
+
+/**
+ * 应用上下文路径的**调用形态**前缀。
+ *
+ * 前端 bundle 普遍把接口路径写成「上下文前缀 + 相对路径」：
+ *
+ *   AJS.contextPath()+"/rest/webResources/1.0/resources"        （Confluence）
+ *   f.CONTEXT_PATH+"/json/pagechildren.action"                  （Confluence）
+ *   AJS.Confluence.getContextPath()+"/ajax/spaceavailable.action"
+ *
+ * 这类字面量是**相对应用上下文路径**的。不补前缀，命令会打到错误地址：
+ * 实测 Confluence 的真实接口在 `/confluence/rest/...`，而裸路径 `/rest/...`
+ * 根本到不了 Confluence 的 REST servlet（实测 404），命令集等于全废。
+ */
+const CONTEXT_PATH_TOKEN_RE = /(?:\.contextPath\(\)|\.getContextPath\(\)|\.CONTEXT_PATH\b|\bCONTEXT_PATH\b|\bcontextPath\b)\s*\+\s*$/;
+
+/**
+ * 字面量拼接前缀：`"/confluence" + "/json/addwatch.action"`。
+ *
+ * 前半段本身就是路径前缀 —— 直接拼上即可，**不依赖上下文路径的取值**。
+ * 允许中间夹右括号（实测形态是 `soy.$$escapeHtml("/confluence") + "/json/xxx"`）。
+ */
+const LITERAL_PREFIX_RE = /(['"])(\/[^'"`\s]{1,120})\1\s*[\)\]]*\s*\+\s*$/;
+
+/** 请求上下文判定之一：url 之类的字段被赋值。 */
+const REQUEST_URL_FIELD_RE = /\b(?:url|href|path|endpoint|api|action)\s*[:=]\s*$/i;
+/** 请求上下文判定之二：请求函数调用点（`fetch(` / `.get(` / `ajax(` …）。 */
+const REQUEST_CALL_RE = /(?:fetch|ajax|getJSON|getPost|\.get|\.post|\.put|\.delete|\.patch|\.open|\.send|\.load|axios|request)\s*\(\s*$/i;
+
+/**
+ * 静态资源目录段：这些首段的路径不是接口。
+ *
+ * 刻意保守 —— 只收「明确是资源目录」的段，`download` 不在其中
+ * （Confluence 的 `/download/resources` 是真接口）。
+ */
+const STATIC_RESOURCE_SEGMENTS = new Set([
+  "images", "image", "icons", "icon", "includes", "stylesheets", "themes", "fonts",
+]);
+
+/** 极短无语义路径：`/a/i`、`/a/b`。实测均来自普通字符串常量（比较表达式），不是接口。 */
+const NOISE_TWO_LETTER_RE = /^\/[a-z]\/[a-z]$/;
+
+/**
+ * 归一应用上下文路径：`/confluence`、`confluence` → `/confluence`；根路径 → 空串。
+ *
+ * 只接受「以 / 开头、无协议、无查询串、无 `..`」的路径 —— 它会被拼进命令 URL，
+ * 必须先在这里挡住注入面。
+ */
+export function normalizeContextPath(raw: unknown): string {
+  if (typeof raw !== "string") return "";
+  const value = raw.trim();
+  if (!value || value === "/") return "";
+  if (value.length > API_CONTEXT_PATH_MAX_LENGTH) return "";
+  if (!value.startsWith("/")) return "";
+  if (value.includes("?") || value.includes("#") || value.includes("//")) return "";
+  if (value.includes("..") || value.includes("\\") || /[\s"']/.test(value)) return "";
+  return value.endsWith("/") ? value.slice(0, -1) : value;
+}
+
+/**
+ * 判断路径字面量是否出现在**请求上下文**里。
+ *
+ * 「请求上下文」= url 字段赋值，或请求函数调用点。
+ * 没有请求上下文的字面量多半只是普通字符串常量 —— 但这**只是弱信号**，
+ * 真正的丢弃条件还要叠加形状判定（见 isNoisePath）。
+ */
+function hasRequestContext(before: string): boolean {
+  const tail = before.slice(-160);
+  return REQUEST_URL_FIELD_RE.test(tail) || REQUEST_CALL_RE.test(tail);
+}
+
+/**
+ * 判断路径字面量是否为**噪音**（长得像路径，但不是接口）。
+ *
+ * 双重保险：形状像噪音 **且** 不在任何请求上下文里 —— 只要有一方说它像接口，就保留。
+ * 这样既能砍掉误报，又不会因为「上下文没识别出来」而误伤真接口。
+ */
+export function isNoisePath(path: string, requestContext: boolean): boolean {
+  if (requestContext) return false;
+  const clean = String(path || "").split(/[?#]/)[0].toLowerCase();
+  if (!clean || !clean.startsWith("/")) return true;
+  if (STATIC_SUFFIX_RE.test(clean)) return true;
+  const segments = clean.split("/").filter(Boolean);
+  if (segments.length === 0) return true;
+  if (STATIC_RESOURCE_SEGMENTS.has(segments[0])) return true;
+  if (NOISE_TWO_LETTER_RE.test(clean)) return true;
+  return false;
+}
+
+/**
+ * 给**相对应用上下文路径**的候选补上上下文前缀。
+ *
+ * 已是绝对形态（自带前缀 / 协议相对 URL 还原出的别的 host）的不动 ——
+ * 只有「相对 context」的裸路径才补。
+ */
+export function applyContextPath(
+  pathTemplate: string,
+  contextPath: string,
+  relativeToContext: boolean,
+): string {
+  if (!relativeToContext) return pathTemplate;
+  const prefix = normalizeContextPath(contextPath);
+  if (!prefix) return pathTemplate;
+  if (pathTemplate === prefix || pathTemplate.startsWith(`${prefix}/`)) return pathTemplate;
+  return `${prefix}${pathTemplate.startsWith("/") ? pathTemplate : `/${pathTemplate}`}`;
+}
+
+// ===========================================================================
 // 3. 四类数据源解析（全部纯函数，只吃 text）
 // ===========================================================================
 
@@ -389,26 +507,68 @@ export interface ScanParseOptions {
   maxCandidates?: number;
 }
 
-/** 从 JS/TS bundle 文本抽 fetch / axios / 字符串常量里的 API 路径。 */
+/**
+ * 从 JS/TS bundle 文本抽 fetch / axios / 字符串常量里的 API 路径。
+ *
+ * 每个字面量会额外判定两件事：
+ *  1. **是否相对应用上下文路径**（源码里写成 `contextPath() + "/rest/xxx"`）；
+ *  2. **是否在请求上下文里**（url 字段 / 请求调用点）—— 不在的话形状再像路径也可能是噪音。
+ *
+ * 噪音（普通字符串常量、注释、静态资源）直接丢弃；相对 context 的路径保留标记，
+ * 由 scanSources() 在拿到上下文前缀后统一补齐。
+ */
 export function scanJsText(text: string, opts: ScanParseOptions = {}): SiteScanCandidate[] {
+  return scanJsTextDetailed(text, opts).candidates;
+}
+
+/**
+ * scanJsText 的详细版：额外给出被丢弃的噪音路径条数（供报告告警用）。
+ *
+ * 保留 scanJsText 原签名是为了不破坏既有调用方与用例。
+ */
+export function scanJsTextDetailed(
+  text: string,
+  opts: ScanParseOptions = {},
+): { candidates: SiteScanCandidate[]; noiseDropped: number } {
   const source = String(text || "").slice(0, SITE_SCAN_MAX_TEXT_CHARS);
   const limit = Number.isFinite(opts.maxCandidates) && Number(opts.maxCandidates) > 0
     ? Math.floor(Number(opts.maxCandidates))
     : SITE_SCAN_MAX_ENDPOINTS;
   const found = new Map<string, SiteScanCandidate>();
+  let noiseDropped = 0;
   STRING_LITERAL_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = STRING_LITERAL_RE.exec(source)) !== null) {
     const rawPath = match[2];
     // 协议相对 URL（//host/path）先拆出 host，path 只保留 pathname。
     const split = splitProtocolRelativeUrl(rawPath);
-    if (!isApiPath(split.path, opts.loose === true)) continue;
-    const pathTemplate = toPathTemplate(split.path);
-    if (!pathTemplate) continue;
-    const queryPart = split.path.includes("?") ? split.path.slice(split.path.indexOf("?")) : "";
     const literalEnd = match.index + match[0].length;
     const before = source.slice(Math.max(0, match.index - 100), match.index);
+    // 上下文判定用更宽的窗口（拼接形态可能跨过 100 字符），method 判定仍用原窗口，
+    // 避免改变既有 inferMethod 的边界行为。
+    const beforeWide = source.slice(Math.max(0, match.index - 200), match.index);
     const after = source.slice(literalEnd, Math.min(source.length, literalEnd + 180));
+
+    // 字面量拼接：`"/confluence" + "/json/addwatch.action"` —— 前半段就是路径前缀。
+    const literalPrefixMatch = LITERAL_PREFIX_RE.exec(beforeWide);
+    const literalPrefix = literalPrefixMatch ? literalPrefixMatch[2] : "";
+    // 上下文前缀调用：`AJS.contextPath() + "/rest/xxx"` —— 路径是相对的，前缀值另取。
+    const relativeToContext = !literalPrefix && CONTEXT_PATH_TOKEN_RE.test(beforeWide);
+    const requestContext = hasRequestContext(beforeWide);
+
+    const effectivePath = literalPrefix
+      ? `${literalPrefix}${split.path}`
+      : split.path;
+    if (!isApiPath(effectivePath, opts.loose === true)) continue;
+    // 噪音过滤：形状像噪音 **且** 不在任何请求上下文里才丢。
+    // 「相对 context 的路径」本身就在请求拼接点上，不算噪音。
+    if (isNoisePath(effectivePath, requestContext || relativeToContext)) {
+      noiseDropped += 1;
+      continue;
+    }
+    const pathTemplate = toPathTemplate(effectivePath);
+    if (!pathTemplate) continue;
+    const queryPart = effectivePath.includes("?") ? effectivePath.slice(effectivePath.indexOf("?")) : "";
     const method = inferMethod(before, after);
     const candidate: SiteScanCandidate = {
       method,
@@ -417,12 +577,14 @@ export function scanJsText(text: string, opts: ScanParseOptions = {}): SiteScanC
       bodyNames: method === "GET" || method === "HEAD" ? [] : bodyNamesFrom(after),
       origin: "js",
       ...(split.host ? { host: split.host } : {}),
+      ...(relativeToContext ? { relativeToContext: true } : {}),
+      ...(requestContext ? { hasRequestContext: true } : {}),
     };
     const key = candidateKey(method, pathTemplate, split.host);
     if (!found.has(key)) found.set(key, candidate);
     if (found.size >= limit) break;
   }
-  return [...found.values()];
+  return { candidates: [...found.values()], noiseDropped };
 }
 
 /** 从 HAR 1.2 的 log.entries[].request 抽 method / path / query / postData 字段名。 */
@@ -474,6 +636,261 @@ export function parseHarText(text: string, opts: ScanParseOptions = {}): SiteSca
     if (!found.has(key)) found.set(key, candidate);
     if (found.size >= limit) break;
   }
+  // 归档流量里同一路径跨多个 origin 时，**不猜**哪个才是目标站 ——
+  // 显式记下观测到的 origin 集合，交由歧义检测暴露给调用方。
+  for (const [key, hosts] of hostsByKey) {
+    const candidate = found.get(key);
+    if (candidate && hosts.size > 1) candidate.observedHosts = [...hosts].sort();
+  }
+  return [...found.values()];
+}
+
+/**
+ * ============================================================================
+ * 3b. Fiddler SAZ 会话解析（真实流量归档，与 HAR 同一路）
+ * ============================================================================
+ *
+ * SAZ（Fiddler 导出的 HTTPArchive）是 ZIP 包，包内是逐会话的原始 HTTP 报文
+ * （`raw/N_c.txt` / `raw/N_s.txt`）或 HTTP XML 会话（`N_c.xml` / `N_s.xml`）。
+ * 本函数接受三种输入形态，产出与 HAR 同构的候选：
+ *
+ *  1. **SAZ 归档本体**（base64 文本）→ 解包后逐条目解析；
+ *  2. **HTTP XML 会话文本**（`<Session>…</Session>`，可多份拼接）；
+ *  3. **raw HTTP 文本**（请求行 + 头 + 体，可多份拼接）。
+ *
+ * 证据口径与 HAR 完全一致：
+ *  - 端点身份是**观测到的**（真实流量确实调用过）→ 档位 observed；
+ *  - 不做路径前缀白名单过滤（真实流量里什么路径都可能有），只用 toPathTemplate
+ *    剔掉静态资源与埋点路径 —— 与 parseHarText 同款，避免误杀召回；
+ *  - **不改变命令的 host 归属**：观测到的 origin 只记进 observedHosts，
+ *    跨 origin 由 host 歧义承载（理由同 evidence-model.md：把第三方 origin
+ *    变成新命令会扩大跨 host 攻击面）；
+ *  - 只保留**字段名**，绝不保留取值 / 凭据。
+ */
+
+/** Fiddler HTTP XML 会话片段（一份 SAZ 里可能有多份会话）。 */
+const FIDDLER_SESSION_RE = /<Session\b[^>]*>[\s\S]*?<\/Session>/gi;
+/** raw HTTP 请求行：`METHOD target HTTP/1.x`。 */
+const RAW_REQUEST_LINE_RE = /^([A-Za-z]{3,10})\s+(\S+)\s+HTTP\/1\.[01]$/;
+/** raw HTTP 响应行（用于切分报文边界；响应体不参与端点发现）。 */
+const RAW_STATUS_LINE_RE = /^HTTP\/1\.[01]\s+\d{3}/;
+
+/** XML 实体反转义（Fiddler 里的 &amp; 会影响 URL 解析）。 */
+function decodeXmlEntities(raw: string): string {
+  return String(raw || "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&#(\d+);/g, (_m, code: string) => String.fromCharCode(Number(code) || 32))
+    .replace(/&amp;/g, "&");
+}
+
+/** 抽 XML 元素内容（只取第一段，缺省空串）。 */
+function xmlTagContent(xml: string, tag: string): string {
+  const re = new RegExp(`<${tag}\\b[^>]*>([\\s\\S]*?)</${tag}>`, "i");
+  const match = re.exec(xml);
+  return match ? decodeXmlEntities(match[1]).trim() : "";
+}
+
+/** 抽 Fiddler HTTP XML 里的请求头值（`<Header Name="Content-Type">…</Header>`）。 */
+function xmlHeaderValue(xml: string, name: string): string {
+  const re = new RegExp(`<Header\\b[^>]*Name=["']${name}["'][^>]*>([\\s\\S]*?)</Header>`, "i");
+  const match = re.exec(xml);
+  return match ? decodeXmlEntities(match[1]).trim() : "";
+}
+
+/** JSON 请求体的**顶层字段名**（只留名字，绝不留取值）。 */
+function jsonBodyNames(body: string): string[] {
+  const out: string[] = [];
+  let parsed: unknown;
+  try { parsed = JSON.parse(body); } catch { return out; }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return out;
+  for (const key of Object.keys(parsed as Record<string, unknown>)) {
+    const name = safeParamName(key);
+    if (name && !out.includes(name)) out.push(name);
+  }
+  return out;
+}
+
+/** 请求体字段名：按 Content-Type 判定形态（JSON / 表单），判定不了就试 JSON。 */
+function requestBodyNames(body: string, contentType: string): string[] {
+  const text = String(body || "").trim();
+  if (!text) return [];
+  const type = String(contentType || "").toLowerCase();
+  if (type.includes("x-www-form-urlencoded")) return queryNamesFrom(text);
+  if (type.includes("json")) return jsonBodyNames(text);
+  const names = jsonBodyNames(text);
+  if (names.length > 0) return names;
+  return queryNamesFrom(text);
+}
+
+/**
+ * 解析 Fiddler 会话文本（raw HTTP 或 HTTP XML），把端点写入收集器。
+ *
+ * 收集器与外层共享，便于「归档本体」与「裸会话文本」两条路径复用同一套逻辑。
+ */
+function collectFiddlerSessions(
+  text: string,
+  sink: {
+    add: (method: HttpMethod, url: string, bodyNames: string[]) => void;
+    limit: number;
+    count: number;
+  },
+): void {
+  const source = String(text || "");
+  if (!source.trim() || sink.count >= sink.limit) return;
+
+  // --- 形态 2：HTTP XML 会话 ---
+  if (source.includes("<Session")) {
+    FIDDLER_SESSION_RE.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = FIDDLER_SESSION_RE.exec(source)) !== null) {
+      if (sink.count >= sink.limit) break;
+      const session = match[0];
+      const requestMatch = /<Request\b[^>]*>([\s\S]*?)<\/Request>/i.exec(session);
+      const request = requestMatch ? requestMatch[1] : session;
+      const methodRaw = (xmlTagContent(request, "Method") || "GET").toUpperCase();
+      const method: HttpMethod = (HTTP_METHODS as readonly string[]).includes(methodRaw)
+        ? methodRaw as HttpMethod : "GET";
+      let url = xmlTagContent(request, "FullUrl");
+      if (!url) {
+        // 退化形态：<RequestLine>GET http://host/path HTTP/1.1</RequestLine>
+        const line = xmlTagContent(request, "RequestLine");
+        const lineMatch = /^([A-Za-z]{3,10})\s+(\S+)/.exec(line);
+        if (lineMatch) url = lineMatch[2];
+      }
+      if (!url) continue;
+      const contentType = xmlHeaderValue(request, "Content-Type");
+      const body = xmlTagContent(request, "Body");
+      sink.add(method, url, requestBodyNames(body, contentType));
+    }
+    return;
+  }
+
+  // --- 形态 3：raw HTTP 报文 ---
+  const lines = source.split(/\r?\n/);
+  let index = 0;
+  while (index < lines.length && sink.count < sink.limit) {
+    const lineMatch = RAW_REQUEST_LINE_RE.exec(lines[index]);
+    if (!lineMatch) { index += 1; continue; }
+    const methodRaw = lineMatch[1].toUpperCase();
+    const method: HttpMethod = (HTTP_METHODS as readonly string[]).includes(methodRaw)
+      ? methodRaw as HttpMethod : "GET";
+    const target = lineMatch[2];
+    index += 1;
+    // 头：直到空行；顺带取 Host（origin-form 请求的目标主机在这里）。
+    const headers = new Map<string, string>();
+    while (index < lines.length && lines[index].trim() !== "") {
+      const headerLine = lines[index];
+      const sep = headerLine.indexOf(":");
+      if (sep > 0) {
+        const name = headerLine.slice(0, sep).trim().toLowerCase();
+        const value = headerLine.slice(sep + 1).trim();
+        if (!headers.has(name)) headers.set(name, value);
+      }
+      index += 1;
+    }
+    index += 1; // 跳过空行
+    // 体：到下一条报文开始为止。
+    const bodyLines: string[] = [];
+    while (index < lines.length) {
+      const current = lines[index];
+      if (RAW_REQUEST_LINE_RE.test(current) || RAW_STATUS_LINE_RE.test(current)) break;
+      bodyLines.push(current);
+      index += 1;
+    }
+    const host = headers.get("host") ?? "";
+    const url = host && target.startsWith("/")
+      ? `http://${host}${target}`
+      : target;
+    sink.add(method, url, requestBodyNames(bodyLines.join("\n"), headers.get("content-type") ?? ""));
+  }
+}
+
+/**
+ * 按来源种类取「本次真正参与解析的文本」。
+ *
+ * 【硬纪律】SAZ 归档（base64 / 原始字节）**绝不截断**：
+ * 从中间切断的 base64 必然解包失败，且失败是**静默**的（0 候选、无告警），
+ * 看上去像「这个站没有接口」—— 比报错更难排查。
+ * 因此归档形态只有两种结局：**整体放行**或**整体拒绝**（超配额返回空串，
+ * 由编排层按既有固定文案告警），没有「截半截」这种第三种结局。
+ *
+ * 其余来源（js / har / openapi / commands）沿用原有的文本上限截断，行为不变。
+ */
+function scanSourceText(kind: SiteScanKind, text: string): string {
+  const raw = typeof text === "string" ? text : "";
+  if (kind === "fiddler_saz" && looksLikeSazArchive(raw)) {
+    return raw.length > SITE_SCAN_SAZ_MAX_BASE64_CHARS ? "" : raw;
+  }
+  return raw.slice(0, SITE_SCAN_MAX_TEXT_CHARS);
+}
+
+/**
+ * 从 Fiddler SAZ 会话（归档 / XML / raw HTTP）抽端点与参数名。
+ *
+ * 与 parseHarText 同构：只保留 method / pathTemplate / 参数**名**，绝不保留取值。
+ */
+export function parseFiddleText(text: string, opts: ScanParseOptions = {}): SiteScanCandidate[] {
+  const limit = Number.isFinite(opts.maxCandidates) && Number(opts.maxCandidates) > 0
+    ? Math.floor(Number(opts.maxCandidates))
+    : SITE_SCAN_MAX_ENDPOINTS;
+  const source = scanSourceText("fiddler_saz", text);
+  if (!source.trim()) return [];
+
+  const found = new Map<string, SiteScanCandidate>();
+  // 同一路径在归档流量里出现过哪些 origin（host）—— 供歧义检测使用（与 HAR 同款）。
+  const hostsByKey = new Map<string, Set<string>>();
+  const sink = {
+    limit,
+    count: 0,
+    add: (method: HttpMethod, rawUrl: string, bodyNames: string[]) => {
+      if (sink.count >= sink.limit) return;
+      let parsed: URL;
+      try { parsed = new URL(rawUrl); } catch { return; }
+      const pathTemplate = toPathTemplate(parsed.pathname);
+      if (!pathTemplate) return;
+      const queryNames: string[] = [];
+      for (const name of parsed.searchParams.keys()) {
+        const safe = safeParamName(name);
+        if (safe && !queryNames.includes(safe)) queryNames.push(safe);
+      }
+      const candidate: SiteScanCandidate = {
+        method,
+        pathTemplate,
+        queryNames,
+        bodyNames: method === "GET" || method === "HEAD" ? [] : bodyNames,
+        origin: "fiddler_saz",
+      };
+      const key = candidateKey(method, pathTemplate);
+      const observedHost = normalizeHostname(parsed.hostname);
+      if (observedHost) {
+        const hosts = hostsByKey.get(key);
+        if (hosts) hosts.add(observedHost);
+        else hostsByKey.set(key, new Set([observedHost]));
+      }
+      if (!found.has(key)) {
+        found.set(key, candidate);
+        sink.count += 1;
+      }
+    },
+  };
+
+  // 形态 1：SAZ 归档本体（base64 / 原始二进制文本）→ 解包后逐条目解析。
+  if (looksLikeSazArchive(source)) {
+    const archive = decodeSazArchive(source);
+    if (archive.ok) {
+      for (const entry of archive.entries) {
+        if (sink.count >= sink.limit) break;
+        collectFiddlerSessions(entry.text, sink);
+      }
+    }
+  } else {
+    // 形态 2 / 3：裸会话文本。
+    collectFiddlerSessions(source, sink);
+  }
+
   // 归档流量里同一路径跨多个 origin 时，**不猜**哪个才是目标站 ——
   // 显式记下观测到的 origin 集合，交由歧义检测暴露给调用方。
   for (const [key, hosts] of hostsByKey) {
@@ -679,6 +1096,13 @@ export function extractFinishedCommands(text: string): Array<Record<string, unkn
 export interface ScanSourcesOptions extends ScanParseOptions {
   domain: string;
   maxEndpoints?: number;
+  /**
+   * 应用上下文路径（如 Confluence 的 `/confluence`）。
+   *
+   * 缺省或空串表示「站点部署在根路径」或「取不到前缀」—— 两种情况都会让
+   * 「相对 context 的路径」保持原样，并由编排层给出显式告警（不静默放过）。
+   */
+  contextPath?: string;
 }
 
 /**
@@ -765,20 +1189,45 @@ export function scanSources(
   const collected: Array<{ kind: SiteScanKind; candidates: SiteScanCandidate[]; text: string }> = [];
   let sourcesRead = 0;
   let bytesRead = 0;
+  const contextPath = normalizeContextPath(opts.contextPath);
+  let relativePathCount = 0;
+  let contextPathAppliedCount = 0;
+  let totalNoiseDropped = 0;
 
   for (const source of list) {
-    const text = typeof source.text === "string"
-      ? source.text.slice(0, SITE_SCAN_MAX_TEXT_CHARS) : "";
+    const text = scanSourceText(source.kind, typeof source.text === "string" ? source.text : "");
     if (!text) { warnings.push(SITE_SCAN_SOURCE_FAILED_WARNING); continue; }
     bytesRead += text.length;
     sourcesRead += 1;
     let candidates: SiteScanCandidate[] = [];
+    let noiseDropped = 0;
     switch (source.kind) {
-      case "js": candidates = scanJsText(text, { loose: opts.loose, maxCandidates: perSource }); break;
+      case "js": {
+        const detailed = scanJsTextDetailed(text, { loose: opts.loose, maxCandidates: perSource });
+        candidates = detailed.candidates;
+        noiseDropped = detailed.noiseDropped;
+        break;
+      }
       case "har": candidates = parseHarText(text, { loose: opts.loose, maxCandidates: perSource }); break;
+      case "fiddler_saz": candidates = parseFiddleText(text, { loose: opts.loose, maxCandidates: perSource }); break;
       case "openapi": candidates = parseOpenApiText(text, { loose: opts.loose, maxCandidates: perSource }); break;
       case "commands": candidates = parseCommandSetText(text, { loose: opts.loose, maxCandidates: perSource }); break;
       default: break;
+    }
+    totalNoiseDropped += noiseDropped;
+    // 应用上下文前缀：只对「相对应用上下文路径」的候选生效。
+    //
+    // 必须在这里（合并之前）做 —— 合并键含 pathTemplate，漏补前缀会让同一个端点
+    // 裂成「带前缀」与「不带前缀」两条命令（实测 Confluence 的 webResources 就是如此：
+    // scan 侧 `/rest/...` 与抓包侧 `/confluence/rest/...` 成了两条 commandId 不同的命令）。
+    if (candidates.length > 0) {
+      candidates = candidates.map((candidate) => {
+        if (!candidate.relativeToContext) return candidate;
+        relativePathCount += 1;
+        const prefixed = applyContextPath(candidate.pathTemplate, contextPath, true);
+        if (prefixed !== candidate.pathTemplate) contextPathAppliedCount += 1;
+        return { ...candidate, pathTemplate: prefixed };
+      });
     }
     collected.push({ kind: source.kind, candidates, text });
   }
@@ -848,12 +1297,25 @@ export function scanSources(
     }
   }
 
+  // 应用上下文前缀的两种结局都必须显式告警：
+  //  - 补上了 → 说明路径已还原为真实地址；
+  //  - 没补上 → 命令会因缺前缀而 404，**不能静默放过**（这正是实测踩到的坑）。
+  if (contextPathAppliedCount > 0) warnings.push(SITE_SCAN_CONTEXT_PATH_APPLIED_WARNING);
+  if (relativePathCount > contextPathAppliedCount) {
+    warnings.push(SITE_SCAN_CONTEXT_PATH_MISSING_WARNING);
+  }
+  if (totalNoiseDropped > 0) warnings.push(SITE_SCAN_NOISE_PATH_WARNING);
+
   return {
     candidates: [...merged.values()],
     sourcesRead,
     bytesRead,
     warnings: [...new Set(warnings)],
     ambiguities,
+    contextPath,
+    relativePathCount,
+    contextPathAppliedCount,
+    noiseDroppedCount: totalNoiseDropped,
   };
 }
 

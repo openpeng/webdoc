@@ -73,7 +73,7 @@
 2. 之后再到同域名：`navigate` / `probe_page_capabilities` 自动附带 `apiCommands` 摘要（**只推荐不执行**），或 `list_api_commands(domain)` 取回完整清单（≤1 次工具调用）。用 `get_api_command` 看完整定义、`update_api_command` 改名/改参数（后续 `merge` / `full` 都保留人工修正）。
 3. `call_api_command({name:"list.courses", params:{page:1, size:100}})` 直接取回结构化数据——无需打开页面、无需抓包缓冲区、无需现场定位 `captureRequestId`；写命令需 `confirm:true`。响应经 `responseFields` 白名单裁剪、敏感字段 `[REDACTED]`、数组 ≤5、超长截断。
 
-**零 UI 整站复刻（补充）**：若目标是「把整站功能抽象成命令集」而非解析某一次操作，优先用 `analyze_page_apis({action:"scan_site", domain, sources})` 静态推导——直接读 JS bundle / HAR / OpenAPI / 声明式命令包，不经浏览器、不 attach debugger、不依赖标签页与登录会话，一次拿到整站接口骨架；产物强制 `needsReview`、空 `responseSchema`、默认全部按 `write` 保守处理，再用上面的抓包流程 `mode:"merge"` 补齐真实参数与响应结构。两条通道互补：**静态推导给覆盖率，真实抓包给可信度**。放开分级、黄区开关与 SSRF 边界见 [api-command-site-scan-design.md](./api-command-site-scan-design.md)。
+**零 UI 整站复刻（补充）**：若目标是「把整站功能抽象成命令集」而非解析某一次操作，优先用 `analyze_page_apis({action:"scan_site", domain, sources})` 静态推导——直接读 JS bundle / HAR / Fiddler SAZ 归档 / OpenAPI / 声明式命令包，不经浏览器、不 attach debugger、不依赖标签页与登录会话，一次拿到整站接口骨架；产物强制 `needsReview`、空 `responseSchema`、默认全部按 `write` 保守处理，再用上面的抓包流程 `mode:"merge"` 补齐真实参数与响应结构。两条通道互补：**静态推导给覆盖率，真实抓包给可信度**。放开分级、黄区开关与 SSRF 边界见 [api-command-site-scan-design.md](./api-command-site-scan-design.md)。
 
 **bundle 需要登录态时（Node 直读 401）**：在同一调用上加 `collectViaExtension:true`，URL 类数据源改由扩展侧取文本——页面上下文 fetch → Service Worker fetch → 浏览器缓存（CDP）三层 fallback，借用页面自身的会话；连 URL 都不想找就加 `discoverBundles:true`，从当前标签页自动发现已加载的 JS。取到的文本仍交给同一个 `scanSources()` 解析（扫描逻辑只有一份），原文只在内存流转、不落盘、不进日志。配额 10 源 / 单源 2MB / 总计 8MB，`useBrowserCache:false` 可完全关掉 debugger 那一层。详见 [api-command-bundle-collect-design.md](./api-command-bundle-collect-design.md)。
 

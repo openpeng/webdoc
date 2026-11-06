@@ -1,0 +1,328 @@
+{
+  "generatedAt": "2026-11-06T05:56:56.456Z",
+  "target": "https://www.bilibili.com/",
+  "baseline": "test-artifacts/t10-bilibili-recall.json",
+  "scanScope": "batch（所有 bundle 作为同一批交给 scanSources，与 scan_site 工具一致）",
+  "perBundleScopeNote": "T10 脚本的逐 bundle 口径：host 证据无法跨 bundle 汇聚，3 条 oracle 丢真实 host；HEAD(T13) 与 T14 结果一致，非 T14 引入",
+  "homeStatus": 200,
+  "bundleUrlsFound": 8,
+  "bundlesFetched": 8,
+  "totalBytes": 3956407,
+  "bundleList": [
+    {
+      "url": "https://s1.hdslb.com/bfs/seed/jinkela/short/bmg/register/fallback.js",
+      "bytes": 21444
+    },
+    {
+      "url": "https://s1.hdslb.com/bfs/seed/log/report/log-reporter.js",
+      "bytes": 133968
+    },
+    {
+      "url": "https://s1.hdslb.com/bfs/seed/jinkela/short/b-mirror/biliMirror.umd.mini.js",
+      "bytes": 113104
+    },
+    {
+      "url": "https://www.bilibili.com/gentleman/polyfill.js?features=es2015%2Ces2016%2Ces2017%2Ces2018%2Ces2019%2Ces2020%2Ces2021%2Ces2022%2CglobalThis&flags=gated",
+      "bytes": 99
+    },
+    {
+      "url": "https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-84fb5632.js",
+      "bytes": 1605288
+    },
+    {
+      "url": "https://s1.hdslb.com/bfs/cm/cm-sdk/static/js/bili-collect.js",
+      "bytes": 39702
+    },
+    {
+      "url": "https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/polyfills-legacy-8a67a3a6.js",
+      "bytes": 113532
+    },
+    {
+      "url": "https://s1.hdslb.com/bfs/static/shanks/laputa-home/assets/index-legacy-d8ee4d4b.js",
+      "bytes": 1929270
+    }
+  ],
+  "oracleExplicitCount": 8,
+  "oracleAmbiguousPathCount": 49,
+  "oracleCount": 35,
+  "oracleResolvedFromProbe": 28,
+  "oracleUnresolvable": [
+    "/x/internal/gaia-gateway/ExClimbWuzhi",
+    "/x/web-interface",
+    "/x/web-show",
+    "/x/web-interface/res/locs",
+    "/x/relation/fans/medal_report",
+    "/x/dynamic/feed/web-entrance/click",
+    "/x/esports/fav/add",
+    "/x/vip/ads/material/report",
+    "/x/vip/web/coupon_salary",
+    "/x/vip/order/token/get",
+    "/x/v2/history/toview/del",
+    "/x/v2/history/toview/add",
+    "/x/web-interface/translation/simple",
+    "/x/web-interface/feedback/dislike",
+    "/x/web-interface/feedback/dislike/cancel",
+    "/cm/api/fees/pc",
+    "/cm/api/receive/content/pc",
+    "/cm/api/receive/content/pc/clk",
+    "/cm/api/fees/pc/sync",
+    "/cm/api/fees/pc/sync/v2"
+  ],
+  "oracleSample": [
+    "api.bilibili.com/x/web-interface/nav",
+    "api.bilibili.com/bapis/bilibili.api.ticket.v1.Ticket/GenWebTicket",
+    "passport.bilibili.com/x/passport-login/web/cookie/info",
+    "api.vc.bilibili.com/x/im/web/msgfeed/unread",
+    "api.bilibili.com/x/v2/history/toview/add",
+    "api.bilibili.com/x/v2/history/toview/del",
+    "api.live.bilibili.com/xlive/web-interface/v1/webMain/getMoreRecList",
+    "api.bilibili.com/x/v2/history/toview/web",
+    "api.bilibili.com/x/web-frontend/getbuvid",
+    "api.bilibili.com/x/frontend/finger/spi",
+    "api.bilibili.com/x/frontend/finger/spi_v2",
+    "api.bilibili.com/x/web-interface/index/top/feed/rcmd",
+    "api.bilibili.com/x/web-show/res/locs",
+    "api.bilibili.com/x/kv-frontend/namespace/data",
+    "api.bilibili.com/x/kv-frontend/app/batchupdates",
+    "api.bilibili.com/x/web-show/page/header/v2",
+    "api.bilibili.com/x/web-frontend/getappversion",
+    "api.bilibili.com/x/web-interface/bgroup/member/in",
+    "api.bilibili.com/x/web-interface/nav/stat",
+    "api.bilibili.com/x/web-show/wbi/res/locs",
+    "api.bilibili.com/x/web-interface/dynamic/entrance",
+    "api.bilibili.com/x/polymer/web-dynamic/v1/live-up",
+    "api.bilibili.com/x/polymer/web-dynamic/v1/feed/nav",
+    "api.bilibili.com/x/product/user/recommendation/follow-up/recent/whitelist/status",
+    "api.bilibili.com/pgc/web/season/home/top"
+  ],
+  "looseTrue": {
+    "loose": true,
+    "scope": "batch",
+    "candidates": 139,
+    "uniqueFound": 132,
+    "hit": 35,
+    "missed": [],
+    "recall": 1
+  },
+  "looseFalse": {
+    "loose": false,
+    "scope": "batch",
+    "candidates": 9,
+    "uniqueFound": 9,
+    "hit": 0,
+    "missed": [
+      "api.bilibili.com/x/web-interface/nav",
+      "api.bilibili.com/bapis/bilibili.api.ticket.v1.Ticket/GenWebTicket",
+      "passport.bilibili.com/x/passport-login/web/cookie/info",
+      "api.vc.bilibili.com/x/im/web/msgfeed/unread",
+      "api.bilibili.com/x/v2/history/toview/add",
+      "api.bilibili.com/x/v2/history/toview/del",
+      "api.live.bilibili.com/xlive/web-interface/v1/webMain/getMoreRecList",
+      "api.bilibili.com/x/v2/history/toview/web",
+      "api.bilibili.com/x/web-frontend/getbuvid",
+      "api.bilibili.com/x/frontend/finger/spi",
+      "api.bilibili.com/x/frontend/finger/spi_v2",
+      "api.bilibili.com/x/web-interface/index/top/feed/rcmd",
+      "api.bilibili.com/x/web-show/res/locs",
+      "api.bilibili.com/x/kv-frontend/namespace/data",
+      "api.bilibili.com/x/kv-frontend/app/batchupdates",
+      "api.bilibili.com/x/web-show/page/header/v2",
+      "api.bilibili.com/x/web-frontend/getappversion",
+      "api.bilibili.com/x/web-interface/bgroup/member/in",
+      "api.bilibili.com/x/web-interface/nav/stat",
+      "api.bilibili.com/x/web-show/wbi/res/locs",
+      "api.bilibili.com/x/web-interface/dynamic/entrance",
+      "api.bilibili.com/x/polymer/web-dynamic/v1/live-up",
+      "api.bilibili.com/x/polymer/web-dynamic/v1/feed/nav",
+      "api.bilibili.com/x/product/user/recommendation/follow-up/recent/whitelist/status",
+      "api.bilibili.com/pgc/web/season/home/top",
+      "api.bilibili.com/x/web-interface/nav/game",
+      "api.bilibili.com/x/web-interface/wbi/search/square",
+      "api.bilibili.com/x/web-interface/suggest",
+      "api.bilibili.com/x/web-interface/wbi/search/default",
+      "api.bilibili.com/x/vip/ads/materials"
+    ],
+    "recall": 0
+  },
+  "perBundleLooseTrue": {
+    "loose": true,
+    "scope": "perBundle",
+    "candidates": 236,
+    "uniqueFound": 132,
+    "hit": 32,
+    "missed": [
+      "api.bilibili.com/x/web-frontend/getbuvid",
+      "api.bilibili.com/x/frontend/finger/spi",
+      "api.bilibili.com/x/frontend/finger/spi_v2"
+    ],
+    "recall": 0.9142857142857143
+  },
+  "perBundleLooseFalse": {
+    "loose": false,
+    "scope": "perBundle",
+    "candidates": 9,
+    "uniqueFound": 9,
+    "hit": 0,
+    "missed": [
+      "api.bilibili.com/x/web-interface/nav",
+      "api.bilibili.com/bapis/bilibili.api.ticket.v1.Ticket/GenWebTicket",
+      "passport.bilibili.com/x/passport-login/web/cookie/info",
+      "api.vc.bilibili.com/x/im/web/msgfeed/unread",
+      "api.bilibili.com/x/v2/history/toview/add",
+      "api.bilibili.com/x/v2/history/toview/del",
+      "api.live.bilibili.com/xlive/web-interface/v1/webMain/getMoreRecList",
+      "api.bilibili.com/x/v2/history/toview/web",
+      "api.bilibili.com/x/web-frontend/getbuvid",
+      "api.bilibili.com/x/frontend/finger/spi",
+      "api.bilibili.com/x/frontend/finger/spi_v2",
+      "api.bilibili.com/x/web-interface/index/top/feed/rcmd",
+      "api.bilibili.com/x/web-show/res/locs",
+      "api.bilibili.com/x/kv-frontend/namespace/data",
+      "api.bilibili.com/x/kv-frontend/app/batchupdates",
+      "api.bilibili.com/x/web-show/page/header/v2",
+      "api.bilibili.com/x/web-frontend/getappversion",
+      "api.bilibili.com/x/web-interface/bgroup/member/in",
+      "api.bilibili.com/x/web-interface/nav/stat",
+      "api.bilibili.com/x/web-show/wbi/res/locs",
+      "api.bilibili.com/x/web-interface/dynamic/entrance",
+      "api.bilibili.com/x/polymer/web-dynamic/v1/live-up",
+      "api.bilibili.com/x/polymer/web-dynamic/v1/feed/nav",
+      "api.bilibili.com/x/product/user/recommendation/follow-up/recent/whitelist/status",
+      "api.bilibili.com/pgc/web/season/home/top",
+      "api.bilibili.com/x/web-interface/nav/game",
+      "api.bilibili.com/x/web-interface/wbi/search/square",
+      "api.bilibili.com/x/web-interface/suggest",
+      "api.bilibili.com/x/web-interface/wbi/search/default",
+      "api.bilibili.com/x/vip/ads/materials"
+    ],
+    "recall": 0
+  },
+  "delta": {
+    "oldRecall": 0,
+    "newRecall": 1,
+    "oldFound": 9,
+    "newFound": 132,
+    "oldCandidates": 9,
+    "newCandidates": 139
+  },
+  "survival": {
+    "scope": "静态推导命中 oracle 的条目",
+    "tried": 35,
+    "alive": 24,
+    "dead": 11,
+    "rate": 0.6857142857142857,
+    "aliveList": [
+      "api.bilibili.com/x/web-interface/nav",
+      "passport.bilibili.com/x/passport-login/web/cookie/info",
+      "api.vc.bilibili.com/x/im/web/msgfeed/unread",
+      "api.bilibili.com/x/v2/history/toview/web",
+      "api.bilibili.com/x/web-frontend/getbuvid",
+      "api.bilibili.com/x/frontend/finger/spi",
+      "api.bilibili.com/x/frontend/finger/spi_v2",
+      "api.bilibili.com/x/web-interface/index/top/feed/rcmd",
+      "api.bilibili.com/x/web-show/page/header/v2",
+      "api.bilibili.com/x/web-frontend/getappversion",
+      "api.bilibili.com/x/web-interface/bgroup/member/in",
+      "api.bilibili.com/x/web-interface/nav/stat",
+      "api.bilibili.com/x/web-interface/dynamic/entrance",
+      "api.bilibili.com/x/polymer/web-dynamic/v1/live-up",
+      "api.bilibili.com/x/polymer/web-dynamic/v1/feed/nav",
+      "api.bilibili.com/x/product/user/recommendation/follow-up/recent/whitelist/status",
+      "api.bilibili.com/x/web-interface/nav/game",
+      "api.bilibili.com/x/web-interface/suggest",
+      "api.bilibili.com/x/web-interface/wbi/search/default",
+      "api.bilibili.com/x/vip/ads/materials",
+      "api.bilibili.com/x/v3/fav/folder/list4navigate",
+      "api.bilibili.com/x/v3/fav/resource/list4navigate",
+      "api.bilibili.com/x/web-interface/history/continuation",
+      "api.bilibili.com/x/web-interface/history/cursor"
+    ],
+    "deadList": [
+      {
+        "endpoint": "api.bilibili.com/bapis/bilibili.api.ticket.v1.Ticket/GenWebTicket",
+        "status": 405
+      },
+      {
+        "endpoint": "api.bilibili.com/x/v2/history/toview/add",
+        "status": 405
+      },
+      {
+        "endpoint": "api.bilibili.com/x/v2/history/toview/del",
+        "status": 405
+      },
+      {
+        "endpoint": "api.live.bilibili.com/xlive/web-interface/v1/webMain/getMoreRecList",
+        "status": 200
+      },
+      {
+        "endpoint": "api.bilibili.com/x/web-show/res/locs",
+        "status": 200
+      },
+      {
+        "endpoint": "api.bilibili.com/x/kv-frontend/namespace/data",
+        "status": 200
+      },
+      {
+        "endpoint": "api.bilibili.com/x/kv-frontend/app/batchupdates",
+        "status": 200
+      },
+      {
+        "endpoint": "api.bilibili.com/x/web-show/wbi/res/locs",
+        "status": 200
+      },
+      {
+        "endpoint": "api.bilibili.com/pgc/web/season/home/top",
+        "status": 200
+      },
+      {
+        "endpoint": "api.bilibili.com/x/web-interface/wbi/search/square",
+        "status": 200
+      },
+      {
+        "endpoint": "api.bilibili.com/x/web-interface/index/ogv/rcmd",
+        "status": 200
+      }
+    ]
+  },
+  "oracleSurvival": {
+    "tried": 35,
+    "alive": 24,
+    "rate": 0.6857142857142857
+  },
+  "compareWithBaseline": {
+    "baselineArtifact": "test-artifacts/t10-bilibili-recall.json",
+    "baselineOracleCount": 35,
+    "currentOracleCount": 35,
+    "baselineLooseTrue": {
+      "candidates": 140,
+      "uniqueFound": 133,
+      "hit": 35,
+      "recall": 1
+    },
+    "currentLooseTrue": {
+      "candidates": 139,
+      "uniqueFound": 132,
+      "hit": 35,
+      "recall": 1
+    },
+    "recallNotRegressed": true,
+    "candidateDelta": -1,
+    "uniqueFoundDelta": -1,
+    "hitDelta": 0,
+    "headReference": {
+      "note": "HEAD(704b18f, T13) 同期实测：整批口径 140 候选 / 133 unique / 35 hit / recall 1.0；逐 bundle 口径 237 候选 / 133 unique / 32 hit",
+      "headBatch": {
+        "candidates": 140,
+        "uniqueFound": 133,
+        "hit": 35,
+        "recall": 1
+      },
+      "headPerBundle": {
+        "candidates": 237,
+        "uniqueFound": 133,
+        "hit": 32,
+        "recall": 0.9142857142857143
+      }
+    }
+  }
+}
