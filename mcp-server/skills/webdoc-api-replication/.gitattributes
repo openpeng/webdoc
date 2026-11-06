@@ -1,0 +1,4 @@
+# 这些 skill 文件必须以 LF 落盘：Mavis 内置 lint-skill.js 的 frontmatter 解析器
+# 用 `.*$` 匹配键值，CRLF 的行尾 \r 无法被 . 匹配，会导致 name / description 解析为空。
+# 本仓其他文件走 CRLF（core.autocrlf=true），此目录用本地规则排除在外。
+*.md text eol=lf

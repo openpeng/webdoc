@@ -26,6 +26,7 @@ Use the smallest reliable tool path:
 - **Multi-step work:** Use the task loop below instead of chaining raw actions.
 - **Repeated routine:** After a completed, parameterized task plan, save it as a workflow. Use `recommend_workflows` only to discover matching prior workflows; it does not execute them.
 - **Data from a site's own API (preferred when a persisted command exists):** Call `list_api_commands(domain)` **first** — it is a pure local cache read, works without opening the page, and never executes anything. If it hits, use `call_api_command`. Only if there is no usable command should you run `analyze_page_apis` (start → operate the UI → stop_and_analyze). See "Per-domain API command set" below.
+- **Changing the command pipeline itself (not just using it):** Read the companion skill `webdoc-api-replication/SKILL.md` first — it fixes the evidence tiering and coverage contract that every command, report, and cache entry must satisfy. See "REA evidence discipline" below.
 - **Need an overview answer, not a specific page:** Call `ai_search({query})` first. One call returns a synthesized answer plus cited sources without opening any page, tab, or login session — much cheaper than `navigate` → `get_page_text` → read several results. Use the real browser only when you need a specific site's own content, or when `ai_search` returns `found:false`.
 - **Exceptional inspection:** Do not use arbitrary page JavaScript. `execute_js` is disabled; use `inspect`, `probe_selector`, page text, adapters, or screenshots instead.
 
@@ -71,6 +72,19 @@ Seven dedicated tools turn captured XHR/fetch traffic into a local, per-hostname
 - **Write commands:** a command with `risk:"write"` returns `confirmationRequired:true` plus a redacted `preview` and sends **no request** unless you pass `confirm:true`. Confirm with the user before doing so (see "Start safely"). `confirm` is only a mis-click gate; the extension independently enforces the domain allowlist, exact hostname match, read-only mode and emergency stop.
 - **Error handling:** `authRequired:true` / `AUTH_REQUIRED` means the login session likely expired — ask the user to log in manually, do not retry blindly (it does not disable the command). `DRIFTED` means the response shape changed — consider re-running `analyze_page_apis`. `REDIRECT_BLOCKED` is fail-closed; do not try to follow the redirect yourself.
 - **Credentials discipline:** the cache stores only header **field names**, never values; no cookies, CSRF tokens, credentials, or business sample values are persisted. Real enum values are not recorded (only `enumCount`). Never copy internal hostnames, endpoint paths, enum values, or business data into workflows, adapters, or this Skill — the cache is a local runtime asset, not a distributable one. `apiEndpoints` from `probe_page_capabilities` is based on `performance.getEntriesByType('resource')` and its `method` is an `XHR`/`fetch` pseudo-value: **never use it as a parsing source**; real methods come from CDP `Network.requestWillBeSent`.
+
+## REA evidence discipline (companion skill)
+
+The per-domain API command set is only trustworthy under an explicit evidence contract. When the task is to **design, implement, review, or change that contract** — evidence tiers, coverage semantics, ambiguity handling, provenance labelling — read the companion skill before writing any code:
+
+- `webdoc-api-replication/SKILL.md` — the sibling directory next to this file (repo path `mcp-server/skills/webdoc-api-replication/SKILL.md`; package path `skills/webdoc-api-replication/SKILL.md`). Tier every endpoint as `observed` / `derived` / `inferred` / `unknown`; keep `discovered` / `applicable` / `examined` / `retained` scopes separate; record ambiguity instead of guessing; never let missing coverage read as absence.
+  - `references/evidence-model.md` — tier semantics and the source→tier mapping.
+  - `references/rea-principles.md` — REA's first-hand principles; quote from here instead of paraphrasing them into second-hand conclusions.
+  - `references/repo-map.md` — where each contract lives in this repo; read it before editing, because line numbers drift.
+  - `references/route-and-capture-playbook.md` — route definition rules and capture-analysis priorities.
+  - `references/web-design-replication.md` — design cues treated as endpoint-discovery leads.
+
+Do **not** load it for ordinary browser automation, or for plain bug-hunting that needs no contract change — read the implementation directly in those cases.
 
 ## Search-engine AI summary (`ai_search`)
 
