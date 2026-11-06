@@ -265,7 +265,7 @@ async function performWithSelectorCache(
 const server = new Server(
   {
     name: "webpilot-mcp-server",
-    version: "0.3.0",
+    version: "1.1.2",
   },
   {
     capabilities: { tools: {} },
