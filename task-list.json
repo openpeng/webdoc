@@ -339,6 +339,33 @@
         "status": "done",
         "commit": "T13",
         "completion_note": "档位映射：抓包→observed，规格（OpenAPI/声明式命令包）与人工命令→derived，静态扫描+JS bundle→inferred，扫描+HAR 归档流量→observed，无来源→unknown；响应维度有样本才 observed 否则恒 unknown。总档位取三维最弱；多来源合并取最强档（弱证据不否定强观测）。byDimension 拆分的原因：静态推导的响应档位恒 unknown，只看 byTier 会被这一维拉平、失去区分度。sourceConflict 的判据经过一次修正——初版按「参数集不同」判冲突会误报（HAR 只记某次请求的参数、OpenAPI 声明全量），改为按同一 (method, pathTemplate) 被不同来源归到不同真实 host 判定。新增纯函数层 mcp-server/src/api-command-evidence.ts（无 IO / 无 Date / 无环境变量，可 node --test 直测）。cache 层 rebuildProvenance 缺失或非法时整体省略、不臆造档位。扩展侧 SOURCE_ALLOWED_KEYS / PROVENANCE_ALLOWED_KEYS / COMMAND_TIERS 逐字同步。新增 28 条回归用例，基线复核时其中 10 条在修复前实测失败；真实 B 站主 bundle 复测召回未回退（113 候选 / 48 个归属 api.bilibili.com，与 T11 基线一致），并检出 1 条真阳性歧义（/x/web-interface/nav 候选 api.bilibili.com + main-api.biligame.com）"
+      },
+      {
+        "id": "T14",
+        "title": "真实站点复刻（Confluence）：应用上下文路径前缀 + 覆盖率口径改域名级 + 噪音路径过滤",
+        "owner": "xiaopeng.lei",
+        "dependsOn": [
+          "T10",
+          "T11",
+          "T12",
+          "T13"
+        ],
+        "files": [
+          "mcp-server/src/api-command-types.ts",
+          "mcp-server/src/api-command-site-scan.ts",
+          "mcp-server/src/api-command-evidence.ts",
+          "mcp-server/src/api-command-cache.ts",
+          "mcp-server/src/api-command-service.ts",
+          "browser-extension/api-command-helpers.js",
+          "browser-extension/background.js",
+          "mcp-server/test/api-command-context-path.test.mjs",
+          "docs/api-command-confluence-replication-report.md"
+        ],
+        "acceptanceCriteria": [],
+        "acceptance": "对 https://confluence.gaodunwangxiao.com/confluence/#all-updates 做一次真实的「网站 → API 命令集」复刻，修复首轮暴露的缺陷：(1) 主缺陷 —— JS 来源路径缺「应用上下文路径」概念，bundle 里的「contextPath() + 相对路径」扫出来缺前缀，命令打到错误地址空间（实测裸路径 /rest/... 进不了 Confluence 的 REST servlet，返回 Tomcat 原始 404 页）；(2) F2 —— coverage 口径由批次级改为域名级全量（显式 scope 字段 + batchCommandCount 保留批次信息）；(3) F3 —— scan / capture 重复端点（补前缀后 commandId 自对齐、合并自动提档，不需独立机制）；(4) F4 —— 噪音路径过滤（形状像噪音 且 无请求上下文 才丢）。新增用例 >= 1 条（实交付 17 条）；三项本地硬边界（域名白名单 / 紧急停止 / 目标 URL 校验）一行不改",
+        "status": "done",
+        "commit": "T14",
+        "completion_note": "扩展侧取值优先级：AJS.contextPath() → AJS.Confluence.getContextPath() → window.contextPath → meta[ajs-context-path|context-path]；三条硬约束：页面 origin 必须精确命中允许域名集合、前缀必须通过 normalizeContextPath（/ 开头、无协议/查询串/.. /空白/引号、长度 ≤ 128、根路径归空）、MCP 侧对回包再校验一次。补上与没补上两种结局都显式告警，不静默放过。噪音过滤是双重保险（形状像噪音 且 不在请求上下文里才丢），静态资源首段集刻意不含 download（Confluence 的 /download/resources 是真接口）。live 实测：重载扩展后 scan 得 contextPath=/confluence、68 端点/68 命令；抓包 14 端点与 scan 合并后缓存 120 条、2 条被 capture 同化提档、0 条丢失；coverage 改为域名级真值（9/120 = 7.5%，旧批次口径会把 10/54≈19% 显示成 71%）；调用闭环实调 33 条命令，200 命中 12 条（其余为缺参/方法/跳转等真实业务约束，说明请求已正确路由到应用）。B 站召回复测（test-artifacts/t14-bilibili-recall.json）：整批口径 139 候选 / 132 unique / 35 hit / recall 1.0，与 T10 基线（140/133/35/1.0）持平，少的 1 条是噪音 /a/i；实打存活 24/35 = 68.57% 与基线一致。口径修订：T10 脚本的逐 bundle 累加口径无法跨 bundle 汇聚 host 证据，HEAD(T13) 与 T14 在该口径下同样显示 32/35，证明该差异非 T14 引入。"
       }
     ]
   },
@@ -393,9 +420,22 @@
         "provenanceCoverage": {
           "task": "T13",
           "inspiration": "REA（Reverse Engineer Anything）的证据口径，不引入其代码",
-          "tiers": ["observed", "derived", "inferred", "unknown"],
-          "dimensions": ["endpoint", "params", "response"],
-          "ambiguityKinds": ["host", "baseUrl", "sourceConflict"],
+          "tiers": [
+            "observed",
+            "derived",
+            "inferred",
+            "unknown"
+          ],
+          "dimensions": [
+            "endpoint",
+            "params",
+            "response"
+          ],
+          "ambiguityKinds": [
+            "host",
+            "baseUrl",
+            "sourceConflict"
+          ],
           "switch": "provenance 三态：未传 → SITE_SCAN_DEFAULT_PROVENANCE(true)；显式 false 仍是 false；置 false 时命令不带 source.provenance、报告不带 coverage 段",
           "liveEvidence": "stdio JSON-RPC 直连新构建 dist/server.js：三源(js+har+openapi) → endpointCount=3 / commandCount=3，coverage.byDimension.endpoint={observed:1, inferred:2}、byDimension.response 全 unknown、verifiedCount=0、ambiguities=[]、3 条 nextHints；负向对照 provenance=false → 无 coverage 段、仍产出 endpointCount=1 / commandCount=1",
           "realSiteRecheck": "真实 B 站主 bundle 1605288 字节复测：113 候选 / 48 个归属 api.bilibili.com，与 T11 基线完全一致（召回未回退）；并检出 1 条真阳性歧义（/x/web-interface/nav 候选 api.bilibili.com + main-api.biligame.com）",

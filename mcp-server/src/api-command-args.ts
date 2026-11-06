@@ -70,7 +70,13 @@ export interface AnalyzeArgs {
   mode?: AnalysisMode;
   overwriteManual?: boolean;
   // ---- scan_site 专用（不经过扩展、不绑定 tab）----
-  /** 数据源：{kind, url} 或 {kind, text}，kind ∈ js/har/openapi/commands。 */
+  /**
+   * 数据源：{kind, url} 或 {kind, text}，kind ∈ js/har/fiddler_saz/openapi/commands。
+   *
+   * `fiddler_saz` = Fiddler 导出的 SAZ 归档（与 har 同属真实流量归档）：
+   * text 收 base64 的 .saz 本体 / 解包后的 raw HTTP 文本 / HTTP XML 文本；
+   * url 收 http(s) 上的 .saz（按字节读取，base64 化后再解包）。
+   */
   sources?: SiteScanSource[];
   /** 【黄区】允许内网 / 回环地址，默认 false。 */
   allowPrivateHosts?: boolean;

@@ -28,6 +28,7 @@ import type {
   AnalysisCoverage,
   CommandProvenance,
   CommandTier,
+  DomainCoverage,
   ScanAmbiguity,
   ScanAmbiguityKind,
   SiteScanKind,
@@ -63,12 +64,14 @@ export function weakestTier(tiers: Array<CommandTier | undefined>): CommandTier 
 /**
  * 静态推导来源种类 → 该来源单独能支撑的端点证据档位。
  *
- *  - `har`：HAR 是**真实流量归档**，端点确实被调用过 → observed；
+ *  - `har` / `fiddler_saz`：**真实流量归档**（HAR / Fiddler SAZ 导出的会话），
+ *    端点确实被调用过 → observed；
  *  - `openapi` / `commands`：权威声明 → derived；
  *  - `js`：前端 bundle 里的路径字面量 → inferred（可能来自注释、死代码、实验分支）。
  */
 const SCAN_KIND_TIER: Readonly<Record<SiteScanKind, CommandTier>> = {
   har: "observed",
+  fiddler_saz: "observed",
   openapi: "derived",
   commands: "derived",
   js: "inferred",
@@ -226,6 +229,60 @@ export interface CoverageInput {
   /** 响应已验证（response 档位为 observed）的命令数。 */
   verifiedCount: number;
   ambiguities: ScanAmbiguity[];
+  /**
+   * 统计口径：`domain` = 该域名的全量命令集；`batch` = 仅本次分析批次。
+   *
+   * 缺省 `batch`（保持既有行为）。口径必须显式标注 —— 批次口径会把整域可信度高估
+   * （实测 Confluence 复刻：批次显示 observed=10/unknown=4，域名实为 54 条）。
+   */
+  scope?: "domain" | "batch";
+  /** 本次分析批次的命令数（与 scope 口径下的 commandCount 区分）。 */
+  batchCommandCount?: number;
+  /**
+   * 本次批次的档位明细（对照用）。
+   *
+   * 有了它才能在报告里同时给出「批次数字」与「域名真实数字」，
+   * 调用方一眼能看出批次口径虚高多少。
+   */
+  batchProvenances?: CommandProvenance[];
+  /**
+   * 按域名的档位明细：key = 精确 hostname，value = 该域名**全量**命令的档位。
+   *
+   * 跨 host 的命令各自属于另一个域名，必须单独统计，否则它们的档位会被算丢。
+   */
+  domainProvenances?: Record<string, CommandProvenance[]>;
+}
+
+/**
+ * 覆盖率比例（0..1，保留 3 位小数）。
+ *
+ * 分母为 0 时返回 0 —— 「一条命令都没有」不等于「覆盖率 100%」。
+ */
+export function coverageRate(observed: number, denominator: number): number {
+  const num = Number.isFinite(observed) ? Math.max(0, observed) : 0;
+  const den = Number.isFinite(denominator) ? Math.max(0, denominator) : 0;
+  if (den === 0) return 0;
+  return Math.round((num / den) * 1000) / 1000;
+}
+
+/**
+ * 统计**去重后的真实端点数**（method + host + pathTemplate）。
+ *
+ * 命令数 ≠ 端点数：同一条端点可能对应多条命令（人工分叉 / 不同模板变体）。
+ * 覆盖率报告里的 endpointCount 必须是端点数，否则就是拿命令数冒充端点数。
+ */
+export function countDistinctEndpoints(
+  items: Array<{ method?: string; pathTemplate?: string; host?: string }> | undefined,
+): number {
+  const list = Array.isArray(items) ? items : [];
+  const keys = new Set<string>();
+  for (const item of list) {
+    const method = String(item?.method ?? "").toUpperCase();
+    const path = String(item?.pathTemplate ?? "");
+    if (!path) continue;
+    keys.add(`${method}\u0000${String(item?.host ?? "")}\u0000${path}`);
+  }
+  return keys.size;
 }
 
 /**
@@ -234,6 +291,7 @@ export interface CoverageInput {
  * 纪律：
  *  - byTier 各档之和恒等于 commandCount（不丢项、不重复计数）；
  *  - byDimension 把三维分别统计 —— 回答「不确定性到底出在哪一维」；
+ *  - **分母显式**（denominator）+ **真实覆盖率**（coverageRate）：调用方不必再自己拿批次当分母去算 —— 那正是数字虚高的根源；
  *  - nextHints 由**计数触发**，每条固定文案只出现一次，不含任何样本值 / host / 路径；
  *  - 缺失的部分计入 unknown 档，**不冒充已覆盖**。
  */
@@ -264,7 +322,69 @@ export function buildCoverage(input: CoverageInput): AnalysisCoverage {
   if (ambiguities.length > 0) addHint(COVERAGE_HINT_AMBIGUOUS);
   if (list.length > verifiedCount) addHint(COVERAGE_HINT_UNVERIFIED);
 
+  const scope: "domain" | "batch" = input?.scope === "domain" ? "domain" : "batch";
+  const rawBatchCount = input?.batchCommandCount;
+  const batchCommandCount = typeof rawBatchCount === "number" && Number.isFinite(rawBatchCount)
+    ? Math.max(0, Math.floor(rawBatchCount))
+    : list.length;
+
+  // 分母 = 口径内的命令数；真实覆盖率 = **端点被真实流量观测到**的命令数 / 分母。
+  //
+  // 分子取「端点维度」的 observed，而不是「总档位」的 observed ——
+  // 总档位是三维取最弱，而静态推导永远拿不到响应样本（response 恒 unknown），
+  // 拿它当分子会让任何静态推导域的覆盖率恒为 0：
+  // 「这个域的接口一个都没被观测到」与事实相反（HAR / SAZ 归档里的端点确实被观测过）。
+  // 端点维度的比例才是「这个域的接口有多少是被真实流量观测到的」；
+  // 三维各自的比例见 dimensionRates，总档位分布见 byTier。
+  const denominator = list.length;
+  const dimensionRates = {
+    endpoint: coverageRate(byDimension.endpoint.observed, denominator),
+    params: coverageRate(byDimension.params.observed, denominator),
+    response: coverageRate(byDimension.response.observed, denominator),
+  };
+
+  // 批次对照：同一批命令单独算一份，调用方能直接看出批次口径虚高多少。
+  // 分子口径与主口径一致（端点维度 observed），否则两列数字不可比。
+  const batchList = Array.isArray(input?.batchProvenances) ? input.batchProvenances : [];
+  const batchStats = batchList.length > 0 ? (() => {
+    const batchByTier = { observed: 0, derived: 0, inferred: 0, unknown: 0 } as Record<CommandTier, number>;
+    let batchEndpointObserved = 0;
+    for (const provenance of batchList) {
+      const safe = provenance ?? { tier: "unknown" };
+      batchByTier[normalizeTier(safe.tier)] += 1;
+      if (normalizeTier(safe.endpoint) === "observed") batchEndpointObserved += 1;
+    }
+    return {
+      commandCount: batchList.length,
+      byTier: batchByTier,
+      coverageRate: coverageRate(batchEndpointObserved, batchList.length),
+    };
+  })() : undefined;
+
+  // 按域名的真实覆盖率：每个域名的分母都是**它自己的全量命令数**。
+  const domainEntries = input?.domainProvenances;
+  const byDomain: Record<string, DomainCoverage> = {};
+  if (domainEntries && typeof domainEntries === "object") {
+    for (const [host, rawList] of Object.entries(domainEntries)) {
+      const domainList = Array.isArray(rawList) ? rawList : [];
+      const domainByTier = { observed: 0, derived: 0, inferred: 0, unknown: 0 } as Record<CommandTier, number>;
+      let domainEndpointObserved = 0;
+      for (const provenance of domainList) {
+        const safe = provenance ?? { tier: "unknown" };
+        domainByTier[normalizeTier(safe.tier)] += 1;
+        if (normalizeTier(safe.endpoint) === "observed") domainEndpointObserved += 1;
+      }
+      byDomain[host] = {
+        commandCount: domainList.length,
+        byTier: domainByTier,
+        coverageRate: coverageRate(domainEndpointObserved, domainList.length),
+      };
+    }
+  }
+
   return {
+    scope,
+    batchCommandCount,
     endpointCount: Number.isFinite(input?.endpointCount) ? Math.max(0, Math.floor(input!.endpointCount)) : 0,
     commandCount: list.length,
     byTier,
@@ -272,6 +392,11 @@ export function buildCoverage(input: CoverageInput): AnalysisCoverage {
     verifiedCount,
     ambiguities,
     nextHints,
+    denominator,
+    coverageRate: coverageRate(byDimension.endpoint.observed, denominator),
+    dimensionRates,
+    ...(batchStats ? { batchStats } : {}),
+    ...(Object.keys(byDomain).length > 0 ? { byDomain } : {}),
   };
 }
 

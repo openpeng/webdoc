@@ -948,7 +948,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     // ===== 按域名的 API 命令集（7 个独立具名工具，snake_case，Q1）=====
     {
       name: "analyze_page_apis",
-      description: "页面 API 分析并沉淀为可复用命令：action=start 启动抓包 → 用户/Agent 操作页面 → action=stop_and_analyze 产出报告并写入域名级缓存；analyze_current 为兼容入口（解析现有抓包缓冲区）；scan_site 为静态推导入口：直接读取 JS bundle / HAR / OpenAPI / 声明式命令包，无需打开页面、无需抓包、无需登录会话，一次拿到整站接口骨架（产物强制需人工复核、默认按 write 保守处理）。bundle 受登录态保护时加 collectViaExtension=true（或 discoverBundles=true 自动发现）由扩展侧借页面会话取文本，扫描仍走同一套解析。",
+      description: "页面 API 分析并沉淀为可复用命令：action=start 启动抓包 → 用户/Agent 操作页面 → action=stop_and_analyze 产出报告并写入域名级缓存；analyze_current 为兼容入口（解析现有抓包缓冲区）；scan_site 为静态推导入口：直接读取 JS bundle / HAR / Fiddler SAZ 归档 / OpenAPI / 声明式命令包，无需打开页面、无需抓包、无需登录会话，一次拿到整站接口骨架（产物强制需人工复核、默认按 write 保守处理）。bundle 受登录态保护时加 collectViaExtension=true（或 discoverBundles=true 自动发现）由扩展侧借页面会话取文本，扫描仍走同一套解析。",
       inputSchema: {
         type: "object" as const,
         properties: {
@@ -964,11 +964,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           overwriteManual: { type: "boolean", description: "默认 false，人工修正条目始终保留" },
           sources: {
             type: "array",
-            description: "scan_site 专用数据源：[{kind:\"js\"|\"har\"|\"openapi\"|\"commands\", url?:string, text?:string}]。url 仅 http(s)、默认同源且拒绝私网；text 优先，便于离线复现",
+            description: "scan_site 专用数据源：[{kind:\"js\"|\"har\"|\"fiddler_saz\"|\"openapi\"|\"commands\", url?:string, text?:string}]。url 仅 http(s)、默认同源且拒绝私网；text 优先，便于离线复现。kind=fiddler_saz 收 Fiddler SAZ 会话（raw HTTP 文本 / HTTP XML 文本 / base64 的 .saz 归档），与 har 同属真实流量归档",
             items: {
               type: "object",
               properties: {
-                kind: { type: "string", enum: ["js", "har", "openapi", "commands"] },
+                kind: { type: "string", enum: ["js", "har", "fiddler_saz", "openapi", "commands"] },
                 url: { type: "string" },
                 text: { type: "string" },
               },

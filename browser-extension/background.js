@@ -1944,6 +1944,11 @@ async function cmdApiBundleCollect(msg, requestId) {
       }
     }
 
+    // 【应用上下文路径】取页面里的应用前缀（Confluence 的 /confluence）。
+    // 取不到就回空串 —— MCP 侧会显式告警「相对 context 的路径未补前缀」，
+    // 不会静默生成一批打不通的命令。
+    const contextPath = await apiDetectContextPath(tabId, options.hosts);
+
     // 1) 发现：只取 URL 列表，不取内容。
     let candidates = options.urls.slice();
     let discovered = 0;
@@ -1968,7 +1973,7 @@ async function cmdApiBundleCollect(msg, requestId) {
       }));
       sendToDaemon({
         type: MSG_RESULT.BUNDLE_COLLECT, requestId, success: true,
-        sources: [], requested: 0, collected: 0, discovered, warnings
+        sources: [], requested: 0, collected: 0, discovered, contextPath, warnings
       });
       return;
     }
@@ -2000,7 +2005,7 @@ async function cmdApiBundleCollect(msg, requestId) {
     }));
     sendToDaemon({
       type: MSG_RESULT.BUNDLE_COLLECT, requestId, success: true,
-      sources, requested: candidates.length, collected: sources.length, discovered, warnings
+      sources, requested: candidates.length, collected: sources.length, discovered, contextPath, warnings
     });
   } catch (e) {
     logOperation(safeLogForApiExecute({
@@ -2062,6 +2067,80 @@ function apiCollectBundleCandidatesInPage() {
     }
   } catch { /* ignore */ }
   return out;
+}
+
+/**
+ * 注入页面上下文：取**应用上下文路径**（context path）。
+ *
+ * 前端 bundle 普遍把接口路径写成「上下文前缀 + 相对路径」：
+ *   AJS.contextPath()+"/rest/webResources/1.0/resources"      （Confluence）
+ *   f.CONTEXT_PATH+"/json/pagechildren.action"                  （Confluence）
+ *   AJS.Confluence.getContextPath()+"/ajax/spaceavailable.action"
+ * 不补这个前缀，命令会打到错误地址（实测 Confluence 的 REST 真实地址带 `/confluence`，
+ * 裸 `/rest/...` 根本进不了 Confluence 的 REST servlet，实测 404）。
+ *
+ * 本函数**只读页面里已存在的值**，不发请求、不写 DOM、不读 cookie。
+ * 取不到就返回空串（编排层会显式告警，不静默放过）。
+ *
+ * ⚠️ 必须自包含：这里会被 chrome.scripting.executeScript({ func }) 序列化注入，
+ * 不能引用本文件的任何闭包变量。
+ */
+function apiDetectContextPathInPage() {
+  const out = { contextPath: '', origin: '' };
+  try { out.origin = String(location.origin || ''); } catch { return out; }
+  const read = (fn) => {
+    try {
+      const value = fn();
+      return typeof value === 'string' ? value : '';
+    } catch {
+      return '';
+    }
+  };
+  let value = '';
+  // 1) 框架直接暴露的取前缀函数（Confluence / Jira 系）。
+  try {
+    const ajs = window.AJS;
+    if (ajs && typeof ajs.contextPath === 'function') value = read(() => ajs.contextPath());
+    if (!value && ajs && ajs.Confluence && typeof ajs.Confluence.getContextPath === 'function') {
+      value = read(() => ajs.Confluence.getContextPath());
+    }
+  } catch { /* ignore */ }
+  // 2) 页面内联脚本里的全局变量（实测形态：`var contextPath = '/confluence';`）。
+  if (!value) {
+    try {
+      if (typeof window.contextPath === 'string') value = String(window.contextPath || '');
+    } catch { /* ignore */ }
+  }
+  // 3) meta 标签兜底。
+  if (!value) {
+    try {
+      const meta = document.querySelector('meta[name="ajs-context-path"], meta[name="context-path"]');
+      if (meta) value = String(meta.getAttribute('content') || '');
+    } catch { /* ignore */ }
+  }
+  out.contextPath = value;
+  return out;
+}
+
+/**
+ * 【应用上下文路径】在页面上下文取前缀，并校验「页面 origin 必须命中允许 host」。
+ *
+ * 页面是敌意输入源：它给出的前缀会被拼进命令 URL。
+ * 因此这里必须做两层校验（与 bundle URL 同一套 host 白名单口径）：
+ *  1. 页面 origin 的 hostname 必须精确命中 hosts 之一 —— 否则不采信（跨站页面的前缀是污染）；
+ *  2. 前缀本身必须是合法路径（normalizeApiContextPath）。
+ */
+async function apiDetectContextPath(tabId, allowedHosts) {
+  const raw = await apiWithTimeout(runInPageContext(tabId, apiDetectContextPathInPage, []), 3000);
+  const record = (raw && typeof raw === 'object') ? raw : {};
+  const origin = String(record.origin || '');
+  let originHost = '';
+  try { originHost = apiNormalizeHostname(new URL(origin).hostname); } catch { originHost = ''; }
+  const allowed = (Array.isArray(allowedHosts) ? allowedHosts : [])
+    .map((item) => apiNormalizeHostname(String(item || '')))
+    .filter(Boolean);
+  if (!originHost || !allowed.includes(originHost)) return '';
+  return normalizeApiContextPath(record.contextPath);
 }
 
 /**

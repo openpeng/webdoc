@@ -274,6 +274,64 @@
 
 ---
 
+### T14 · 真实站点复刻（Confluence）：应用上下文路径 + 覆盖率口径 + 噪音路径过滤
+
+> 复刻对象：`https://confluence.gaodunwangxiao.com/confluence/#all-updates`（已登录）。
+> 复刻结论与全部实测数据见 `docs/api-command-confluence-replication-report.md`。
+
+**为什么需要这一轮**：T1–T13 的放开与修复都在「单站点、单形态」上验证过。首次拿一个
+**部署在子路径下**的真实站点（Confluence 挂在 `/confluence`）复刻，暴露了结构性缺口：
+
+> 前端 bundle 普遍把接口路径写成「应用上下文前缀 + 相对路径」
+> （`AJS.contextPath() + "/rest/webResources/1.0/resources"`），
+> 而 JS 来源解析里**没有「路径相对应用上下文」这个概念** —— 扫出来的是 `/rest/...`，
+> 真实地址是 `/confluence/rest/...`。实测裸路径请求进不了 Confluence 的 REST servlet
+> （返回 Tomcat 原始 404 页），命令集等于全废。
+
+这与已修的 D-2（OpenAPI `basePath` 丢失）**同类**：OpenAPI 侧的口径是「规格里的 paths 相对
+`servers`」，JS 侧的等价物就是「bundle 里的路径相对应用上下文路径」。
+
+| 文件 | 改动 |
+|---|---|
+| `api-command-types.ts` | 新增 `API_CONTEXT_PATH_MAX_LENGTH = 128`（扩展侧逐字同步）；`AnalysisReport.contextPath`；`SiteScanCandidate.relativeToContext` / `hasRequestContext`；`SiteScanResult.contextPath` / `relativePathCount` / `contextPathAppliedCount` / `noiseDroppedCount`；`AnalysisCoverage.scope`（`domain` / `batch`）/ `batchCommandCount`；新增 3 条告警：`SITE_SCAN_CONTEXT_PATH_APPLIED_WARNING` / `SITE_SCAN_CONTEXT_PATH_MISSING_WARNING` / `SITE_SCAN_NOISE_PATH_WARNING` |
+| `api-command-site-scan.ts` | 新增 `CONTEXT_PATH_TOKEN_RE` / `LITERAL_PREFIX_RE` / `REQUEST_URL_FIELD_RE` / `REQUEST_CALL_RE` / `STATIC_RESOURCE_SEGMENTS` / `NOISE_TWO_LETTER_RE`；新增 `normalizeContextPath()` / `isNoisePath()` / `applyContextPath()` / `scanJsTextDetailed()`（`scanJsText()` 改为委托，签名不变）；`scanSources()` 在合并前补前缀并统计 relative / applied / noise，产出对应告警 |
+| `api-command-evidence.ts` | `CoverageInput.scope` / `batchCommandCount`；`buildCoverage()` 输出 `scope` 与 `batchCommandCount`（覆盖率口径 = 域名级全量，批次信息单列） |
+| `api-command-cache.ts` | `toCard()` 透出 `provenance` |
+| `api-command-service.ts` | `collectBundlesViaExtension()` 回包带 `contextPath` 并用 `normalizeContextPath()` 复验；`scanSite()` 接线 `contextPath`、输出 `report.contextPath`；coverage 改**域名级**口径（scan 与 capture 两条通道统一） |
+| `browser-extension/api-command-helpers.js` | 新增 `API_CONTEXT_PATH_MAX_LENGTH = 128`（两端逐字同步）与纯函数 `normalizeApiContextPath()` |
+| `browser-extension/background.js` | 新增 `apiDetectContextPathInPage()`（页面上下文注入，自包含）与 `apiDetectContextPath()`；`cmdApiBundleCollect()` 两个回包分支都带 `contextPath` |
+
+**扩展侧取值优先级**（页面上下文注入，逐级回退）：
+`AJS.contextPath()` → `AJS.Confluence.getContextPath()` → `window.contextPath` →
+`meta[name="ajs-context-path" | "context-path"]`。
+
+**取值的三条硬约束**（安全边界，不是功能开关）：
+
+1. 页面 origin 必须**精确命中**本次扫描的允许域名集合，否则返回空串；
+2. 前缀必须通过 `normalizeContextPath()`：必须以 `/` 开头、无协议 / 查询串 / `..` / `\` / 空白 / 引号，
+   长度 ≤ 128，根路径归一成空串；
+3. MCP 侧对扩展回包**再校验一次**（不信任回包）。
+
+**两种结局都显式告警**：补上了 → `…APPLIED_WARNING`；没补上 → `…MISSING_WARNING`
+（命令可能因缺前缀而 404，可带 `tabId` 让扩展侧在页面上下文取值后重跑）。
+
+**噪音路径过滤（双重保险）**：形状像噪音 **且** 不在任何请求上下文里才丢 —— 只要有一方说它像接口就保留。
+
+- 形状判定：静态资源后缀（新增 `.soy` / `.less` / `.xhtml` / `.vm`）、静态资源首段集
+  （`images` / `image` / `icons` / `icon` / `includes` / `stylesheets` / `themes` / `fonts`，
+  **刻意不含 `download`** —— Confluence 的 `/download/resources` 是真接口）、`^\/[a-z]\/[a-z]$`；
+- 请求上下文判定：url 类字段赋值或请求调用点（`fetch(` / `ajax(` / `.get(` / `axios(` …）。
+
+**覆盖率口径（F2）**：由「批次级分母」改为**域名级全量** —— 该域缓存里全部命令为分母，
+批次信息单列到 `batchCommandCount`。实测修正：旧口径会把 10/54 ≈ 19% 显示成 **71%**；
+新口径给出真值 9/120 = **7.5%**（`scope: "domain"`）。
+
+**重复端点（F3）**：不需要独立机制 —— 前缀补齐后 `pathTemplate` 一致，
+`commandId`（`sha256(host\0method\0pathTemplate)`）自对齐，合并时自动合并并**提档**
+（实测 2 条被 capture 同化提档、0 条丢失）。
+
+---
+
 ## 5. Tasks（执行顺序）
 
 | # | 任务 | 依赖 | 落点 | commit | 状态 |
@@ -308,15 +366,16 @@
 | # | 验收项 | 口径 | 实现位置 | 实测结果 |
 |---|---|---|---|---|
 | A1 | 规格驱动路径命中 | petstore OpenAPI：19 个端点路径命中 19/19，0 未命中 | `api-command-site-scan.ts` `parseOpenApiText` / `scanSources` | 19/19 ✅ |
-| A2 | 静态推导召回 | B 站首页默认配置（放开后）：召回 ≥ 50%（基线 0%） | `api-command-service.ts:1064` `loose` → `api-command-site-scan.ts:753` `scanSources` → `:705` `applyHostCrossReference` → `:228` `detectBaseUrlHosts` | **100%**（35/35，loose=false 旧默认 0%）✅ |
+| A2 | 静态推导召回 | B 站首页默认配置（放开后）：召回 ≥ 50%（基线 0%） | `api-command-service.ts:1132` `loose` → `api-command-site-scan.ts:1177` `scanSources` → `:1129` `applyHostCrossReference` → `:236` `detectBaseUrlHosts` | **100%**（35/35，loose=false 旧默认 0%）✅ |
 | A3 | 静态推导存活 | B 站首页：实打存活率 ≥ 50%（基线 55%，修复后应更高） | 同 A2（同一批扫描口径） | **68.6%**（24/35，与 oracle 自身上限 68.6% 持平）✅ |
-| A4 | 免开网页调用 | 全新会话 + 页面未开 + 无抓包缓冲区，成功率 ≥ 90% | `api-command-service.ts` `call` → `executeCommandRequest` → 扩展 `background.js:2194` `cmdApiCommandExecute` | ✅ 见下方「A4 实测记录」 |
-| A5 | 导出导入闭环 | 导出 → 清空 → 导入 → 命令条数 / 名称 / 参数 / 响应裁剪规则一致，可直接调用 | `api-command-cache.ts:1145` `export` / `:1192` `import` / `:742` `rewriteCommandHost`；`api-command-service.ts:1359` / `:1371`；`server.ts:994` / `:1007` | 闭环一致，复合命令随包往返 ✅ |
+| A4 | 免开网页调用 | 全新会话 + 页面未开 + 无抓包缓冲区，成功率 ≥ 90% | `api-command-service.ts` `call` → `executeCommandRequest` → 扩展 `background.js:2273` `cmdApiCommandExecute` | ✅ 见下方「A4 实测记录」 |
+| A5 | 导出导入闭环 | 导出 → 清空 → 导入 → 命令条数 / 名称 / 参数 / 响应裁剪规则一致，可直接调用 | `api-command-cache.ts:1148` `export` / `:1195` `import` / `:745` `rewriteCommandHost`；`api-command-service.ts:1480` / `:1492`；`server.ts:994` / `:1007` | 闭环一致，复合命令随包往返 ✅ |
 | A6 | 并发写 | 两个进程先后写不同域名，双方数据都存活 | `api-command-cache.ts:79` `buildCacheTmpName` / `ensureLoaded` / `persist`（写前重读合并） | 双方数据都存活 ✅ |
-| A7 | 参数可覆盖 | 调用方传值必须生效（当前实测被忽略） | `api-command-normalize.ts:656` `param.defaultValue` / `api-command-generator.ts:182` `buildQueryTemplate` / `:195` `buildBodyTemplate`；`api-command-render.ts:145` `renderRequest`；`api-command-service.ts:1784` `filterParamsForCommand` | 调用方传值生效 ✅ |
+| A7 | 参数可覆盖 | 调用方传值必须生效（当前实测被忽略） | `api-command-normalize.ts:656` `param.defaultValue` / `api-command-generator.ts:182` `buildQueryTemplate` / `:195` `buildBodyTemplate`；`api-command-render.ts:145` `renderRequest`；`api-command-service.ts:1905` `filterParamsForCommand` | 调用方传值生效 ✅ |
 | A8 | 测试 | `npm test` 全绿（存量 245 零回归 + 新增用例），`npm run doctor` 0 fail | `mcp-server/test/*` | **354/354 pass**（存量 245 零回归 + 新增 109）；`doctor` 5 pass / 0 warn / 0 fail ✅ |
 | A9 | 文档 | README 中英工具表 + `docs/` 与实现一致 | `README.md` / `README.zh.md` / `docs/api-command-set-upgrade-spec.md` | 中英 19 节同构、工具表各 44 条完全一致 ✅ |
-| A10 | 证据分级 + 歧义显式 + coverage 报告（T13） | 每条命令按 `observed`/`derived`/`inferred`/`unknown` 标注证据档位（端点 / 参数 / 响应三维分别判定，总档位取最弱）；多解证据显式列为歧义而不猜；报告输出 `coverage` 段且各档计数自洽；`provenance=false` 时产物形状与旧版完全一致 | `api-command-types.ts:645` `COMMAND_TIERS` / `:662` `CommandProvenance` / `:674` `SCAN_AMBIGUITY_KINDS` / `:699` `AnalysisCoverage` / `:1091` `SITE_SCAN_DEFAULT_PROVENANCE`；`api-command-evidence.ts:146` `deriveProvenance()` / `:184` `makeAmbiguity()` / `:240` `buildCoverage()`；`api-command-site-scan.ts:753` `scanSources()`；`api-command-service.ts:1177` / `:1314` `report.coverage`；`api-command-args.ts:37` `TRI_STATE_BOOLEANS`；`server.ts:988` inputSchema | live 实测：三源 → `endpointCount=3 / commandCount=3`，`byDimension.endpoint={observed:1, inferred:2}`、`byDimension.response` 全 `unknown`、`verifiedCount=0`、`ambiguities=[]`、3 条 nextHints；负向对照 `provenance=false` → 无 `coverage` 段；真实 B 站 bundle 复测召回未回退（113 候选 / 48 个归属 `api.bilibili.com`）并检出 1 条真阳性歧义 ✅ |
+| A10 | 证据分级 + 歧义显式 + coverage 报告（T13） | 每条命令按 `observed`/`derived`/`inferred`/`unknown` 标注证据档位（端点 / 参数 / 响应三维分别判定，总档位取最弱）；多解证据显式列为歧义而不猜；报告输出 `coverage` 段且各档计数自洽；`provenance=false` 时产物形状与旧版完全一致；覆盖率按**域名**口径统计（显式分母 + 真实覆盖率），取不到该域名全量命令集时如实回退到批次口径并告警，不把批次冒充全域 | `api-command-types.ts:659` `COMMAND_TIERS` / `:676` `CommandProvenance` / `:688` `SCAN_AMBIGUITY_KINDS` / `:732` `AnalysisCoverage` / `:712` `DomainCoverage` / `:1253` `SITE_SCAN_DEFAULT_PROVENANCE`；`api-command-evidence.ts:149` `deriveProvenance()` / `:187` `makeAmbiguity()` / `:298` `buildCoverage()` / `:261` `coverageRate()` / `:274` `countDistinctEndpoints()`；`api-command-site-scan.ts:1177` `scanSources()`；`api-command-service.ts:1419` / `:1263` `report.coverage`；`api-command-args.ts:32` `TRI_STATE_BOOLEANS`；`server.ts:952` inputSchema | live 实测：三源 → `endpointCount=3 / commandCount=3`，`byDimension.endpoint={observed:1, inferred:2}`、`byDimension.response` 全 `unknown`、`verifiedCount=0`、`ambiguities=[]`、3 条 nextHints；负向对照 `provenance=false` → 无 `coverage` 段；真实 B 站 bundle 复测召回未回退（113 候选 / 48 个归属 `api.bilibili.com`）并检出 1 条真阳性歧义 ✅ |
+| A11 | 静态来源扩充 + 覆盖率口径（T14） | 新增 Fiddler SAZ 归档来源（与 HAR 同为真实流量归档 → `observed` 档），解析层零 IO（无 `node:fs` / 无网络 / 无时钟）；覆盖率按域名口径给真实覆盖率，召回不得回退 | `mcp-server/src/api-command-saz.ts:81` `decodeSazArchive()` / `:55` `looksLikeSazArchive()`；`mcp-server/src/api-command-site-scan.ts:835` `parseFiddleText()`；`mcp-server/src/api-command-evidence.ts:72` `SCAN_KIND_TIER` / `:298` `buildCoverage()`；`mcp-server/src/api-command-service.ts:862` `fetchScanSourceBinary()`；`mcp-server/src/api-command-types.ts:1143` `SITE_SCAN_KINDS` / `:441` `COVERAGE_SCOPE_BATCH_FALLBACK_WARNING` | `npm run build` 零诊断；**394/394 pass**（存量 371 零回归 + 新增 23）；真实 B 站 bundle 复测召回 **113 候选 / 48 个 `api.bilibili.com`**（与改动前基线逐项一致，未回退）；沙箱回退演练（把本次改动摘掉后重编译）→ 新用例 **17/23 FAIL**，证明用例咬住了改动 ✅ |
 
 **A2 / A3 实测口径（重要，不可沿用旧口径）**：
 

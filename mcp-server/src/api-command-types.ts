@@ -11,7 +11,7 @@
  *   EXECUTE_OPTIONS_ALLOWED_KEYS / EXECUTE_OPTIONS_FORBIDDEN_KEYS /
  *   API_COMMAND_ALLOWED_HEADERS / API_SENSITIVE_HEADER_RE / RESPONSE_SENSITIVE_FIELDS /
  *   REDACTED_VALUE / LOG_STRIP_KEYS / API_LOG_ALLOWED_KEYS / API_LOG_PREFIX /
- *   COMMAND_NAME_PATTERN / PARAM_NAME_PATTERN。
+ *   COMMAND_NAME_PATTERN / PARAM_NAME_PATTERN / API_CONTEXT_PATH_MAX_LENGTH。
  *
  * 本模块只含类型、常量与正则，**不含任何 IO、不含任何函数、不含任何运行时副作用**，
  * 因此可被纯函数管线、缓存管理器与 `node --test` 单元测试安全引用。
@@ -94,6 +94,13 @@ export const MAX_ERROR_MESSAGE_LENGTH = 200;
 export const MAX_PATH_TEMPLATE_LENGTH = 512;
 /** header 字段名长度上限（只存名字，不存值）。 */
 export const MAX_HEADER_NAME_LENGTH = 128;
+/**
+ * 应用上下文路径（context path）长度上限 —— 【扩展侧需同步】。
+ *
+ * 上下文路径（如 Confluence 的 `/confluence`）会被拼进命令 URL，来源是**页面里的 JS**，
+ * 属于不可信输入，因此长度必须设上限。
+ */
+export const API_CONTEXT_PATH_MAX_LENGTH = 128;
 
 // ============================================================================
 // 3. 正则与路径归一规则（集中定义，禁止各文件另写魔法值）
@@ -425,6 +432,13 @@ export const COVERAGE_HINT_INFERRED = "部分命令仅由前端代码静态推�
 export const COVERAGE_HINT_DERIVED = "部分命令由规格或命令包声明推导而来，未经过真实响应验证";
 export const COVERAGE_HINT_AMBIGUOUS = "部分端点存在互斥证据，命令可能指向错误主机；建议补充 HAR 归档流量或人工确认 host";
 export const COVERAGE_HINT_UNVERIFIED = "部分命令未经真实请求验证，直接调用可能失败；建议先在浏览器中复现一次以确认端点可用";
+/**
+ * 覆盖率口径回退告警（固定文案，不回显 host / 路径 / 样本值）。
+ *
+ * 触发条件：本次拿不到**域名全量**命令集（缓存为空 / 该域名尚未落盘任何命令），
+ * 覆盖率只能按**批次口径**统计 —— 此时数字不能代表该域名的真实覆盖率，必须显式说明。
+ */
+export const COVERAGE_SCOPE_BATCH_FALLBACK_WARNING = "未能取到该域名的全量命令集，本次覆盖率按批次口径统计，不代表该域名的真实覆盖率";
 
 // ============================================================================
 // 11. 抓包归一化记录与响应体样本（设计 3.2）
@@ -691,15 +705,46 @@ export interface ScanAmbiguity {
 }
 
 /**
+ * 单个域名的覆盖率明细（**按域名**统计的真实覆盖率）。
+ *
+ * 每个条目都是「该域名缓存里的**全量**命令」的分母统计 —— 不是本次批次。
+ */
+export interface DomainCoverage {
+  /** 该域名的全量命令数（口径内分母）。 */
+  commandCount: number;
+  /** 按总档位统计（各档之和 == commandCount）。 */
+  byTier: Record<CommandTier, number>;
+  /**
+   * 真实覆盖率：端点被真实流量观测到的命令数 / commandCount（0..1，保留 3 位小数）。
+   *
+   * 分子口径与 AnalysisCoverage.coverageRate 一致（端点维度 observed），
+   * 否则「按域名的数字」与「总报告的数字」不可比。
+   */
+  coverageRate: number;
+}
+
+/**
  * 覆盖率与可信度报告。
  *
  * 借鉴 REA 的 coverage 口径：**缺失即 unknown，而非「不存在」** ——
  * 未观测到的部分计入 unknown，不冒充「已覆盖」。
  */
 export interface AnalysisCoverage {
+  /**
+   * 统计口径。
+   *
+   * `domain` = 合并后**该域名的全量命令集**（这才是「覆盖率」的真实含义）；
+   * `batch`  = 仅本次分析批次。
+   *
+   * 实测（Confluence 复刻）：批次口径会显示 observed=10/unknown=4（看似 71% 覆盖），
+   * 而域名缓存实为 54 条（真实 10/54 ≈ 19%）—— 口径必须显式标注，否则会高估可信度。
+   */
+  scope: "domain" | "batch";
+  /** 本次分析批次的命令数（与 scope=domain 时的 commandCount 区分）。 */
+  batchCommandCount: number;
   /** 本次分析产出的端点数。 */
   endpointCount: number;
-  /** 本次分析产出的命令数。 */
+  /** 统计口径内的命令数。 */
   commandCount: number;
   /** 按**总档位**统计命令数（各档之和 == commandCount）。 */
   byTier: Record<CommandTier, number>;
@@ -720,6 +765,54 @@ export interface AnalysisCoverage {
   ambiguities: ScanAmbiguity[];
   /** 下一步该补什么的提示（固定文案 + 计数，不含任何样本值）。 */
   nextHints: string[];
+  /**
+   * 统计口径的**分母**：统计范围内的命令总数（== commandCount）。
+   *
+   * 单独给出是为了不让调用方拿 `batchCommandCount` 当分母 —— 那正是
+   * 「批次口径把整域可信度高估」的数字来源（实测 10/14 看着像 71%，真实只有 10/54）。
+   */
+  denominator: number;
+  /**
+   * 真实覆盖率：**端点被真实流量观测到**的命令数 / denominator（0..1，保留 3 位小数）。
+   *
+   * 分母是**口径内**的命令数（scope=domain 时即该域名的全量命令数），
+   * 因此这个数才是「这个域名的接口有多少是被真实流量观测到的」。
+   *
+   * 分子取「端点维度」的 observed，**不取总档位**：总档位是三维取最弱，而静态推导
+   * 永远没有响应样本（response 恒 unknown）—— 拿它当分子会让任何静态推导域的
+   * 覆盖率恒为 0（「这个域的接口一个都没被观测」与事实相反）。
+   * 「端点+参数+响应全部观测」的可信度口径请看 byTier 与 dimensionRates。
+   */
+  coverageRate: number;
+  /**
+   * 三维各自的 observed 比例（分母同为 denominator）。
+   *
+   * 静态推导通道的响应档位恒 unknown，所以 `dimensionRates.response` 恒为 0 ——
+   * 这正是真实情况，不允许被一个「好看的」总覆盖率掩盖。
+   */
+  dimensionRates: {
+    endpoint: number;
+    params: number;
+    response: number;
+  };
+  /**
+   * 本次批次的同口径统计（对照用）。
+   *
+   * 有了它就能直接看出「批次数字 vs 域名真实数字」的差距：批次口径往往明显偏高。
+   * 缺省表示本次未单独统计批次档位。
+   */
+  batchStats?: {
+    commandCount: number;
+    byTier: Record<CommandTier, number>;
+    coverageRate: number;
+  };
+  /**
+   * 按域名的覆盖率明细（key = 精确 hostname）。
+   *
+   * 静态推导可能产出跨 host 的命令（协议相对 URL 还原出的真实主机），
+   * 这些命令各自属于**另一个域名**，必须单独给覆盖率，否则等于把它们的档位算丢了。
+   */
+  byDomain?: Record<string, DomainCoverage>;
 }
 
 /** 对外精简视图（analyze / list 返回）。 */
@@ -740,6 +833,13 @@ export interface CommandCard {
   drifted?: boolean;
   schemaVersion: number;
   updatedAt: string;
+  /**
+   * 证据档位（可选；仅在开启证据分级时存在）。
+   *
+   * 带它是为了让**域名级**覆盖率能被算出来 —— 精简视图原先只有结构字段，
+   * 调用方拿不到档位，只能看到「本次批次」的覆盖率，会把整域可信度高估。
+   */
+  provenance?: CommandProvenance;
 }
 
 /** Q11：注入 navigate / probe 的极简摘要，只推荐不执行。 */
@@ -821,6 +921,15 @@ export interface AnalysisReport {
    * 缺省表示本次分析未开启证据分级（provenance=false），与旧版报告等价。
    */
   coverage?: AnalysisCoverage;
+  /**
+   * 本次静态推导解析出的**应用上下文路径**（如 Confluence 的 `/confluence`）。
+   *
+   * 前端 bundle 里的接口路径常写成 `contextPath() + "/rest/xxx"` —— 相对应用上下文。
+   * 缺前缀时命令会打到错误地址（实测 Confluence 的 `/rest/...` 全部 404，
+   * 真实地址是 `/confluence/rest/...`）。本字段记录**实际补上的前缀**，
+   * 空串表示站点部署在根路径（无需补）。
+   */
+  contextPath?: string;
 }
 
 export interface ListResult {
@@ -1006,6 +1115,15 @@ export const SITE_SCAN_MAX_SOURCE_BYTES = 2 * 1024 * 1024;
 export const SITE_SCAN_MAX_TOTAL_BYTES = 16 * 1024 * 1024;
 /** 单个内联文本最大字符数。 */
 export const SITE_SCAN_MAX_TEXT_CHARS = 2 * 1024 * 1024;
+/**
+ * SAZ 归档以 base64 文本承载时的最大字符数（单源）。
+ *
+ * 依据：base64 相对二进制膨胀 4/3，故取 `SITE_SCAN_MAX_SOURCE_BYTES × 4/3` 再补齐位。
+ * 【硬纪律】SAZ 的 base64 文本**绝不截断** —— 从中间切断的 base64 必然解包失败，
+ * 且失败是**静默**的（0 候选、无告警，看起来像"这个站没有接口"）。
+ * 因此 SAZ 只能「整体放行」或「整体拒绝」，配额判定用本常量。
+ */
+export const SITE_SCAN_SAZ_MAX_BASE64_CHARS = Math.ceil((SITE_SCAN_MAX_SOURCE_BYTES * 4) / 3) + 4;
 /** 远端源 fetch 超时（毫秒）。 */
 export const SITE_SCAN_FETCH_TIMEOUT_MS = 8000;
 /** 静态推导最多产出的端点数（用于整站骨架，可大于抓包默认的 20）。 */
@@ -1013,8 +1131,24 @@ export const SITE_SCAN_MAX_ENDPOINTS = 200;
 /** 远端源跟随重定向上限：0 = 不跟随，避免跨 host 跳转绕过同源校验。 */
 export const SITE_SCAN_MAX_REDIRECTS = 0;
 
-export const SITE_SCAN_KINDS = ["js", "har", "openapi", "commands"] as const;
+/**
+ * 静态推导的数据源种类。
+ *
+ * 证据强度分三档（判定实现见 api-command-evidence.ts 的 SCAN_KIND_TIER）：
+ *  - `har` / `fiddler_saz`：**真实流量归档**（HAR / Fiddler SAZ 导出的会话），
+ *    端点确实被调用过 → `observed`；
+ *  - `openapi` / `commands`：权威声明 → `derived`；
+ *  - `js`：前端 bundle 里的路径字面量 → `inferred`。
+ */
+export const SITE_SCAN_KINDS = ["js", "har", "fiddler_saz", "openapi", "commands"] as const;
 export type SiteScanKind = typeof SITE_SCAN_KINDS[number];
+
+/** SAZ 归档最多解析的条目数（防御畸形归档 / zip 炸弹）。 */
+export const SITE_SCAN_SAZ_MAX_ENTRIES = 2000;
+/** SAZ 单条目解压后最大字节数（超出即跳过该条目，不整体失败）。 */
+export const SITE_SCAN_SAZ_MAX_ENTRY_BYTES = 2 * 1024 * 1024;
+/** SAZ 归档解压后总字节预算（超出即停止继续解压）。 */
+export const SITE_SCAN_SAZ_MAX_TOTAL_BYTES = 8 * 1024 * 1024;
 
 /** 扫描输入：url 与 text 二选一；两者都给时优先 text（便于离线复现与单测）。 */
 export interface SiteScanSource {
@@ -1037,12 +1171,28 @@ export interface SiteScanCandidate {
    */
   host?: string;
   /**
-   * 该端点被哪些来源种类观察到（js / har / openapi / commands）。
+   * 该端点被哪些来源种类观察到（js / har / fiddler_saz / openapi / commands）。
    *
    * 缺省表示只有 `origin` 那一种。同键候选合并后此处是**并集** ——
-   * 证据档位由最强的来源决定（HAR 观测 > OpenAPI 声明 > bundle 推断）。
+   * 证据档位由最强的来源决定（HAR / SAZ 观测 > OpenAPI 声明 > bundle 推断）。
    */
   sourceKinds?: SiteScanKind[];
+  /**
+   * 该路径字面量是**相对应用上下文路径**的（源码里写成 `contextPath() + "/rest/xxx"`）。
+   *
+   * 前端 bundle 普遍把接口路径写成「上下文前缀 + 相对路径」。缺前缀时命令会打到
+   * 错误地址：实测 Confluence 的真实接口在 `/confluence/rest/...`，而裸路径
+   * `/rest/...` 全部 404（打不到 Confluence 的 REST servlet）。
+   */
+  relativeToContext?: boolean;
+  /**
+   * 该路径字面量出现在**请求上下文**里（url 字段 / 请求调用点）。
+   *
+   * 缺省 false 表示「只是普通字符串常量」—— 例如 `/a/i` 出现在比较表达式
+   * `"/a/i" != i(l,"i")` 里、`/includes/soy/*.soy` 出现在注释里，
+   * 它们不是接口路径，只是长得像路径。
+   */
+  hasRequestContext?: boolean;
   /**
    * 归档流量（HAR）里该路径被观测到的全部 origin（host），仅当跨 origin 时出现。
    *
@@ -1059,6 +1209,18 @@ export interface SiteScanResult {
   warnings: string[];
   /** 显式歧义清单：证据支持多个互斥结论且我们选择不猜。 */
   ambiguities?: ScanAmbiguity[];
+  /**
+   * 本次实际生效的应用上下文路径（空串 = 站点部署在根路径）。
+   *
+   * 缺省表示「未解析」—— 编排层据此区分「确认是根路径」与「没取到前缀」。
+   */
+  contextPath?: string;
+  /** 被识别为「相对应用上下文路径」的候选数。 */
+  relativePathCount?: number;
+  /** 其中已补上前缀的候选数；小于 relativePathCount 说明前缀缺失，命令会打不通。 */
+  contextPathAppliedCount?: number;
+  /** 因「不像请求路径」被丢弃的字面量条数。 */
+  noiseDroppedCount?: number;
 }
 
 /** 【放开·黄区】允许扫描内网 / 回环地址；默认 false，需调用方显式开启（SSRF 风险）。 */
@@ -1103,6 +1265,22 @@ export const SITE_SCAN_CROSS_HOST_COMMAND_WARNING = "部分静态推导端点来
  * 只说明机制，不回显任何 host / 路径。
  */
 export const SITE_SCAN_HOST_INFERRED_WARNING = "部分静态推导端点为裸路径，已按同批数据源中出现的协议相对 URL 继承其真实 host（同一路径对应多个 host 时不做推断）";
+/**
+ * 【应用上下文路径】已识别并补上前缀时的说明。
+ *
+ * 只说明机制与前缀长度，不回显前缀内容本身（路径结构属站点信息，可从命令里看到）。
+ */
+export const SITE_SCAN_CONTEXT_PATH_APPLIED_WARNING = "已识别应用上下文路径并补到相对路径前（前端 bundle 常把接口路径写成「上下文前缀 + 相对路径」，缺前缀会打到错误地址）";
+/**
+ * 【应用上下文路径】识别出相对路径但**取不到前缀值**时的说明。
+ *
+ * 这是静默失败的典型形态：命令看起来正常，实际会 404。必须显式告警。
+ */
+export const SITE_SCAN_CONTEXT_PATH_MISSING_WARNING = "部分静态推导端点为「相对应用上下文路径」但未能取到上下文前缀，这些命令可能因缺少前缀而调用失败；可带 tabId 让扩展侧在页面上下文取值后重跑";
+/**
+ * 【噪音路径】丢弃「不像请求路径的字符串常量」时的说明；只给条数。
+ */
+export const SITE_SCAN_NOISE_PATH_WARNING = "已丢弃部分无请求上下文的路径字面量（普通字符串常量、注释、静态资源），它们不是接口路径";
 /**
  * 前端 HTTP 客户端的**占位默认 baseURL**。
  *

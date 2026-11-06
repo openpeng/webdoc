@@ -40,6 +40,14 @@
       "fail": 0,
       "skipped": 0,
       "note": "T13 前为 326；新增 28 条 T13 回归用例（api-command-evidence.test.mjs：档位常量与归一 2 + tier 映射与合并 4 + provenance 三维判定 2 + 歧义构造 4 + coverage 聚合与提示 4 + 同键合并与冲突 4 + 来源透传与生成 3 + 缓存往返 2 + 报告 coverage 段与开关 3 + 覆盖报告无敏感值 1）。基线复核：git stash 回退接线层后，28 条中 10 条 FAIL（#13/#14/#15/#16/#17/#18/#19/#21/#23/#26，逐条对应合并 / tier / 冲突 / host 歧义 / baseURL 歧义 / 透传 / 生成 / 缓存往返 / coverage），确认为真实回归护栏；恢复后 28/28 通过。"
+    },
+    "afterT14": {
+      "command": "npm test",
+      "tests": 371,
+      "pass": 371,
+      "fail": 0,
+      "skipped": 0,
+      "note": "T14 前为 354；新增 17 条 T14 回归用例（mcp-server/test/api-command-context-path.test.mjs：normalizeContextPath 边界 1 + isNoisePath 双重保险 1 + applyContextPath 1 + scanJsTextDetailed 三类 context 写法 1 + 字面量拼接 1 + 噪音丢弃 1 + scanSources 补前缀告警 1 + 缺前缀告警 1 + 噪音告警 1 + 扩展常量 parity 1 + normalizeApiContextPath 对拍 1 + apiDetectContextPathInPage 三级取值 1 + cmdApiBundleCollect 回包 1 + 跨站拒绝 1 + 非法前缀丢弃 1 + coverage 口径字段 1 + 契约字段 1）。基线复核：主缺陷修复前（缺前缀补齐逻辑）新增用例中 contextPath 相关条目 FAIL；恢复后全绿。"
     }
   },
   "acceptanceCriteria": [
@@ -47,10 +55,10 @@
       "id": "AC-1",
       "title": "scan_site 不传 loosePaths 时端点数 >= 1（B 站基线 0）",
       "implementation": [
-        "mcp-server/src/api-command-args.ts:133 toAnalyzeArgs()（传输层入参归一化：未传的开关保留 undefined，不压成 false）",
-        "mcp-server/src/api-command-types.ts:1074 SITE_SCAN_DEFAULT_LOOSE = true",
-        "mcp-server/src/api-command-service.ts:1064 loose 默认取常量",
-        "mcp-server/src/api-command-site-scan.ts:753 scanSources()"
+        "mcp-server/src/api-command-args.ts:139 toAnalyzeArgs()（传输层入参归一化：未传的开关保留 undefined，不压成 false）",
+        "mcp-server/src/api-command-types.ts:1236 SITE_SCAN_DEFAULT_LOOSE = true",
+        "mcp-server/src/api-command-service.ts:1132 loose 默认取常量",
+        "mcp-server/src/api-command-site-scan.ts:1177 scanSources()"
       ],
       "testCases": [
         "mcp-server/test/api-command-site-scan.test.mjs:500 T1：loosePaths 默认放开 —— 2 段短前缀路径也能发现端点（保守模式下为 0）",
@@ -63,11 +71,11 @@
       "id": "AC-2",
       "title": "GET/HEAD/OPTIONS 端点 risk=read，其余 write",
       "implementation": [
-        "mcp-server/src/api-command-args.ts:118 toBooleanArg()（trustSpec 三态：未传→服务层默认值，显式 false→false）",
-        "mcp-server/src/api-command-site-scan.ts:290 inferMethod()",
-        "mcp-server/src/api-command-types.ts:1082 SITE_SCAN_DEFAULT_TRUST_SPEC = true",
-        "mcp-server/src/api-command-service.ts:1102 trustSpec 默认取常量",
-        "mcp-server/src/api-command-service.ts:1105 risk 覆盖"
+        "mcp-server/src/api-command-args.ts:124 toBooleanArg()（trustSpec 三态：未传→服务层默认值，显式 false→false）",
+        "mcp-server/src/api-command-site-scan.ts:298 inferMethod()",
+        "mcp-server/src/api-command-types.ts:1244 SITE_SCAN_DEFAULT_TRUST_SPEC = true",
+        "mcp-server/src/api-command-service.ts:1170 trustSpec 默认取常量",
+        "mcp-server/src/api-command-service.ts:710 risk 覆盖"
       ],
       "testCases": [
         "mcp-server/test/api-command-site-scan.test.mjs:523 T1：静态推导 risk 按 method 判定（GET→read，其余→write）",
@@ -80,8 +88,8 @@
       "title": "缺必填参数返回 MISSING_PARAMS 且零网络请求",
       "implementation": [
         "mcp-server/src/api-command-render.ts:85 validateParams()",
-        "mcp-server/src/api-command-service.ts:1379 call()",
-        "mcp-server/src/api-command-service.ts:1566 callComposite()（复合命令同样受此门禁）"
+        "mcp-server/src/api-command-service.ts:1500 call()",
+        "mcp-server/src/api-command-service.ts:1687 callComposite()（复合命令同样受此门禁）"
       ],
       "testCases": [
         "mcp-server/test/api-command-render.test.mjs:227 集成：缺必填 / 类型错误 / 写命令未确认，ApiCommandService.sendFn 调用次数均为 0",
@@ -93,8 +101,8 @@
       "id": "AC-4",
       "title": "risk=write 未传 confirm=true 返回 CONFIRMATION_REQUIRED 且零网络请求",
       "implementation": [
-        "mcp-server/src/api-command-service.ts:1379 call()",
-        "mcp-server/src/api-command-service.ts:1566 callComposite()（含写步骤但未确认 → 预检零请求）"
+        "mcp-server/src/api-command-service.ts:1500 call()",
+        "mcp-server/src/api-command-service.ts:1687 callComposite()（含写步骤但未确认 → 预检零请求）"
       ],
       "testCases": [
         "mcp-server/test/api-command-render.test.mjs:227 集成：缺必填 / 类型错误 / 写命令未确认，ApiCommandService.sendFn 调用次数均为 0（AC-08/21）",
@@ -109,7 +117,7 @@
         "mcp-server/src/api-command-generator.ts:195 buildBodyTemplate()（常量改写为 {{name}} 占位符）",
         "mcp-server/src/api-command-generator.ts:182 buildQueryTemplate()",
         "mcp-server/src/api-command-render.ts:145 renderRequest()（调用方值优先，缺省才回落 defaultValue）",
-        "mcp-server/src/api-command-service.ts:1784 filterParamsForCommand()（只保留子命令声明过的参数）"
+        "mcp-server/src/api-command-service.ts:1905 filterParamsForCommand()（只保留子命令声明过的参数）"
       ],
       "testCases": [
         "mcp-server/test/api-command-render.test.mjs:354 T4：恒定参数写成 {{name}} 占位符，真实值只落在 defaultValue",
@@ -122,11 +130,11 @@
       "id": "AC-6",
       "title": "请求含 X-Requested-With，不含 Cookie / Authorization",
       "implementation": [
-        "mcp-server/src/api-command-types.ts:315 API_COMMAND_FORBIDDEN_HEADERS",
-        "mcp-server/src/api-command-types.ts:289 EXECUTE_OPTIONS_ALLOWED_KEYS（含 headers）",
-        "browser-extension/api-command-helpers.js:240 sanitizeRequestHeaders()",
-        "browser-extension/api-command-helpers.js:493 rebuildExecuteOptions()",
-        "browser-extension/background.js:2194 cmdApiCommandExecute()（拼进 fetch）"
+        "mcp-server/src/api-command-types.ts:322 API_COMMAND_FORBIDDEN_HEADERS",
+        "mcp-server/src/api-command-types.ts:296 EXECUTE_OPTIONS_ALLOWED_KEYS（含 headers）",
+        "browser-extension/api-command-helpers.js:247 sanitizeRequestHeaders()",
+        "browser-extension/api-command-helpers.js:520 rebuildExecuteOptions()",
+        "browser-extension/background.js:2273 cmdApiCommandExecute()（拼进 fetch）"
       ],
       "testCases": [
         "mcp-server/test/api-command-render.test.mjs:285 T3：调用方传的非凭据请求头原样下发，凭据头一律剔除且不报错",
@@ -139,9 +147,9 @@
       "id": "AC-7",
       "title": "导出 → 清空 → 导入后条数 / 名称 / 参数 / 响应裁剪规则一致且可直接调用",
       "implementation": [
-        "mcp-server/src/api-command-cache.ts:1145 export()",
-        "mcp-server/src/api-command-cache.ts:1192 import()",
-        "mcp-server/src/api-command-cache.ts:742 rewriteCommandHost()",
+        "mcp-server/src/api-command-cache.ts:1148 export()",
+        "mcp-server/src/api-command-cache.ts:1195 import()",
+        "mcp-server/src/api-command-cache.ts:745 rewriteCommandHost()",
         "mcp-server/src/server.ts:994 export_api_commands",
         "mcp-server/src/server.ts:1007 import_api_commands"
       ],
@@ -155,7 +163,7 @@
       "id": "AC-8",
       "title": "成品格式命令包导入产出 >= 1 条且 request.urlTemplate / risk / responseFields / manuallyEdited 被保留",
       "implementation": [
-        "mcp-server/src/api-command-site-scan.ts:595 parseCommandSetText()（成品格式优先，保全字段）"
+        "mcp-server/src/api-command-site-scan.ts:1012 parseCommandSetText()（成品格式优先，保全字段）"
       ],
       "testCases": [
         "mcp-server/test/api-command-site-scan.test.mjs:662 T5：成品格式命令包导入后保留 request.urlTemplate / risk / responseFields / manuallyEdited",
@@ -167,8 +175,8 @@
       "id": "AC-9",
       "title": "两个进程先后写不同域名，磁盘上两个域名的命令都存在",
       "implementation": [
-        "mcp-server/src/api-command-cache.ts:909 persist()（写前重读 + 按 hostname 合并）",
-        "mcp-server/src/api-command-cache.ts:777 ensureLoaded()（loadFailed 保护）",
+        "mcp-server/src/api-command-cache.ts:912 persist()（写前重读 + 按 hostname 合并）",
+        "mcp-server/src/api-command-cache.ts:780 ensureLoaded()（loadFailed 保护）",
         "mcp-server/src/api-command-cache.ts:79 buildCacheTmpName()（pid + 时间戳 + 序号）"
       ],
       "testCases": [
@@ -184,7 +192,7 @@
       "title": "invalidate_api_commands 的 action 缺失或非法时返回 INVALID_PARAMS 且该域名命令不被删除",
       "implementation": [
         "mcp-server/src/server.ts:1958 invalidate_api_commands 分支",
-        "mcp-server/src/api-command-service.ts:744 invalidate()"
+        "mcp-server/src/api-command-service.ts:746 invalidate()"
       ],
       "testCases": [
         "mcp-server/test/api-command-security.test.mjs:711 T7：invalidate_api_commands 的 action 缺失或非法 → INVALID_PARAMS，且命令不被删除"
@@ -196,7 +204,7 @@
       "title": "扩展域名白名单外的目标被拒绝且零网络请求（硬边界，一行不改）",
       "implementation": [
         "browser-extension/background.js:126 assertCommandAllowed()（域名白名单 / 紧急停止）",
-        "browser-extension/api-command-helpers.js:368 assertApiTargetUrl()（协议 + hostname 精确相等 + 不跟随跳转）"
+        "browser-extension/api-command-helpers.js:375 assertApiTargetUrl()（协议 + hostname 精确相等 + 不跟随跳转）"
       ],
       "testCases": [
         "mcp-server/test/api-command-security.test.mjs:363 A.5 目标 URL 白名单：跨 host / 非 http(s) / 白名单外域名 / overrides 跨 host",
@@ -221,11 +229,11 @@
       "id": "AC-13",
       "title": "petstore OpenAPI 19 个端点产出 19 条命令且路径 19/19 命中",
       "implementation": [
-        "mcp-server/src/api-command-site-scan.ts:520 parseOpenApiText()",
-        "mcp-server/src/api-command-site-scan.ts:753 scanSources()",
-        "mcp-server/src/api-command-site-scan.ts:192 splitProtocolRelativeUrl()（协议相对 URL 不再当路径）",
-        "mcp-server/src/api-command-site-scan.ts:705 applyHostCrossReference()（T10a 跨源 host 交叉引用）",
-        "mcp-server/src/api-command-site-scan.ts:228 detectBaseUrlHosts()（T10a 客户端 baseURL 侦测）"
+        "mcp-server/src/api-command-site-scan.ts:937 parseOpenApiText()",
+        "mcp-server/src/api-command-site-scan.ts:1177 scanSources()",
+        "mcp-server/src/api-command-site-scan.ts:200 splitProtocolRelativeUrl()（协议相对 URL 不再当路径）",
+        "mcp-server/src/api-command-site-scan.ts:1129 applyHostCrossReference()（T10a 跨源 host 交叉引用）",
+        "mcp-server/src/api-command-site-scan.ts:236 detectBaseUrlHosts()（T10a 客户端 baseURL 侦测）"
       ],
       "testCases": [
         "mcp-server/test/api-command-site-scan.test.mjs:574 T2：协议相对 URL 不再被整体当路径，host 被还原",
@@ -244,9 +252,9 @@
       "title": "SSE 连续相同字符的增量片段拼接后不丢字",
       "implementation": [
         "mcp-server/src/baidu-ai-search.ts:427 parseBaiduBaikanSse()（增量判定改显式标记）",
-        "mcp-server/src/api-command-service.ts:540 fetchBaikanSse()（流式读取，ReadableStream reader，收到结束标记即收尾）",
-        "mcp-server/src/api-command-service.ts:508 buildAiSearchResult()（attempts 真实计数）",
-        "mcp-server/src/api-command-service.ts:456 aiSearch()（timeoutMs 跨通道总预算）"
+        "mcp-server/src/api-command-service.ts:542 fetchBaikanSse()（流式读取，ReadableStream reader，收到结束标记即收尾）",
+        "mcp-server/src/api-command-service.ts:510 buildAiSearchResult()（attempts 真实计数）",
+        "mcp-server/src/api-command-service.ts:458 aiSearch()（timeoutMs 跨通道总预算）"
       ],
       "testCases": [
         "mcp-server/test/baidu-ai-search.test.mjs:317 parseBaiduBikaiN：AC-14 三个连续「哈」必须拼成「哈哈哈」（基线只得到「哈」）",
@@ -287,7 +295,7 @@
     "gapsRegistered": 3,
     "gapsBlocking": 0,
     "verdict": "全部 14 条 AC 通过；基线 gap 已显式登记处置，无阻断项。",
-    "codeReview": "T11：独立 verifier 会话 + 主开发复核，3 个可复现缺陷全部修复并补回归用例（309 -> 317 用例）；T12：deploy_to_test 真实调用暴露传输层布尔强转缺陷，1 个可复现缺陷已修复并补 9 条回归用例（317 -> 326 用例）；T13：借鉴 REA 证据口径落地证据分级 / 歧义显式 / coverage 报告三项能力（非新增 AC），补 28 条回归用例（326 -> 354 用例），修复前基线实测 10 条 FAIL"
+    "codeReview": "T11：独立 verifier 会话 + 主开发复核，3 个可复现缺陷全部修复并补回归用例（309 -> 317 用例）；T12：deploy_to_test 真实调用暴露传输层布尔强转缺陷，1 个可复现缺陷已修复并补 9 条回归用例（317 -> 326 用例）；T13：借鉴 REA 证据口径落地证据分级 / 歧义显式 / coverage 报告三项能力（非新增 AC），补 28 条回归用例（326 -> 354 用例），修复前基线实测 10 条 FAIL；T14：真实站点复刻（Confluence）暴露 1 个主缺陷（JS 来源缺「应用上下文路径」概念，命令打到错误地址空间）+ 3 个次缺陷（coverage 批次级分母 / scan-capture 重复端点 / 噪音路径误报），全部已修复并补 17 条回归用例（17 -> 371 用例）；B 站真实站点召回复测 recall 仍为 35/35 = 1.0，未回退"
   },
   "enhancements": [
     {
@@ -296,26 +304,26 @@
       "note": "T13 不新增 AC，是在既有 14 条 AC 之上叠加的能力，因此单列 enhancements 而不并入 acceptanceCriteria。",
       "inspiration": "REA（Reverse Engineer Anything，https://github.com/morluto/rea）的证据口径 ——「Missing coverage is unknown, not absence.」。只借鉴口径，不引入其代码：REA 需 Node 22+/24+ 与 Hopper/Ghidra 等本地逆向引擎、manifest 格式私有、其 Evidence 格式与本项目不兼容；其二进制/应用逆向主体、sticky provider、HAR/SAZ/qlog 解码器、protobuf/gRPC 体解码对本项目均不适用。",
       "implementation": [
-        "mcp-server/src/api-command-types.ts:645 COMMAND_TIERS（observed/derived/inferred/unknown）",
-        "mcp-server/src/api-command-types.ts:649 COMMAND_TIER_STRENGTH（3/2/1/0）",
-        "mcp-server/src/api-command-types.ts:662 CommandProvenance（tier + endpoint/params/response 三维）",
-        "mcp-server/src/api-command-types.ts:674 SCAN_AMBIGUITY_KINDS（host/baseUrl/sourceConflict）",
-        "mcp-server/src/api-command-types.ts:699 AnalysisCoverage（byTier + byDimension + verifiedCount + ambiguities + nextHints）",
-        "mcp-server/src/api-command-types.ts:1091 SITE_SCAN_DEFAULT_PROVENANCE = true",
-        "mcp-server/src/api-command-evidence.ts:146 deriveProvenance()（纯函数，无 IO/无 Date/无环境变量）",
-        "mcp-server/src/api-command-evidence.ts:184 makeAmbiguity() / :205 hostAmbiguity() / :212 baseUrlAmbiguity()",
-        "mcp-server/src/api-command-evidence.ts:240 buildCoverage() / :279 coverageCountsConsistent()",
-        "mcp-server/src/api-command-site-scan.ts:705 applyHostCrossReference() 改返回 { inferred, ambiguities }",
-        "mcp-server/src/api-command-site-scan.ts:753 scanSources() 同键候选合并 + 三类歧义产出",
-        "mcp-server/src/api-command-site-scan.ts:481 parseHarText() 同路径跨 origin 统计（observedHosts）",
-        "mcp-server/src/api-command-site-scan.ts:867 toScanRecords()（:905 透传 sourceKinds）",
+        "mcp-server/src/api-command-types.ts:659 COMMAND_TIERS（observed/derived/inferred/unknown）",
+        "mcp-server/src/api-command-types.ts:663 COMMAND_TIER_STRENGTH（3/2/1/0）",
+        "mcp-server/src/api-command-types.ts:676 CommandProvenance（tier + endpoint/params/response 三维）",
+        "mcp-server/src/api-command-types.ts:688 SCAN_AMBIGUITY_KINDS（host/baseUrl/sourceConflict）",
+        "mcp-server/src/api-command-types.ts:732 AnalysisCoverage（byTier + byDimension + verifiedCount + ambiguities + nextHints）",
+        "mcp-server/src/api-command-types.ts:1253 SITE_SCAN_DEFAULT_PROVENANCE = true",
+        "mcp-server/src/api-command-evidence.ts:149 deriveProvenance()（纯函数，无 IO/无 Date/无环境变量）",
+        "mcp-server/src/api-command-evidence.ts:187 makeAmbiguity() / :208 hostAmbiguity() / :215 baseUrlAmbiguity()",
+        "mcp-server/src/api-command-evidence.ts:298 buildCoverage() / :404 coverageCountsConsistent()",
+        "mcp-server/src/api-command-site-scan.ts:1129 applyHostCrossReference() 改返回 { inferred, ambiguities }",
+        "mcp-server/src/api-command-site-scan.ts:1177 scanSources() 同键候选合并 + 三类歧义产出",
+        "mcp-server/src/api-command-site-scan.ts:591 parseHarText() 同路径跨 origin 统计（observedHosts）",
+        "mcp-server/src/api-command-site-scan.ts:1329 toScanRecords()（:1263 透传 sourceKinds）",
         "mcp-server/src/api-command-normalize.ts:520 groupEndpoints() 取 sourceKinds 并集",
         "mcp-server/src/api-command-generator.ts:312 generateCommands() 开关 / :400 写入 source.provenance",
         "mcp-server/src/api-command-cache.ts:599 rebuildProvenance()（缺失或非法即整体省略，不臆造档位）",
-        "mcp-server/src/api-command-service.ts:1055 / :1252 三态开关 / :1177 / :1314 输出 report.coverage",
-        "mcp-server/src/api-command-args.ts:37 TRI_STATE_BOOLEANS 含 provenance / :118 toBooleanArg() / :133 toAnalyzeArgs()",
+        "mcp-server/src/api-command-service.ts:1419 抓包通道 / :1263 scan 通道 输出 report.coverage",
+        "mcp-server/src/api-command-args.ts:37 TRI_STATE_BOOLEANS 含 provenance / :124 toBooleanArg() / :139 toAnalyzeArgs()",
         "mcp-server/src/server.ts:988 analyze_page_apis inputSchema 的 provenance 布尔项",
-        "browser-extension/api-command-helpers.js:188 SOURCE_ALLOWED_KEYS / :190 PROVENANCE_ALLOWED_KEYS / :192 COMMAND_TIERS"
+        "browser-extension/api-command-helpers.js:195 SOURCE_ALLOWED_KEYS / :197 PROVENANCE_ALLOWED_KEYS / :199 COMMAND_TIERS"
       ],
       "tierMapping": {
         "capture": "observed",
@@ -353,6 +361,52 @@
       "liveVerification": "stdio JSON-RPC 直连新构建 dist/server.js（analyze_page_apis）：三源（js + har + openapi）→ endpointCount=3 / commandCount=3，coverage 段含 byDimension.endpoint={observed:1, inferred:2}、byDimension.response 全 unknown、verifiedCount=0、ambiguities=[]、3 条 nextHints；负向对照 provenance=false → 无 coverage 段、仍产出 endpointCount=1 / commandCount=1",
       "realSiteRecheck": "真实 B 站主 bundle（1605288 字节）复测：113 候选 / 48 个归属 api.bilibili.com，与 T11 基线完全一致（召回未回退）；并检出 1 条真阳性歧义（/x/web-interface/nav 候选 api.bilibili.com + main-api.biligame.com）",
       "status": "passed"
+    },
+    {
+      "id": "T14",
+      "title": "真实站点复刻（Confluence）：应用上下文路径前缀 + 覆盖率口径改域名级 + 噪音路径过滤",
+      "note": "T14 不新增 AC，是在既有 14 条 AC 之上叠加的能力（真实站点复刻暴露的缺陷修复），因此单列 enhancements 而不并入 acceptanceCriteria。复刻报告：docs/api-command-confluence-replication-report.md",
+      "inspiration": "真实站点复刻本身是本需求的验收手段 —— 「网站 → API 命令集」必须在一个部署在子路径下的真实站点上成立。首轮复刻即暴露结构性缺口：前端 bundle 普遍把接口路径写成「应用上下文前缀 + 相对路径」，而 JS 来源解析里没有这个概念（与已修的 D-2 OpenAPI basePath 丢失同类）。",
+      "implementation": [
+        "mcp-server/src/api-command-types.ts:103 API_CONTEXT_PATH_MAX_LENGTH = 128（扩展侧逐字同步）",
+        "mcp-server/src/api-command-types.ts:897 AnalysisReport.contextPath",
+        "mcp-server/src/api-command-types.ts:1161 SiteScanCandidate.relativeToContext / :1195 hasRequestContext",
+        "mcp-server/src/api-command-types.ts:1205-:1248 SiteScanResult.contextPath / relativePathCount / contextPathAppliedCount / noiseDroppedCount",
+        "mcp-server/src/api-command-types.ts:1273 / :1279 / :1283 SITE_SCAN_CONTEXT_PATH_APPLIED_WARNING / SITE_SCAN_CONTEXT_PATH_MISSING_WARNING / SITE_SCAN_NOISE_PATH_WARNING",
+        "mcp-server/src/api-command-site-scan.ts:406 CONTEXT_PATH_TOKEN_RE / :414 LITERAL_PREFIX_RE / :427 STATIC_RESOURCE_SEGMENTS / :432 NOISE_TWO_LETTER_RE",
+        "mcp-server/src/api-command-site-scan.ts:440 normalizeContextPath() / :469 isNoisePath() / :487 applyContextPath() / :529 scanJsTextDetailed()",
+        "mcp-server/src/api-command-site-scan.ts:1177 scanSources() 合并前补前缀并统计 relative / applied / noise",
+        "mcp-server/src/api-command-evidence.ts:238 / :240 CoverageInput.scope / batchCommandCount / :298 buildCoverage()",
+        "mcp-server/src/api-command-cache.ts:599 / :711 rebuildProvenance() → toCard() 透出 provenance",
+        "mcp-server/src/api-command-service.ts:928 回包复验 normalizeContextPath(reply.contextPath) / :1130 report.contextPath / :1133 scanSources() 传 contextPath",
+        "mcp-server/src/api-command-service.ts:1255 domainCards / :1264 scope / :1265 batchCommandCount / :1421 抓包通道同口径",
+        "browser-extension/api-command-helpers.js:71 API_CONTEXT_PATH_MAX_LENGTH / :468 normalizeApiContextPath()",
+        "browser-extension/background.js:2088 apiDetectContextPathInPage() / :2133 apiDetectContextPath() / :1931 cmdApiBundleCollect() 取值"
+      ],
+      "tierMapping": "T14 不改档位映射；补前缀后同一端点的 pathTemplate 与真实请求一致，commandId（sha256(host\\0method\\0pathTemplate)）自对齐，capture 证据可直接把该端点从 inferred 提档到 observed。",
+      "testCases": [
+        "mcp-server/test/api-command-context-path.test.mjs:38 normalizeContextPath 边界",
+        "mcp-server/test/api-command-context-path.test.mjs:65 isNoisePath 双重保险",
+        "mcp-server/test/api-command-context-path.test.mjs:80 applyContextPath",
+        "mcp-server/test/api-command-context-path.test.mjs:90 scanJsTextDetailed 三类 context 写法",
+        "mcp-server/test/api-command-context-path.test.mjs:107 字面量拼接前缀",
+        "mcp-server/test/api-command-context-path.test.mjs:119 噪音路径丢弃",
+        "mcp-server/test/api-command-context-path.test.mjs:140/:154/:168 scanSources 补前缀 / 缺前缀 / 噪音告警",
+        "mcp-server/test/api-command-context-path.test.mjs:191 扩展侧常量逐字一致",
+        "mcp-server/test/api-command-context-path.test.mjs:195 normalizeApiContextPath 与 MCP 侧逐项对拍",
+        "mcp-server/test/api-command-context-path.test.mjs:209 apiDetectContextPathInPage 三级取值",
+        "mcp-server/test/api-command-context-path.test.mjs:326/:337/:346 cmdApiBundleCollect 回包 / 跨站拒绝 / 非法前缀丢弃",
+        "mcp-server/test/api-command-context-path.test.mjs:359 coverage 口径字段",
+        "mcp-server/test/api-command-context-path.test.mjs:384 契约字段"
+      ],
+      "regressionTests": [
+        "mcp-server/test/api-command-context-path.test.mjs（全 17 条）"
+      ],
+      "baselineFailures": 0,
+      "baselineFailuresDetail": "T14 未做「回退接线层」的批量基线复核（与 T11/T12/T13 的做法不同）：主缺陷的失效形态是「路径缺前缀」，在纯函数层可直接由 scanSources 用例断言；基线对照改用真实 B 站 bundle 的候选集差分（HEAD 与当前逐条比对）。",
+      "liveVerification": "live 实测（stdio JSON-RPC 直连新构建 dist/server.js + 人工重载后的扩展）：重载前 an_scan_1793943661288 的 contextPath 为空、69 端点，告警为「未能取到上下文前缀」；重载后 an_scan_1793943765310 的 contextPath=/confluence、68 端点/68 命令，diff={added:39, updated:29, skipped:40}。抓包 an_20261106054449226_001（14 端点 / 14 命令 / sampledResponseCount=20）与 scan 合并后缓存 120 条（scan 106 + capture 14），逐条比对：66 条仍为 scan 来源、2 条被 capture 同化提档（/confluence/rest/webResources/1.0/resources 三维全 observed；/confluence/plugins/editor-loader/editor.action 端点/参数 observed、响应 unknown）、0 条丢失、diff.updated=2。coverage 口径：scope=domain、batchCommandCount=14、commandCount=120、byTier={observed:9,unknown:111}、verifiedCount=9、denominator=120、coverageRate=0.075、dimensionRates={endpoint:0.117,params:0.117,response:0.075}（旧批次口径会把 10/54≈19% 显示成 71%）。调用闭环：33 条 scan 来源 + 带 /confluence 前缀 + GET + read 的命令实调，200 命中 12 条，404×14 / 405×3 / 400×1 / REDIRECT_BLOCKED×2 / MISSING_PARAMS×1 —— 修复前同一批命令指向裸路径 /rest/...，实测返回 Tomcat 原始 404 页（进不了 REST servlet）；修复后 404 变成 Confluence 自己的 404/405，说明请求已正确路由到应用。",
+      "realSiteRecheck": "B 站真实站点召回复测（test-artifacts/t14-bilibili-recall.json）：整批口径 loose=true 139 候选 / 132 unique / 35 hit / recall 1.0，与 T10 基线（140 / 133 / 35 / 1.0）持平（少的 1 条是噪音 /a/i，F4 生效、无误伤）；loose=false 9 / 9 / 0 与基线一致；实打存活 35 试 / 24 活 / 68.57%，与基线 24/35 持平。口径修订：T10 脚本的逐 bundle 累加口径无法跨 bundle 汇聚 host 证据（/x/web-frontend/getbuvid 等 3 条的真实 host api.bilibili.com 只在别的 bundle 里有证据），HEAD(T13) 与 T14 在该口径下**同样**显示 32/35 —— 证明该差异非 T14 引入，而是 T11 起「host 在同一批扫描内解析」口径变化的必然结果；现行口径（整批，与 scan_site 工具一致）两者都是 35/35。",
+      "status": "done"
     }
   ],
   "codeReviewRounds": [
@@ -365,7 +419,7 @@
           "id": "T11-D1",
           "severity": "high",
           "title": "占位默认 baseURL（api.domain.com）在变量形态下未被排除",
-          "location": "mcp-server/src/api-command-site-scan.ts:228 detectBaseUrlHosts()",
+          "location": "mcp-server/src/api-command-site-scan.ts:236 detectBaseUrlHosts()",
           "detail": "占位默认值只在 `baseURL:\"//host\"` 直写形态被排除；`baseURL: <expr> || <var>`（var 绑定到 //api.domain.com）没排除，占位符被当成真实 baseURL，裸路径被挂到 api.domain.com 上，生成的命令必然打不通。",
           "impact": "端到端实测：scan_site 在 www.example.com 上产出 2 条 host 为 api.domain.com 的命令、真实目标域名下 0 条。",
           "fix": "抽出常量 SITE_SCAN_PLACEHOLDER_BASE_HOST，两种形态统一由 addHost 排除。",
@@ -380,7 +434,7 @@
           "id": "T11-D2",
           "severity": "high",
           "title": "回查变量绑定只取首个匹配，把真实歧义藏起来",
-          "location": "mcp-server/src/api-command-site-scan.ts:228 detectBaseUrlHosts()",
+          "location": "mcp-server/src/api-command-site-scan.ts:236 detectBaseUrlHosts()",
           "detail": "回查 `<var>` 的协议相对字面量绑定时用 bindRe.exec(source) 只取首个匹配。压缩 bundle 里短变量名跨作用域复用极常见（实测 `a` 先绑 api.one.com 后改绑 api.two.com），首绑定命中会让「唯一解」判据失效，把裸路径挂到任意一个 host 上。",
           "impact": "实测：同变量绑两个 host 时 detectBaseUrlHosts 返回 1 个 host（应为 0 / 歧义），scanSources 的唯一解保护被绕过。",
           "fix": "收齐该变量的全部协议相对字面量绑定；全部指向同一 host 才算唯一解，出现分歧视为歧义、不贡献任何 host。",
@@ -451,6 +505,70 @@
         "两端常量 api-command-types.ts ↔ browser-extension/api-command-helpers.js 仍逐字一致（T12 未触碰扩展侧）"
       ],
       "deployVerification": "本机部署（非 CI 项目，orbit §2.5 路径）：npm run build 重编 dist → 停止旧 MCP 进程 PID 836248（20:00:32 启动，内存仍为旧代码）→ 宿主 MiniMax Code.exe 自动重拉为 PID 833772（20:44:32）。live 注册 MCP 进程上同一调用对比：重启前 endpointCount=0/commandCount=0，重启后 endpointCount=1/commandCount=1（name=get.web-interface.nav、method=GET、risk=read）；负向对照显式 loosePaths=false → 0/0；browser_status 确认扩展侧 7 个 live 会话全部 alive。"
+    },
+    {
+      "round": "T14",
+      "scope": "真实站点复刻（Confluence，https://confluence.gaodunwangxiao.com/confluence/#all-updates，已登录）",
+      "verdict": "首轮复刻暴露 1 个主缺陷 + 3 个次缺陷，全部已修复并补回归用例",
+      "findings": [
+        {
+          "id": "T14-D1",
+          "severity": "high",
+          "title": "JS 来源路径缺「应用上下文路径」概念，命令打到错误地址空间",
+          "location": "mcp-server/src/api-command-site-scan.ts:529 scanJsTextDetailed() / :1177 scanSources()",
+          "detail": "前端 bundle 普遍把接口路径写成「应用上下文前缀 + 相对路径」（AJS.contextPath() + \"/rest/webResources/1.0/resources\"、f.CONTEXT_PATH + \"/json/pagechildren.action\"、\"\".concat(n,\"//\").concat(v.Z.apiHost,\"/x/web-frontend/getbuvid\")），而 JS 来源解析里没有这个概念，扫出来的是裸路径 /rest/...。",
+          "impact": "端到端实测：裸路径 /rest/webResources/1.0/resources 请求返回 Tomcat 原始 404 页 —— 根本没进 Confluence 的 REST servlet；真实地址是 /confluence/rest/...。命令集整体不可用（与已修的 D-2 OpenAPI basePath 丢失同类）。",
+          "fix": "静态侧识别「相对 context 的路径」（CONTEXT_PATH_TOKEN_RE / LITERAL_PREFIX_RE）并标记 relativeToContext；扩展侧在页面上下文取值（AJS.contextPath() → AJS.Confluence.getContextPath() → window.contextPath → meta）；scanSources 在合并前统一补前缀（applyContextPath），补上与没补上两种结局都显式告警。",
+          "regressionTests": [
+            "mcp-server/test/api-command-context-path.test.mjs:90 T14：识别三类「相对应用上下文路径」的写法",
+            "mcp-server/test/api-command-context-path.test.mjs:107 T14：字面量拼接的前半段本身就是前缀",
+            "mcp-server/test/api-command-context-path.test.mjs:140 T14：拿到 context 前缀时补齐路径并给出「已应用」告警",
+            "mcp-server/test/api-command-context-path.test.mjs:154 T14：取不到 context 前缀时保持原样并显式告警"
+          ]
+        },
+        {
+          "id": "T14-D2",
+          "severity": "medium",
+          "title": "coverage 用批次级分母，域名级真值被显示成 71%",
+          "location": "mcp-server/src/api-command-evidence.ts:298 buildCoverage() / mcp-server/src/api-command-service.ts:1263",
+          "detail": "批次口径把「域名级已验证数」放在「批次级分母」上：实测批次显示 observed=10/unknown=4（看似 71%），而该域缓存实有 54 条命令、真实覆盖只有 10/54 ≈ 19%。",
+          "impact": "调用方会高估 API 覆盖可信度，可能据此认为该域接口已被充分验证。",
+          "fix": "coverage 改为域名级全量口径（分母 = 该域缓存全量命令数），显式加 scope 字段（domain / batch），批次信息单列到 batchCommandCount；scan 与 capture 两条通道口径统一，取不到域名全量时回落 batch 口径并告警。",
+          "regressionTests": [
+            "mcp-server/test/api-command-context-path.test.mjs:359 T14：AnalysisCoverage 显式带 scope 口径与 batchCommandCount"
+          ]
+        },
+        {
+          "id": "T14-D3",
+          "severity": "medium",
+          "title": "scan 与 capture 侧出现同一端点的两条命令（路径前缀不一致）",
+          "location": "mcp-server/src/api-command-service.ts:1133 scanSources() 接线前",
+          "detail": "scan 侧产出 /rest/...，capture 侧产出 /confluence/rest/...，pathTemplate 不同 → commandId 不同 → 合并时被当成两个端点。",
+          "impact": "同一真实接口在命令集里出现两条，其中一条必然调用失败；覆盖率与档位统计也随之失真。",
+          "fix": "不需要独立机制 —— 补齐上下文前缀后 pathTemplate 一致，commandId（sha256(host\\0method\\0pathTemplate)）自对齐，合并时自动合并并提档。",
+          "regressionTests": [
+            "mcp-server/test/api-command-context-path.test.mjs:140 T14：拿到 context 前缀时补齐路径（补齐后 pathTemplate 与真实请求一致，合并键自然对齐）"
+          ]
+        },
+        {
+          "id": "T14-D4",
+          "severity": "low",
+          "title": "静态推导把普通字符串常量与注释里的路径当接口",
+          "location": "mcp-server/src/api-command-site-scan.ts:469 isNoisePath()",
+          "detail": "实测噪音：/a/i、/a/b（比较表达式里的字符串常量）、/includes/soy/*.soy（注释里的路径）、/images/icons/emoticons（staticResourceUrlPrefix 拼接）。",
+          "impact": "命令集里混入打不通的噪音命令，精确率下降。",
+          "fix": "双重保险过滤：形状像噪音（静态资源后缀 / 静态资源首段集 / ^/[a-z]/[a-z]$）**且** 不在任何请求上下文（url 字段赋值或请求调用点）里才丢；静态资源首段集刻意不含 download（Confluence 的 /download/resources 是真接口）。",
+          "regressionTests": [
+            "mcp-server/test/api-command-context-path.test.mjs:65 T14：isNoisePath 双重保险",
+            "mcp-server/test/api-command-context-path.test.mjs:119 T14：普通字符串常量 / 注释里的静态资源路径被当噪音丢掉"
+          ]
+        }
+      ],
+      "verifiedNotDefects": [
+        "「扫描侧与抓包侧命令重名」（如 get.latest.shortcuts 同时存在 /rest/... 与 /confluence/rest/...）—— 不是缺陷：命令名由路径派生，补前缀后必然同名；缓存里旧的无前缀条目是历史残留，重扫会被带前缀版本取代。已记入复刻报告的遗留项。",
+        "「扩展无法自动重载」—— 不是缺陷：chrome.debugger 对 chrome:// 页面报 Cannot access a chrome:// URL，扩展自身也拦截了对 chrome://extensions/ 的 evaluate，本轮由人工重载。"
+      ],
+      "realSiteRecheck": "B 站真实站点召回复测（test-artifacts/t14-bilibili-recall.json）：整批口径 139 候选 / 132 unique / 35 hit / recall 1.0（基线 140 / 133 / 35 / 1.0，未回退；少的 1 条是噪音 /a/i）；实打存活 24/35 = 68.57%（与基线持平）。口径修订：逐 bundle 累加口径下 HEAD(T13) 与 T14 同样显示 32/35，证明该差异非 T14 引入。"
     }
   ]
 }

@@ -112,7 +112,7 @@ MCP Server 现已内置 WebSocket bridge。不要启动旧的 `daemon/` 包：�
 | `execute_webmcp_tool` | 按名称执行某个 WebMCP 注册工具并传入结构化输入。这是原生通道——比 DOM 自动化更快更稳。 |
 | `probe_page_capabilities` | 多维度页面能力扫描：WebMCP 工具、声明式表单、JSON-LD 动作、DOM 语义模式、网络 API 端点。用于决定最优执行策略。 |
 | `extract_iframe_text` | 提取页面中 iframe 的正文文本；同源走 DOM，跨域自动降级到网络层（见下）。 |
-| `analyze_page_apis` | 沉淀为具名、可复用的 API 命令。两种入口：抓包（`start` → 操作 UI → `stop_and_analyze`，`analyze_current` 为兼容入口）；**静态推导 `scan_site`**（直读 JS bundle / HAR / OpenAPI / 声明式命令包，无需打开页面、无需抓包、无需登录会话）。 |
+| `analyze_page_apis` | 沉淀为具名、可复用的 API 命令。两种入口：抓包（`start` → 操作 UI → `stop_and_analyze`，`analyze_current` 为兼容入口）；**静态推导 `scan_site`**（直读 JS bundle / HAR / Fiddler SAZ 归档 / OpenAPI / 声明式命令包，无需打开页面、无需抓包、无需登录会话）。 |
 | `export_api_commands` | 把某 hostname 的命令集导出为可审查的 JSON 命令包——这是把命令集分享给他人的交付单元。 |
 | `import_api_commands` | 导入 `export_api_commands` 产出的命令包。每条命令都过白名单重建，`urlTemplate` 的主机改写为目标域名，复合命令随包一起导入。 |
 | `list_api_commands` | 列出某精确 hostname 的本地 API 命令集（自动加载入口，纯本地缓存读取，从不执行）。 |

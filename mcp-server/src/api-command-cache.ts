@@ -725,6 +725,9 @@ function toCard(command: ApiCommand): CommandCard {
     drifted: command.health.drifted,
     schemaVersion: command.schemaVersion,
     updatedAt: command.updatedAt,
+    // 证据档位随精简视图透出：调用方要算**域名级**覆盖率必须拿到每条命令的档位，
+    // 否则只能看到「本次批次」的覆盖率，会把整域可信度高估。
+    ...(command.source?.provenance ? { provenance: command.source.provenance } : {}),
   };
 }
 
