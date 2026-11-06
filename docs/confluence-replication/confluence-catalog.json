@@ -1,0 +1,5763 @@
+{
+  "version": 1,
+  "site": {
+    "name": "高顿 Confluence 知识库",
+    "pageUrl": "https://confluence.gaodunwangxiao.com/confluence/pages/viewpage.action?pageId=409338091",
+    "pageOrigin": "confluence.gaodunwangxiao.com",
+    "apiHosts": [
+      "confluence.gaodunwangxiao.com"
+    ],
+    "region": "",
+    "regionNote": "单实例部署；所有业务路径统一挂在应用上下文路径 /confluence 之下（唯一例外：/synchrony/heartbeat 观测于根路径）"
+  },
+  "transport": {
+    "kind": "rest",
+    "endpoint": "/confluence/<条目路径>",
+    "method": "GET/POST/PUT（按条目）",
+    "contentType": "application/json（POST/PUT）；GET 无请求体",
+    "body": "query 参数进 URL；path 参数按 {name} 占位替换；body 参数按参数 location 决定进 query 还是 body",
+    "auth": {
+      "required": [
+        "Cookie: JSESSIONID"
+      ],
+      "abMatrix": {
+        "有 JSESSIONID + /confluence 前缀": "200（实测 3 条）",
+        "有 JSESSIONID + 裸路径（无前缀）": "404（实测 8 条）",
+        "无 JSESSIONID": "401/403 或跳登录页（未逐一实测）"
+      },
+      "conclusion": "脱离浏览器可行：只需 JSESSIONID 会话 cookie；关键前提是路径必须带 /confluence 前缀。",
+      "sameSiteNote": "JSESSIONID 的 path=/confluence、secure=true、HttpOnly=true；裸路径请求根本不会带上该 cookie。",
+      "excluded": []
+    },
+    "response": {
+      "envelope": "Confluence REST 直接返回 JSON 对象或二进制，无统一 envelope",
+      "successRule": "HTTP 2xx（不是 body.code）",
+      "doubleEncodedFields": []
+    }
+  },
+  "knownPitfalls": [
+    {
+      "pitfall": "业务路径必须带应用上下文前缀 /confluence",
+      "impact": "裸形态实测 8/8 全部 HTTP 404（/pages、/status、/v1、/download/resources、/rest/ia/1.0/link/main、/json/contentnamesearch.action、/plugins/servlet/confluence/placeholder/unknown-attachment、/plugins/drag-and-drop/upload.action）",
+      "workaround": "目录内所有条目一律用带前缀形态；带前缀的同相对路径实测为 200 / 403 / 302，无 404"
+    },
+    {
+      "pitfall": "会话 cookie JSESSIONID 的 path 是 /confluence",
+      "impact": "裸路径请求根本不会带上会话 cookie，登录态判定失真",
+      "workaround": "只请求 /confluence 前缀下的路径"
+    },
+    {
+      "pitfall": "服务端重定向被 fail-closed 阻断",
+      "impact": "GET /confluence/pages 实测 302，被记为失败而非「可用」，污染端点可用性判断",
+      "workaround": "用具体 REST 端点替代页面路由；302 不等于端点不可用"
+    },
+    {
+      "pitfall": "capture 通道未采到响应体",
+      "impact": "captureResponseBody=true 时 sampledResponseCount 仍为 0，响应结构一维全部 unknown",
+      "workaround": "需要响应结构时人工抓一次 HAR/SAZ 归档再入目录"
+    },
+    {
+      "pitfall": "merge 模式会用无响应体的新批次覆盖已有 observed 证据",
+      "impact": "实测 6 条 observed（含 responseFields）被 14 条无响应体的重捕获清空，tier 全域退化为 unknown",
+      "workaround": "重捕获前先备份缓存目录；或人工复核后用 update_api_command 标 manuallyEdited 保住"
+    },
+    {
+      "pitfall": "同一路径两种形态并存导致命令数虚增",
+      "impact": "实测缓存 217 条命令中 27 条是同相对路径的裸形态重复项（commandId 按 pathTemplate 哈希，形态不同即不合并）",
+      "workaround": "按相对路径归一后再比较端点数；本目录已归一为 181 条 + 27 条被取代"
+    },
+    {
+      "pitfall": "噪音路径过滤有漏网",
+      "impact": "/a/b、/a/i、/v1、/data、/images/**、/s/zh_CN/** 等 10 条噪音条目进入了命令集",
+      "workaround": "本目录已人工剔除并列进 excluded；扫描侧需扩 isNoisePath() 的判定面"
+    },
+    {
+      "pitfall": "写操作全部未实测",
+      "impact": "本目录含 write 条目但无一条取得业务成功样本，body 编码与副作用未知",
+      "workaround": "客户端默认拒写，需显式 --confirm-write；上线前先在测试空间验证"
+    }
+  ],
+  "resources": [
+    {
+      "id": "编辑器、宏与创建对话框",
+      "description": "编辑器加载、宏浏览器、创建对话框、高亮面板与路线图"
+    },
+    {
+      "id": "附件与文件资源",
+      "description": "附件上传、拖拽上传、文档转换、头像与空间设置"
+    },
+    {
+      "id": "管理、运维与实例状态",
+      "description": "管理后台、实例状态、许可横幅与功能发现"
+    },
+    {
+      "id": "集成与第三方连接",
+      "description": "应用链接（App Links）、Jira 集成、宏应用与 Gadget"
+    },
+    {
+      "id": "交互与个人状态",
+      "description": "收藏、关注、通知数、快捷方式、菜单、权限与个人资料"
+    },
+    {
+      "id": "空间与导航",
+      "description": "空间列表、页面树、面包屑、链接面板与空间可用性"
+    },
+    {
+      "id": "评论与任务",
+      "description": "行内评论、任务面板与草稿删除"
+    },
+    {
+      "id": "协作同步（Synchrony）",
+      "description": "实时协作通道、同步代理与内容同步"
+    },
+    {
+      "id": "页面路由（非 REST，仅作重定向证据）",
+      "description": "页面级路由：实测会被服务端 302 重定向，不能当 API 用"
+    },
+    {
+      "id": "页面与内容",
+      "description": "页面正文、CQL 查询、内容原型、草稿与附件搜索"
+    },
+    {
+      "id": "账号与组织",
+      "description": "用户、邀请、目录与第三方账号"
+    }
+  ],
+  "entries": [
+    {
+      "id": "get-includes-soy-breadcrumbs-soy",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/includes/soy/breadcrumbs.soy",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_c44801830e",
+        "commandName": "get.soy.breadcrumbs.soy",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T05:16:44.634Z",
+        "barePath": "/includes/soy/breadcrumbs.soy"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-includes-soy-dialog-soy",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/includes/soy/dialog.soy",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_f1bc4a7ddb",
+        "commandName": "get.soy.dialog.soy",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T05:16:44.634Z",
+        "barePath": "/includes/soy/dialog.soy"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-includes-soy-dom-filter-field-soy",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/includes/soy/dom-filter-field.soy",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_6253da7c38",
+        "commandName": "get.soy.dom-filter-field.soy",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T05:16:44.634Z",
+        "barePath": "/includes/soy/dom-filter-field.soy"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-includes-soy-manage-watchers-soy",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/includes/soy/manage-watchers.soy",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_35506db5dd",
+        "commandName": "get.soy.manage-watchers.soy",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T05:16:44.634Z",
+        "barePath": "/includes/soy/manage-watchers.soy"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-includes-soy-user-soy",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/includes/soy/user.soy",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_222f8066d8",
+        "commandName": "get.soy.user.soy",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T05:16:44.634Z",
+        "barePath": "/includes/soy/user.soy"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-plugins-editor-loader-editor-action",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/plugins/editor-loader/editor.action",
+      "params": {
+        "atl_after_login_redirect": "/confluence/pages/viewpage.action",
+        "pageid": "651362413",
+        "parentpageid": "22891395",
+        "spacekey": "GAOD",
+        "timeout": "12000"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "observed",
+        "params": "observed",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "真实抓包观测到该端点被调用（端点与参数形态已观测，响应体未采样）。",
+      "source": {
+        "commandId": "cmd_faf1538130",
+        "commandName": "get.editor-loader.editor",
+        "origin": "capture",
+        "analyzedAt": "2026-11-06T08:27:16.636Z"
+      },
+      "paramDetail": [
+        {
+          "name": "atl_after_login_redirect",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "pageid",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "parentpageid",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "spacekey",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "timeout",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-plugins-editor-tinymce",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/plugins/editor/tinymce",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_f6fd1c53e2",
+        "commandName": "get.editor.tinymce",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/plugins/editor/tinymce"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-plugins-macrobrowser-browse-macros-details-action",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/plugins/macrobrowser/browse-macros-details.action",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_54d67ed177",
+        "commandName": "get.macrobrowser.browse-macros-details",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/plugins/macrobrowser/browse-macros-details.action"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-plugins-macrobrowser-browse-macros-action",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/plugins/macrobrowser/browse-macros.action",
+      "params": {
+        "detailed": "false",
+        "macrometadataclientcachekey": "1793892789671"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "observed",
+        "params": "observed",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "真实抓包观测到该端点被调用（端点与参数形态已观测，响应体未采样）。",
+      "source": {
+        "commandId": "cmd_9012ccefbf",
+        "commandName": "get.macrobrowser.browse-macros",
+        "origin": "capture",
+        "analyzedAt": "2026-11-06T08:27:16.636Z"
+      },
+      "paramDetail": [
+        {
+          "name": "detailed",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "macrometadataclientcachekey",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-plugins-roadmap-create-page-action",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/plugins/roadmap/create-page.action",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_5ef5fc1e64",
+        "commandName": "get.roadmap.create-page",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-plugins-tinymce-helplink-action",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/plugins/tinymce/helplink.action",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_363d38daa6",
+        "commandName": "get.tinymce.helplink",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-create-dialog-1-0",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/rest/create-dialog/1.0",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_520ec1aec8",
+        "commandName": "get.create-dialog.1.0",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/create-dialog/1.0"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-create-dialog-1-0-blueprints-can-create-page",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/rest/create-dialog/1.0/blueprints/can-create-page",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_6839e18239",
+        "commandName": "get.blueprints.can-create-page",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-create-dialog-1-0-blueprints-web-items",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/rest/create-dialog/1.0/blueprints/web-items",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_264d1970f8",
+        "commandName": "get.blueprints.web-items",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/create-dialog/1.0/blueprints/web-items"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-create-dialog-1-0-space-blueprint-create-personal-space",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/rest/create-dialog/1.0/space-blueprint/create-personal-space",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_db99511ce4",
+        "commandName": "get.space-blueprint.create-personal-space",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/create-dialog/1.0/space-blueprint/create-personal-space"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-create-dialog-1-0-space-blueprint-dialog-web-items",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/rest/create-dialog/1.0/space-blueprint/dialog/web-items",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_2c8468b7b5",
+        "commandName": "get.dialog.web-items",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/create-dialog/1.0/space-blueprint/dialog/web-items"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-create-dialog-1-0-spaces",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/rest/create-dialog/1.0/spaces",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_8398663052",
+        "commandName": "get.1.0.spaces",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-create-dialog-1-0-spaces-skip-space-welcome-dialog",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/rest/create-dialog/1.0/spaces/skip-space-welcome-dialog",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_37da709a10",
+        "commandName": "get.spaces.skip-space-welcome-dialog",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-create-dialog-1-0-storage-quick-create",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/rest/create-dialog/1.0/storage/quick-create",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_2a04ef987a",
+        "commandName": "get.storage.quick-create",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "put-rest-create-dialog-1-0-storage-quick-create",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "PUT",
+      "path": "/confluence/rest/create-dialog/1.0/storage/quick-create",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "write",
+      "bodyEncoding": "json",
+      "note": "",
+      "source": {
+        "commandId": "cmd_271b66eac1",
+        "commandName": "update.storage.quick-create",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-emoticons-1-0",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/rest/emoticons/1.0",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_b3e280b441",
+        "commandName": "get.emoticons.1.0",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "post-rest-highlighting-1-0-insert-storage-column-table",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "POST",
+      "path": "/confluence/rest/highlighting/1.0/insert-storage-column-table",
+      "params": {
+        "contenttype": "<contenttype>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "write",
+      "bodyEncoding": "json",
+      "note": "",
+      "source": {
+        "commandId": "cmd_850667d853",
+        "commandName": "create.1.0.insert-storage-column-table",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "contenttype",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "post-rest-highlighting-1-0-insert-storage-fragment",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "POST",
+      "path": "/confluence/rest/highlighting/1.0/insert-storage-fragment",
+      "params": {
+        "contenttype": "<contenttype>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "write",
+      "bodyEncoding": "json",
+      "note": "",
+      "source": {
+        "commandId": "cmd_1094cd95a1",
+        "commandName": "create.1.0.insert-storage-fragment",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "contenttype",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-highlighting-1-0-panel-items",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/rest/highlighting/1.0/panel-items",
+      "params": {
+        "pageid": "651362413"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "observed",
+        "params": "observed",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "真实抓包观测到该端点被调用（端点与参数形态已观测，响应体未采样）。",
+      "source": {
+        "commandId": "cmd_e1d49685b1",
+        "commandName": "get.1.0.panel-items",
+        "origin": "capture",
+        "analyzedAt": "2026-11-06T08:27:16.636Z"
+      },
+      "paramDetail": [
+        {
+          "name": "pageid",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-roadmap-1-0-bar",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/rest/roadmap/1.0/bar",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_8e52b82aa0",
+        "commandName": "get.1.0.bar",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-roadmap-1-0-extractPageLinks",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/rest/roadmap/1.0/extractPageLinks",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_e6a8d987b9",
+        "commandName": "get.1.0.extractpagelinks",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-tinymce-id-content",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/rest/tinymce/{id}/content",
+      "params": {
+        "id": "<id>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_82807c693e",
+        "commandName": "get.tinymce.content",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "id",
+          "location": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-tinymce-id-drafts",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/rest/tinymce/{id}/drafts",
+      "params": {
+        "id": "<id>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_954fe4bb70",
+        "commandName": "get.tinymce.drafts",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "id",
+          "location": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-tinymce-id-drafts-discard",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/rest/tinymce/{id}/drafts/discard",
+      "params": {
+        "id": "<id>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_1faae75c3d",
+        "commandName": "get.drafts.discard",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "id",
+          "location": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-tinymce-id-drafts-message",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/rest/tinymce/{id}/drafts/message",
+      "params": {
+        "id": "<id>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_32f6fe3265",
+        "commandName": "get.drafts.message",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "id",
+          "location": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-tinymce-id-embed-placeholder-image",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/rest/tinymce/{id}/embed/placeholder/image",
+      "params": {
+        "id": "<id>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_21b5ddb474",
+        "commandName": "get.placeholder.image",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "id",
+          "location": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-tinymce-id-macro-definition",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/rest/tinymce/{id}/macro/definition",
+      "params": {
+        "id": "<id>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_5da904d263",
+        "commandName": "get.macro.definition",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "id",
+          "location": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-tinymce-id-macro-placeholder",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/rest/tinymce/{id}/macro/placeholder",
+      "params": {
+        "id": "<id>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_b7d684d2fb",
+        "commandName": "get.macro.placeholder",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "id",
+          "location": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-tinymce-id-macro-preview",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/rest/tinymce/{id}/macro/preview",
+      "params": {
+        "id": "<id>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_998063573a",
+        "commandName": "get.macro.preview",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/tinymce/{id}/macro/preview"
+      },
+      "paramDetail": [
+        {
+          "name": "id",
+          "location": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-tinymce-id-markdownxhtmlconverter",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/rest/tinymce/{id}/markdownxhtmlconverter",
+      "params": {
+        "id": "<id>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_87121acf73",
+        "commandName": "get.tinymce.markdownxhtmlconverter",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/tinymce/{id}/markdownxhtmlconverter"
+      },
+      "paramDetail": [
+        {
+          "name": "id",
+          "location": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-tinymce-id-wikixhtmlconverter",
+      "kind": "endpoint",
+      "resource": "编辑器、宏与创建对话框",
+      "method": "GET",
+      "path": "/confluence/rest/tinymce/{id}/wikixhtmlconverter",
+      "params": {
+        "id": "<id>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_e247877ff3",
+        "commandName": "get.tinymce.wikixhtmlconverter",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/tinymce/{id}/wikixhtmlconverter"
+      },
+      "paramDetail": [
+        {
+          "name": "id",
+          "location": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-plugins-drag-and-drop-upload-action",
+      "kind": "endpoint",
+      "resource": "附件与文件资源",
+      "method": "GET",
+      "path": "/confluence/plugins/drag-and-drop/upload.action",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "实测 HTTP 403：403 鉴权拦截，端点存在。",
+      "source": {
+        "commandId": "cmd_5dfd2e102d",
+        "commandName": "get.drag-and-drop.upload",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "verification": {
+        "httpStatus": 403,
+        "note": "403 鉴权拦截，端点存在"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-autoconvert-1-0-cloudappembed",
+      "kind": "endpoint",
+      "resource": "附件与文件资源",
+      "method": "GET",
+      "path": "/confluence/rest/autoconvert/1.0/cloudappembed",
+      "params": {
+        "resource": "<resource>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_4c69262f8c",
+        "commandName": "get.1.0.cloudappembed",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "resource",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-autoconvert-1-0-skitchembed",
+      "kind": "endpoint",
+      "resource": "附件与文件资源",
+      "method": "GET",
+      "path": "/confluence/rest/autoconvert/1.0/skitchembed",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_df2ad76607",
+        "commandName": "get.1.0.skitchembed",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-autoconvert-latest-shortcutlinkconfigurations",
+      "kind": "endpoint",
+      "resource": "附件与文件资源",
+      "method": "GET",
+      "path": "/confluence/rest/autoconvert/latest/shortcutlinkconfigurations",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_dd3275bd3e",
+        "commandName": "get.latest.shortcutlinkconfigurations",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/autoconvert/latest/shortcutlinkconfigurations"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-documentConversion-latest",
+      "kind": "endpoint",
+      "resource": "附件与文件资源",
+      "method": "GET",
+      "path": "/confluence/rest/documentConversion/latest",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_ba5b76c967",
+        "commandName": "get.documentconversion.latest",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/documentConversion/latest"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-documentConversion-latest-conversion-thumbnail",
+      "kind": "endpoint",
+      "resource": "附件与文件资源",
+      "method": "GET",
+      "path": "/confluence/rest/documentConversion/latest/conversion/thumbnail",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_fc3b2965be",
+        "commandName": "get.conversion.thumbnail",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "post-rest-documentConversion-latest-conversion-thumbnail-results",
+      "kind": "endpoint",
+      "resource": "附件与文件资源",
+      "method": "POST",
+      "path": "/confluence/rest/documentConversion/latest/conversion/thumbnail/results",
+      "params": {
+        "contenttype": "<contenttype>",
+        "id": "<id>",
+        "v": "<v>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "write",
+      "bodyEncoding": "json",
+      "note": "",
+      "source": {
+        "commandId": "cmd_7c64f48530",
+        "commandName": "create.thumbnail.results",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "contenttype",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "id",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "v",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "post-rest-drag-and-drop-id-tip-disable",
+      "kind": "endpoint",
+      "resource": "附件与文件资源",
+      "method": "POST",
+      "path": "/confluence/rest/drag-and-drop/{id}/tip/disable",
+      "params": {
+        "id": "<id>",
+        "contenttype": "<contenttype>",
+        "datatype": "<datatype>",
+        "success": "<success>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "write",
+      "bodyEncoding": "json",
+      "note": "",
+      "source": {
+        "commandId": "cmd_3684913bf2",
+        "commandName": "create.tip.disable",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "id",
+          "location": "path",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "contenttype",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "datatype",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "success",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-drag-and-drop-id-tip-setting",
+      "kind": "endpoint",
+      "resource": "附件与文件资源",
+      "method": "GET",
+      "path": "/confluence/rest/drag-and-drop/{id}/tip/setting",
+      "params": {
+        "id": "<id>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_8e69023b55",
+        "commandName": "get.tip.setting",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "id",
+          "location": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-files-1-0-files-content-0-commentCount",
+      "kind": "endpoint",
+      "resource": "附件与文件资源",
+      "method": "GET",
+      "path": "/confluence/rest/files/1.0/files/content/_0_/commentCount",
+      "params": {
+        "attachmentid": "<attachmentid>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_a632a203f9",
+        "commandName": "get.0.commentcount",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/files/1.0/files/content/_0_/commentCount"
+      },
+      "paramDetail": [
+        {
+          "name": "attachmentid",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "post-rest-ia-1-0-space-option",
+      "kind": "endpoint",
+      "resource": "附件与文件资源",
+      "method": "POST",
+      "path": "/confluence/rest/ia/1.0/space/option",
+      "params": {
+        "contenttype": "<contenttype>",
+        "datatype": "<datatype>",
+        "option": "<option>",
+        "spacekey": "<spacekey>",
+        "success": "<success>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "write",
+      "bodyEncoding": "json",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_f665521853",
+        "commandName": "create.space.option",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/ia/1.0/space/option"
+      },
+      "paramDetail": [
+        {
+          "name": "contenttype",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "datatype",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "option",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "spacekey",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "success",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-ia-1-0-space-setLogo",
+      "kind": "endpoint",
+      "resource": "附件与文件资源",
+      "method": "GET",
+      "path": "/confluence/rest/ia/1.0/space/setLogo",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_79f8225a73",
+        "commandName": "get.space.setlogo",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/ia/1.0/space/setLogo"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "post-rest-webResources-1-0-resources",
+      "kind": "endpoint",
+      "resource": "附件与文件资源",
+      "method": "POST",
+      "path": "/confluence/rest/webResources/1.0/resources",
+      "params": {
+        "c": "<c>",
+        "r": "<r>",
+        "xc": "<xc>",
+        "xr": "<xr>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "observed",
+        "params": "observed",
+        "response": "unknown"
+      },
+      "risk": "write",
+      "bodyEncoding": "multipart",
+      "note": "真实抓包观测到该端点被调用（端点与参数形态已观测，响应体未采样）。",
+      "source": {
+        "commandId": "cmd_9b1bdc98c1",
+        "commandName": "create.1.0.resources",
+        "origin": "capture",
+        "analyzedAt": "2026-11-06T08:27:16.636Z"
+      },
+      "paramDetail": [
+        {
+          "name": "c",
+          "location": "body",
+          "required": false,
+          "type": "array"
+        },
+        {
+          "name": "r",
+          "location": "body",
+          "required": true,
+          "type": "array"
+        },
+        {
+          "name": "xc",
+          "location": "body",
+          "required": true,
+          "type": "array"
+        },
+        {
+          "name": "xr",
+          "location": "body",
+          "required": true,
+          "type": "array"
+        }
+      ]
+    },
+    {
+      "id": "get-servlet-view-file-macro-placeholder",
+      "kind": "endpoint",
+      "resource": "附件与文件资源",
+      "method": "GET",
+      "path": "/confluence/servlet/view-file-macro/placeholder",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_a3584ce55b",
+        "commandName": "get.view-file-macro.placeholder",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/servlet/view-file-macro/placeholder"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-admin-billing-addapplication",
+      "kind": "endpoint",
+      "resource": "管理、运维与实例状态",
+      "method": "GET",
+      "path": "/confluence/admin/billing/addapplication",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_89e7a96769",
+        "commandName": "get.billing.addapplication",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/admin/billing/addapplication"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "put-admin-billing-addapplication",
+      "kind": "endpoint",
+      "resource": "管理、运维与实例状态",
+      "method": "PUT",
+      "path": "/confluence/admin/billing/addapplication",
+      "params": {
+        "product": "<product>",
+        "contenttype": "<contenttype>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "write",
+      "bodyEncoding": "json",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_2c1fadecc9",
+        "commandName": "update.billing.addapplication",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/admin/billing/addapplication"
+      },
+      "paramDetail": [
+        {
+          "name": "product",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "contenttype",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-admin-usermacros-action",
+      "kind": "endpoint",
+      "resource": "管理、运维与实例状态",
+      "method": "GET",
+      "path": "/confluence/admin/usermacros.action",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_ec81cae859",
+        "commandName": "get.admin.usermacros",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "post-request-edit",
+      "kind": "endpoint",
+      "resource": "管理、运维与实例状态",
+      "method": "POST",
+      "path": "/confluence/request/edit",
+      "params": {
+        "contenttype": "<contenttype>",
+        "success": "<success>",
+        "title": "<title>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "write",
+      "bodyEncoding": "json",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_deeb093946",
+        "commandName": "create.request.edit",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/request/edit"
+      },
+      "paramDetail": [
+        {
+          "name": "contenttype",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "success",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "title",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "post-rest-feature-discovery-1-0-discovered",
+      "kind": "endpoint",
+      "resource": "管理、运维与实例状态",
+      "method": "POST",
+      "path": "/confluence/rest/feature-discovery/1.0/discovered",
+      "params": {
+        "featurekey": "<featurekey>",
+        "listdiscovered": "<listdiscovered>",
+        "pluginkey": "<pluginkey>",
+        "success": "<success>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "write",
+      "bodyEncoding": "json",
+      "note": "",
+      "source": {
+        "commandId": "cmd_9e3e8d6722",
+        "commandName": "create.1.0.discovered",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "featurekey",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "listdiscovered",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "pluginkey",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "success",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "post-rest-licensebanner-1-0-reminder-later",
+      "kind": "endpoint",
+      "resource": "管理、运维与实例状态",
+      "method": "POST",
+      "path": "/confluence/rest/licensebanner/1.0/reminder/later",
+      "params": {
+        "contenttype": "<contenttype>",
+        "datatype": "<datatype>",
+        "remindmenever": "<remindmenever>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "write",
+      "bodyEncoding": "json",
+      "note": "",
+      "source": {
+        "commandId": "cmd_448309bf88",
+        "commandName": "create.reminder.later",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "contenttype",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "datatype",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "remindmenever",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-licensebanner-1-0-reminder-never",
+      "kind": "endpoint",
+      "resource": "管理、运维与实例状态",
+      "method": "GET",
+      "path": "/confluence/rest/licensebanner/1.0/reminder/never",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_5e25da9099",
+        "commandName": "get.reminder.never",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-menu-latest-admin",
+      "kind": "endpoint",
+      "resource": "管理、运维与实例状态",
+      "method": "GET",
+      "path": "/confluence/rest/menu/latest/admin",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_bfd0b165a1",
+        "commandName": "get.latest.admin",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-quickreload-latest",
+      "kind": "endpoint",
+      "resource": "管理、运维与实例状态",
+      "method": "GET",
+      "path": "/confluence/rest/quickreload/latest",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_55d16c6200",
+        "commandName": "get.quickreload.latest",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-ui-1-0",
+      "kind": "endpoint",
+      "resource": "管理、运维与实例状态",
+      "method": "GET",
+      "path": "/confluence/rest/ui/1.0",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_b5286f283c",
+        "commandName": "get.ui.1.0",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/ui/1.0"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-ui-1-0-content",
+      "kind": "endpoint",
+      "resource": "管理、运维与实例状态",
+      "method": "GET",
+      "path": "/confluence/rest/ui/1.0/content",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_48e5a18fa9",
+        "commandName": "get.1.0.content-636772",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/ui/1.0/content"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-secure-admin-EditApplicationProperties",
+      "kind": "endpoint",
+      "resource": "管理、运维与实例状态",
+      "method": "GET",
+      "path": "/confluence/secure/admin/EditApplicationProperties",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_538572bbc9",
+        "commandName": "get.admin.editapplicationproperties",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/secure/admin/EditApplicationProperties"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-secure-admin-ViewApplicationProperties",
+      "kind": "endpoint",
+      "resource": "管理、运维与实例状态",
+      "method": "GET",
+      "path": "/confluence/secure/admin/ViewApplicationProperties",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_837c38ee0d",
+        "commandName": "get.admin.viewapplicationproperties",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/secure/admin/ViewApplicationProperties"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-status",
+      "kind": "endpoint",
+      "resource": "管理、运维与实例状态",
+      "method": "GET",
+      "path": "/confluence/status",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径（实测 404）；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。 实测 HTTP 404：裸形态 404。",
+      "source": {
+        "commandId": "cmd_c493af5552",
+        "commandName": "get.status",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/status"
+      },
+      "verification": {
+        "httpStatus": 404,
+        "note": "裸形态 404"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-type-entity",
+      "kind": "endpoint",
+      "resource": "管理、运维与实例状态",
+      "method": "GET",
+      "path": "/confluence/type/entity",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_27bd211195",
+        "commandName": "get.type.entity",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/type/entity"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-plugins-servlet-applinks-listApplicationLinks",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/plugins/servlet/applinks/listApplicationLinks",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_544967f141",
+        "commandName": "get.applinks.listapplicationlinks",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-plugins-servlet-applinks-listEntityLinks",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/plugins/servlet/applinks/listEntityLinks",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_509ab5c95d",
+        "commandName": "get.applinks.listentitylinks",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-plugins-servlet-applinks-proxy",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/plugins/servlet/applinks/proxy",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_e4b4e2e814",
+        "commandName": "get.applinks.proxy",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/plugins/servlet/applinks/proxy"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-plugins-servlet-confluence-placeholder-template-variable",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/plugins/servlet/confluence/placeholder/template-variable",
+      "params": {
+        "name": "<name>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_c5eeeaac8b",
+        "commandName": "get.placeholder.template-variable",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/plugins/servlet/confluence/placeholder/template-variable"
+      },
+      "paramDetail": [
+        {
+          "name": "name",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-plugins-servlet-confluence-placeholder-unknown-attachment",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/plugins/servlet/confluence/placeholder/unknown-attachment",
+      "params": {},
+      "dataShape": "二进制响应（Content-Type: image/png）",
+      "evidence": "observed",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "observed"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_ab1711025c",
+        "commandName": "get.placeholder.unknown-attachment",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "verification": {
+        "httpStatus": 200,
+        "contentType": "image/png",
+        "note": "拿到二进制 PNG 响应体"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-plugins-servlet-custom-content-links-admin",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/plugins/servlet/custom-content-links-admin",
+      "params": {
+        "entitykey": "<entitykey>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_5451a03ed6",
+        "commandName": "get.servlet.custom-content-links-admin",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "entitykey",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-plugins-servlet-customize-application-navigator",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/plugins/servlet/customize-application-navigator",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_97de64e49d",
+        "commandName": "get.servlet.customize-application-navigator",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-plugins-servlet-hipchat-configure",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/plugins/servlet/hipchat/configure",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_cd1c708adc",
+        "commandName": "get.hipchat.configure",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-plugins-servlet-issue-retriever",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/plugins/servlet/issue-retriever",
+      "params": {
+        "appid": "<appid>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_56815db052",
+        "commandName": "get.servlet.issue-retriever",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "appid",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-plugins-servlet-jira-integration-icons",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/plugins/servlet/jira-integration/icons",
+      "params": {
+        "2": "<2>",
+        "icontype": "<icontype>",
+        "serverid": "<serverid>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_ffa737dd3d",
+        "commandName": "get.jira-integration.icons",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "2",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "icontype",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "serverid",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-plugins-servlet-jira-metadata-redirect",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/plugins/servlet/jira-metadata/redirect",
+      "params": {
+        "u": "<u>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_df431363da",
+        "commandName": "get.jira-metadata.redirect",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "u",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-plugins-servlet-notifications-miniview",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/plugins/servlet/notifications-miniview",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_5b792b1066",
+        "commandName": "get.servlet.notifications-miniview",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/plugins/servlet/notifications-miniview"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-plugins-servlet-oc-getattachment",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/plugins/servlet/oc/getattachment",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_7e1cd512a0",
+        "commandName": "get.oc.getattachment",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/plugins/servlet/oc/getattachment"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-plugins-servlet-twoDimensionalShowMoreRenderer",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/plugins/servlet/twoDimensionalShowMoreRenderer",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_7aa6e8154e",
+        "commandName": "get.servlet.twodimensionalshowmorerenderer",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-plugins-servlet-upm-marketplace-featured",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/plugins/servlet/upm/marketplace/featured",
+      "params": {
+        "category": "<category>",
+        "source": "<source>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_4f35faa553",
+        "commandName": "get.marketplace.featured",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "category",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "source",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-applinks",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/rest/applinks",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_979c4b6b41",
+        "commandName": "get.confluence.applinks",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-applinks-oauth",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/rest/applinks-oauth",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_897b620900",
+        "commandName": "get.confluence.applinks-oauth",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-applinks-oauth-1-0",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/rest/applinks-oauth/1.0",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_cffec7b517",
+        "commandName": "get.applinks-oauth.1.0",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-applinks-1-0",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/rest/applinks/1.0",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_cfdf3fe056",
+        "commandName": "get.applinks.1.0",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-com-atlassian-confluence-contributors-1-0-contributors",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/rest/com.atlassian.confluence.contributors/1.0/contributors",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_2a69304fc1",
+        "commandName": "get.1.0.contributors",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-gadget-1-0-statTypes",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/rest/gadget/1.0/statTypes",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_2b7271c5c4",
+        "commandName": "get.1.0.stattypes",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/gadget/1.0/statTypes"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-hipchat-integration-1-0-users",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/rest/hipchat/integration/1.0/users",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_7bd3a22955",
+        "commandName": "get.1.0.users",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-jira-integration-1-0-issues",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/rest/jira-integration/1.0/issues",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_d96f3d00dd",
+        "commandName": "get.1.0.issues",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-jira-integration-1-0-servers",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/rest/jira-integration/1.0/servers",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_1e76f32e18",
+        "commandName": "get.1.0.servers",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-jira-integration-latest-fields-autocomplete",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/rest/jira-integration/latest/fields/autocomplete",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_caea41b575",
+        "commandName": "get.fields.autocomplete",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-jira-metadata-1-0-metadata",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/rest/jira-metadata/1.0/metadata",
+      "params": {
+        "pageid": "<pageid>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_4742cacfe8",
+        "commandName": "get.1.0.metadata",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "pageid",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-jira-metadata-1-0-metadata-aggregate",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/rest/jira-metadata/1.0/metadata/aggregate",
+      "params": {
+        "pageid": "<pageid>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_a0d6af4af0",
+        "commandName": "get.metadata.aggregate",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "pageid",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-jiraanywhere-1-0-jira-appLink",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/rest/jiraanywhere/1.0/jira/appLink",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_b4e5c82e53",
+        "commandName": "get.jira.applink",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/jiraanywhere/1.0/jira/appLink"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-jiraanywhere-1-0-servers",
+      "kind": "endpoint",
+      "resource": "集成与第三方连接",
+      "method": "GET",
+      "path": "/confluence/rest/jiraanywhere/1.0/servers",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_c5ac1cdab6",
+        "commandName": "get.1.0.servers-c908b3",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-json-deletedraft-action",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "GET",
+      "path": "/confluence/json/deletedraft.action",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_1ba3f32a8b",
+        "commandName": "get.json.deletedraft",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-json-listwatchers-action",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "GET",
+      "path": "/confluence/json/listwatchers.action",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_cdcba082c9",
+        "commandName": "get.json.listwatchers",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-json-removewatch-action",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "GET",
+      "path": "/confluence/json/removewatch.action",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_7a44070996",
+        "commandName": "get.json.removewatch",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "post-json-startheartbeatactivity-action",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "POST",
+      "path": "/confluence/json/startheartbeatactivity.action",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "write",
+      "bodyEncoding": "form",
+      "note": "",
+      "source": {
+        "commandId": "cmd_3089fc1b20",
+        "commandName": "create.json.startheartbeatactivity",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "post-json-stopheartbeatactivity-action",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "POST",
+      "path": "/confluence/json/stopheartbeatactivity.action",
+      "params": {
+        "request": "<request>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "write",
+      "bodyEncoding": "form",
+      "note": "",
+      "source": {
+        "commandId": "cmd_516f165167",
+        "commandName": "create.json.stopheartbeatactivity",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "request",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "post-rest-access-latest-page-restriction",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "POST",
+      "path": "/confluence/rest/access/latest/page/restriction",
+      "params": {
+        "contenttype": "<contenttype>",
+        "success": "<success>",
+        "title": "<title>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "write",
+      "bodyEncoding": "json",
+      "note": "",
+      "source": {
+        "commandId": "cmd_edc924501b",
+        "commandName": "create.page.restriction",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "contenttype",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "success",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "title",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-access-latest-page-restriction",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "GET",
+      "path": "/confluence/rest/access/latest/page/restriction",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_7c2fc8624e",
+        "commandName": "get.page.restriction",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-confluenceshortcuts-latest-enabled",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "GET",
+      "path": "/confluence/rest/confluenceshortcuts/latest/enabled",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_201cf2a7fc",
+        "commandName": "get.latest.enabled",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-experimental-relation-user",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "GET",
+      "path": "/confluence/rest/experimental/relation/user",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_37b0972dad",
+        "commandName": "get.relation.user",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "put-rest-experimental-relation-user",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "PUT",
+      "path": "/confluence/rest/experimental/relation/user",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "write",
+      "bodyEncoding": "json",
+      "note": "",
+      "source": {
+        "commandId": "cmd_dddcba3756",
+        "commandName": "update.relation.user",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-experimental-relation-user-current-favourite-toContent",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "GET",
+      "path": "/confluence/rest/experimental/relation/user/current/favourite/toContent",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_66361edf78",
+        "commandName": "get.favourite.tocontent",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-experimental-relation-user-current-favourite-toSpace",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "GET",
+      "path": "/confluence/rest/experimental/relation/user/current/favourite/toSpace",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_2a56ade29a",
+        "commandName": "get.favourite.tospace",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/experimental/relation/user/current/favourite/toSpace"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-helptips-1-0-tips",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "GET",
+      "path": "/confluence/rest/helptips/1.0/tips",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "observed",
+        "params": "observed",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "真实请求 200 且 Content-Type=application/json，但响应体为空/未采样，按证据判据不计 observed。 真实抓包观测到该端点被调用（端点与参数形态已观测，响应体未采样）。",
+      "source": {
+        "commandId": "cmd_24cff768f2",
+        "commandName": "get.1.0.tips",
+        "origin": "capture",
+        "analyzedAt": "2026-11-06T08:27:16.636Z"
+      },
+      "verification": {
+        "httpStatus": 200,
+        "contentType": "application/json",
+        "note": "200 但响应体为空数组，不计 observed"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-likes-1-0-content",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "GET",
+      "path": "/confluence/rest/likes/1.0/content",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_0e5542f45d",
+        "commandName": "get.1.0.content",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-likes-1-0-content-id-likes",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "GET",
+      "path": "/confluence/rest/likes/1.0/content/{id}/likes",
+      "params": {
+        "id": "<id>",
+        "commentlikes": "true"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "observed",
+        "params": "observed",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "真实抓包观测到该端点被调用（端点与参数形态已观测，响应体未采样）。",
+      "source": {
+        "commandId": "cmd_0016c103c1",
+        "commandName": "get.content.likes",
+        "origin": "capture",
+        "analyzedAt": "2026-11-06T08:27:16.636Z"
+      },
+      "paramDetail": [
+        {
+          "name": "id",
+          "location": "path",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "commentlikes",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-likes-1-0-user",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "GET",
+      "path": "/confluence/rest/likes/1.0/user",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_3158a51fd7",
+        "commandName": "get.1.0.user",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-menu-latest-appswitcher",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "GET",
+      "path": "/confluence/rest/menu/latest/appswitcher",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_e9bd82586b",
+        "commandName": "get.latest.appswitcher",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "put-rest-menu-latest-userdata",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "PUT",
+      "path": "/confluence/rest/menu/latest/userdata",
+      "params": {
+        "contenttype": "<contenttype>",
+        "dropdowncontents": "<dropdowncontents>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "write",
+      "bodyEncoding": "json",
+      "note": "",
+      "source": {
+        "commandId": "cmd_424c93d65a",
+        "commandName": "update.latest.userdata",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "contenttype",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "dropdowncontents",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-mywork-latest-status-notification-count",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "GET",
+      "path": "/confluence/rest/mywork/latest/status/notification/count",
+      "params": {
+        "pageid": "651362413"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "observed",
+        "params": "observed",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "真实请求 200 且 Content-Type=application/json，但响应体为空/未采样，按证据判据不计 observed。 真实抓包观测到该端点被调用（端点与参数形态已观测，响应体未采样）。",
+      "source": {
+        "commandId": "cmd_a22356ecae",
+        "commandName": "get.notification.count",
+        "origin": "capture",
+        "analyzedAt": "2026-11-06T08:27:16.636Z"
+      },
+      "verification": {
+        "httpStatus": 200,
+        "contentType": "application/json",
+        "note": "200 但响应体为空/未采样，不计 observed"
+      },
+      "paramDetail": [
+        {
+          "name": "pageid",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-project-shortcuts-1-0-local",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "GET",
+      "path": "/confluence/rest/project-shortcuts/1.0/local",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_bfef55bca9",
+        "commandName": "get.1.0.local",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-project-shortcuts-1-0-remote",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "GET",
+      "path": "/confluence/rest/project-shortcuts/1.0/remote",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_b2dcd80eb4",
+        "commandName": "get.1.0.remote",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-quicknav-id-search",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "GET",
+      "path": "/confluence/rest/quicknav/{id}/search",
+      "params": {
+        "id": "<id>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_644fedf615",
+        "commandName": "search.confluence.quicknav",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "id",
+          "location": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-recentlyviewed-1-0-recent",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "GET",
+      "path": "/confluence/rest/recentlyviewed/1.0/recent",
+      "params": {
+        "includetrashedcontent": "<includetrashedcontent>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_36f9038e5a",
+        "commandName": "get.1.0.recent",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/recentlyviewed/1.0/recent"
+      },
+      "paramDetail": [
+        {
+          "name": "includetrashedcontent",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-recentlyviewed-1-0-recent-pages",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "GET",
+      "path": "/confluence/rest/recentlyviewed/1.0/recent/pages",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_99ac29f31c",
+        "commandName": "get.recent.pages",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-recentlyviewed-1-0-recent-spaces",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "GET",
+      "path": "/confluence/rest/recentlyviewed/1.0/recent/spaces",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_37cca87c33",
+        "commandName": "get.recent.spaces",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-shortcuts-latest-shortcuts",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "GET",
+      "path": "/confluence/rest/shortcuts/latest/shortcuts",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_b73764ac5f",
+        "commandName": "get.latest.shortcuts",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-shortcuts-latest-shortcuts-id-id-2",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "GET",
+      "path": "/confluence/rest/shortcuts/latest/shortcuts/{id}/{id_2}",
+      "params": {
+        "id": "<id>",
+        "id_2": "<id_2>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "observed",
+        "params": "observed",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "真实抓包观测到该端点被调用（端点与参数形态已观测，响应体未采样）。",
+      "source": {
+        "commandId": "cmd_52b7899b9a",
+        "commandName": "get.latest.shortcuts",
+        "origin": "capture",
+        "analyzedAt": "2026-11-06T08:27:16.636Z"
+      },
+      "paramDetail": [
+        {
+          "name": "id",
+          "location": "path",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "id_2",
+          "location": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-watch-button-1-0-watchState",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "GET",
+      "path": "/confluence/rest/watch-button/1.0/watchState",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_30d3c89c9e",
+        "commandName": "get.1.0.watchstate",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-watch-button-1-0-watchState-id",
+      "kind": "endpoint",
+      "resource": "交互与个人状态",
+      "method": "GET",
+      "path": "/confluence/rest/watch-button/1.0/watchState/{id}",
+      "params": {
+        "id": "<id>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "observed",
+        "params": "observed",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "真实抓包观测到该端点被调用（端点与参数形态已观测，响应体未采样）。",
+      "source": {
+        "commandId": "cmd_1151a9ee7c",
+        "commandName": "get.1.0.watchstate",
+        "origin": "capture",
+        "analyzedAt": "2026-11-06T08:27:16.636Z"
+      },
+      "paramDetail": [
+        {
+          "name": "id",
+          "location": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-ajax-spaceavailable-action",
+      "kind": "endpoint",
+      "resource": "空间与导航",
+      "method": "GET",
+      "path": "/confluence/ajax/spaceavailable.action",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_3c0066ce67",
+        "commandName": "get.ajax.spaceavailable",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-pages-breadcrumb-action",
+      "kind": "endpoint",
+      "resource": "空间与导航",
+      "method": "GET",
+      "path": "/confluence/pages/breadcrumb.action",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_75c70e2470",
+        "commandName": "get.pages.breadcrumb",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-plugins-pagetree-naturalchildren-action",
+      "kind": "endpoint",
+      "resource": "空间与导航",
+      "method": "GET",
+      "path": "/confluence/plugins/pagetree/naturalchildren.action",
+      "params": {
+        "ancestors": "<ancestors>",
+        "decorator": "none",
+        "disablelinks": "false",
+        "excerpt": "false",
+        "expandcurrent": "true",
+        "hasroot": "false",
+        "mobile": "false",
+        "reverse": "false",
+        "sort": "position",
+        "spacekey": "GAOD",
+        "startdepth": "0",
+        "treeid": "0",
+        "treepageid": "651362413"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "observed",
+        "params": "observed",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "真实抓包观测到该端点被调用（端点与参数形态已观测，响应体未采样）。",
+      "source": {
+        "commandId": "cmd_dbc94d4fd8",
+        "commandName": "get.pagetree.naturalchildren",
+        "origin": "capture",
+        "analyzedAt": "2026-11-06T08:27:16.636Z"
+      },
+      "paramDetail": [
+        {
+          "name": "ancestors",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "decorator",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "disablelinks",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "excerpt",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "expandcurrent",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "hasroot",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "mobile",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "reverse",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "sort",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "spacekey",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "startdepth",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "treeid",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "treepageid",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-ia-1-0-link",
+      "kind": "endpoint",
+      "resource": "空间与导航",
+      "method": "GET",
+      "path": "/confluence/rest/ia/1.0/link",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_5a5e4c8e8b",
+        "commandName": "get.1.0.link",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/ia/1.0/link"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-ia-1-0-link-advanced",
+      "kind": "endpoint",
+      "resource": "空间与导航",
+      "method": "GET",
+      "path": "/confluence/rest/ia/1.0/link/advanced",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_1e4e4ed77b",
+        "commandName": "get.link.advanced",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/ia/1.0/link/advanced"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-ia-1-0-link-main",
+      "kind": "endpoint",
+      "resource": "空间与导航",
+      "method": "GET",
+      "path": "/confluence/rest/ia/1.0/link/main",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径（实测 404）；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。 实测 HTTP 404：裸形态 404。",
+      "source": {
+        "commandId": "cmd_191e4f182f",
+        "commandName": "get.link.main",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/ia/1.0/link/main"
+      },
+      "verification": {
+        "httpStatus": 404,
+        "note": "裸形态 404"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-ia-1-0-link-quick",
+      "kind": "endpoint",
+      "resource": "空间与导航",
+      "method": "GET",
+      "path": "/confluence/rest/ia/1.0/link/quick",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_45faf02c43",
+        "commandName": "get.link.quick",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/ia/1.0/link/quick"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-ia-1-0-pagetree-blog-subtree",
+      "kind": "endpoint",
+      "resource": "空间与导航",
+      "method": "GET",
+      "path": "/confluence/rest/ia/1.0/pagetree/blog/subtree",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_920a4ca0eb",
+        "commandName": "get.blog.subtree",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/ia/1.0/pagetree/blog/subtree"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-ia-1-0-space-childPagesContextualNav",
+      "kind": "endpoint",
+      "resource": "空间与导航",
+      "method": "GET",
+      "path": "/confluence/rest/ia/1.0/space/childPagesContextualNav",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_3d876cf5e2",
+        "commandName": "get.space.childpagescontextualnav",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/ia/1.0/space/childPagesContextualNav"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-ia-1-0-spacesmenu",
+      "kind": "endpoint",
+      "resource": "空间与导航",
+      "method": "GET",
+      "path": "/confluence/rest/ia/1.0/spacesmenu",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_564bf2d64b",
+        "commandName": "get.1.0.spacesmenu",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-plugins-inlinetasks-mytasks-action",
+      "kind": "endpoint",
+      "resource": "评论与任务",
+      "method": "GET",
+      "path": "/confluence/plugins/inlinetasks/mytasks.action",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_8b9e49c09a",
+        "commandName": "get.inlinetasks.mytasks",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-inlinecomments-1-0-comments",
+      "kind": "endpoint",
+      "resource": "评论与任务",
+      "method": "GET",
+      "path": "/confluence/rest/inlinecomments/1.0/comments",
+      "params": {
+        "containerid": "651362413"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "observed",
+        "params": "observed",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "真实抓包观测到该端点被调用（端点与参数形态已观测，响应体未采样）。 实测 HTTP 404：带前缀仍 404，参数形态存疑。",
+      "source": {
+        "commandId": "cmd_fa17d9d8cd",
+        "commandName": "get.1.0.comments",
+        "origin": "capture",
+        "analyzedAt": "2026-11-06T08:27:16.636Z"
+      },
+      "verification": {
+        "httpStatus": 404,
+        "note": "带前缀仍 404，参数形态存疑"
+      },
+      "paramDetail": [
+        {
+          "name": "containerid",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-inlinecomments-1-0-comments-replies",
+      "kind": "endpoint",
+      "resource": "评论与任务",
+      "method": "GET",
+      "path": "/confluence/rest/inlinecomments/1.0/comments/replies",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_c1554ab75c",
+        "commandName": "get.comments.replies",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-inlinetasks-id-task",
+      "kind": "endpoint",
+      "resource": "评论与任务",
+      "method": "GET",
+      "path": "/confluence/rest/inlinetasks/{id}/task",
+      "params": {
+        "id": "<id>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_f9745303ff",
+        "commandName": "get.inlinetasks.task",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "id",
+          "location": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-inlinetasks-id-task-report",
+      "kind": "endpoint",
+      "resource": "评论与任务",
+      "method": "GET",
+      "path": "/confluence/rest/inlinetasks/{id}/task-report",
+      "params": {
+        "id": "<id>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_d8edf47421",
+        "commandName": "get.inlinetasks.task-report",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/inlinetasks/{id}/task-report"
+      },
+      "paramDetail": [
+        {
+          "name": "id",
+          "location": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "delete-rest-synchrony-1-0-content",
+      "kind": "endpoint",
+      "resource": "协作同步（Synchrony）",
+      "method": "DELETE",
+      "path": "/confluence/rest/synchrony/1.0/content",
+      "params": {
+        "draftid": "<draftid>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "write",
+      "bodyEncoding": "json",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_509176d56b",
+        "commandName": "delete.1.0.content",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/synchrony/1.0/content"
+      },
+      "paramDetail": [
+        {
+          "name": "draftid",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "put-rest-synchrony-1-0-content",
+      "kind": "endpoint",
+      "resource": "协作同步（Synchrony）",
+      "method": "PUT",
+      "path": "/confluence/rest/synchrony/1.0/content",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "write",
+      "bodyEncoding": "json",
+      "note": "",
+      "source": {
+        "commandId": "cmd_3592d11978",
+        "commandName": "update.1.0.content",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-synchrony-1-0-token",
+      "kind": "endpoint",
+      "resource": "协作同步（Synchrony）",
+      "method": "GET",
+      "path": "/confluence/rest/synchrony/1.0/token",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_60be8a945a",
+        "commandName": "get.1.0.token",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-synchrony-proxy-heartbeat",
+      "kind": "endpoint",
+      "resource": "协作同步（Synchrony）",
+      "method": "GET",
+      "path": "/confluence/synchrony-proxy/heartbeat",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "observed",
+        "params": "observed",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "真实抓包观测到该端点被调用（端点与参数形态已观测，响应体未采样）。",
+      "source": {
+        "commandId": "cmd_b130b30f7b",
+        "commandName": "get.synchrony-proxy.heartbeat",
+        "origin": "capture",
+        "analyzedAt": "2026-11-06T08:27:16.636Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "post-synchrony-proxy-v1-data-id-id-2",
+      "kind": "endpoint",
+      "resource": "协作同步（Synchrony）",
+      "method": "POST",
+      "path": "/confluence/synchrony-proxy/v1/data/{id}/{id_2}",
+      "params": {
+        "id": "<id>",
+        "id_2": "<id_2>",
+        "cached": "true",
+        "rewrite_request": "true",
+        "state_at": "@head",
+        "state_format": "type-tagged",
+        "headers_content_type": "application/json",
+        "method": "GET"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "observed",
+        "params": "observed",
+        "response": "unknown"
+      },
+      "risk": "write",
+      "bodyEncoding": "json",
+      "note": "真实抓包观测到该端点被调用（端点与参数形态已观测，响应体未采样）。",
+      "source": {
+        "commandId": "cmd_edf720e771",
+        "commandName": "create.synchrony-proxy.data",
+        "origin": "capture",
+        "analyzedAt": "2026-11-06T08:27:16.636Z"
+      },
+      "paramDetail": [
+        {
+          "name": "id",
+          "location": "path",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "id_2",
+          "location": "path",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "cached",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "rewrite_request",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "state_at",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "state_format",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "headers_content_type",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "method",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-synchrony-heartbeat",
+      "kind": "endpoint",
+      "resource": "协作同步（Synchrony）",
+      "method": "GET",
+      "path": "/synchrony/heartbeat",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "observed",
+        "params": "observed",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "真实抓包观测到该端点被调用（端点与参数形态已观测，响应体未采样）。",
+      "source": {
+        "commandId": "cmd_949b1abde9",
+        "commandName": "get.synchrony.heartbeat",
+        "origin": "capture",
+        "analyzedAt": "2026-11-06T08:27:16.636Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-pages",
+      "kind": "endpoint",
+      "resource": "页面路由（非 REST，仅作重定向证据）",
+      "method": "GET",
+      "path": "/confluence/pages",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "实测 HTTP 302：服务端重定向；本仓按 fail-closed 不跟随。",
+      "source": {
+        "commandId": "cmd_b756bc5353",
+        "commandName": "get.confluence.pages",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "verification": {
+        "httpStatus": 302,
+        "note": "服务端重定向；本仓按 fail-closed 不跟随"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-download-resources",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "GET",
+      "path": "/confluence/download/resources",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径（实测 404）；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。 实测 HTTP 404：裸形态 404。",
+      "source": {
+        "commandId": "cmd_c787e894b4",
+        "commandName": "get.download.resources",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/download/resources"
+      },
+      "verification": {
+        "httpStatus": 404,
+        "note": "裸形态 404"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-download-resources-com-atlassian-plugins-editor-tinymcesource",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "GET",
+      "path": "/confluence/download/resources/com.atlassian.plugins.editor/tinymcesource",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_4bed8fd1b7",
+        "commandName": "get.com.atlassian.plugins.editor.tinymcesource",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/download/resources/com.atlassian.plugins.editor/tinymcesource"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-json-attachmentsearch-action",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "GET",
+      "path": "/confluence/json/attachmentsearch.action",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_dfec906360",
+        "commandName": "get.json.attachmentsearch",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/json/attachmentsearch.action"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-json-contentnamesearch-action",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "GET",
+      "path": "/confluence/json/contentnamesearch.action",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径（实测 404）；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。 实测 HTTP 404：裸形态 404。",
+      "source": {
+        "commandId": "cmd_155f85e682",
+        "commandName": "get.json.contentnamesearch",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/json/contentnamesearch.action"
+      },
+      "verification": {
+        "httpStatus": 404,
+        "note": "裸形态 404"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-json-draftattachmentsearch-action",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "GET",
+      "path": "/confluence/json/draftattachmentsearch.action",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_442cdcb492",
+        "commandName": "get.json.draftattachmentsearch",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/json/draftattachmentsearch.action"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "post-json-pagechildren-action",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "POST",
+      "path": "/confluence/json/pagechildren.action",
+      "params": {
+        "error": "<error>",
+        "pageid": "<pageid>",
+        "showchildren": "<showchildren>",
+        "success": "<success>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "write",
+      "bodyEncoding": "form",
+      "note": "",
+      "source": {
+        "commandId": "cmd_58450f4e2e",
+        "commandName": "create.json.pagechildren",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "error",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "pageid",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "showchildren",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "success",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "post-json-pagechildrenstoresettings-action",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "POST",
+      "path": "/confluence/json/pagechildrenstoresettings.action",
+      "params": {
+        "error": "<error>",
+        "pageid": "<pageid>",
+        "setting": "<setting>",
+        "showchildren": "<showchildren>",
+        "success": "<success>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "write",
+      "bodyEncoding": "form",
+      "note": "",
+      "source": {
+        "commandId": "cmd_dd41c7c884",
+        "commandName": "create.json.pagechildrenstoresettings",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "error",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "pageid",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "setting",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "showchildren",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "success",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-pages-createblogpost-action",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "GET",
+      "path": "/confluence/pages/createblogpost.action",
+      "params": {
+        "spacekey": "<spacekey>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_5a6520ff67",
+        "commandName": "get.pages.createblogpost",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/pages/createblogpost.action"
+      },
+      "paramDetail": [
+        {
+          "name": "spacekey",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-pages-createpage-entervariables-action",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "GET",
+      "path": "/confluence/pages/createpage-entervariables.action",
+      "params": {
+        "templateid": "<templateid>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_707eb269ae",
+        "commandName": "get.pages.createpage-entervariables",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "templateid",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-pages-createpage-action",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "GET",
+      "path": "/confluence/pages/createpage.action",
+      "params": {
+        "spacekey": "<spacekey>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_460bcc577e",
+        "commandName": "get.pages.createpage",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "spacekey",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-pages-doaddcomment-action",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "GET",
+      "path": "/confluence/pages/doaddcomment.action",
+      "params": {
+        "pageid": "<pageid>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_15b6617f40",
+        "commandName": "get.pages.doaddcomment",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "pageid",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-pages-doeditcomment-action",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "GET",
+      "path": "/confluence/pages/doeditcomment.action",
+      "params": {
+        "pageid": "<pageid>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_e949da92d0",
+        "commandName": "get.pages.doeditcomment",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "pageid",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-pages-rendercontent-action",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "GET",
+      "path": "/confluence/pages/rendercontent.action",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_e4406eaaea",
+        "commandName": "get.pages.rendercontent",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-pages-resumedraft-action",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "GET",
+      "path": "/confluence/pages/resumedraft.action",
+      "params": {
+        "draftid": "<draftid>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_76e814cbf0",
+        "commandName": "get.pages.resumedraft",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/pages/resumedraft.action"
+      },
+      "paramDetail": [
+        {
+          "name": "draftid",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-pages-viewpage-action",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "GET",
+      "path": "/confluence/pages/viewpage.action",
+      "params": {
+        "pageid": "<pageid>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_12a185e903",
+        "commandName": "get.pages.viewpage",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "pageid",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-api-id-field",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "GET",
+      "path": "/confluence/rest/api/{id}/field",
+      "params": {
+        "id": "<id>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_a33ad48c41",
+        "commandName": "get.field",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/api/{id}/field"
+      },
+      "paramDetail": [
+        {
+          "name": "id",
+          "location": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-api-content",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "GET",
+      "path": "/confluence/rest/api/content",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_462b4f8c58",
+        "commandName": "get.confluence.content",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "delete-rest-api-content",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "DELETE",
+      "path": "/confluence/rest/api/content",
+      "params": {
+        "contenttype": "<contenttype>",
+        "datatype": "<datatype>",
+        "draftid": "<draftid>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "write",
+      "bodyEncoding": "json",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_b89b3cb410",
+        "commandName": "delete.content",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/api/content"
+      },
+      "paramDetail": [
+        {
+          "name": "contenttype",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "datatype",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "draftid",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-api-search",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "GET",
+      "path": "/confluence/rest/api/search",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_6c22749f0c",
+        "commandName": "search.confluence",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-api-space",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "GET",
+      "path": "/confluence/rest/api/space",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_9b27170ae3",
+        "commandName": "get.confluence.space",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-api-user-watch-content",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "GET",
+      "path": "/confluence/rest/api/user/watch/content",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_b3a9567c01",
+        "commandName": "get.watch.content",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-api-user-watch-space",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "GET",
+      "path": "/confluence/rest/api/user/watch/space",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_ebc232d633",
+        "commandName": "get.watch.space",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-cql-contenttypes",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "GET",
+      "path": "/confluence/rest/cql/contenttypes",
+      "params": {
+        "category": "<category>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_8132a7d84e",
+        "commandName": "get.cql.contenttypes",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "category",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-cql-expressions",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "GET",
+      "path": "/confluence/rest/cql/expressions",
+      "params": {
+        "cql": "<cql>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_b98e2b0b36",
+        "commandName": "get.cql.expressions",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "cql",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-cql-fields",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "GET",
+      "path": "/confluence/rest/cql/fields",
+      "params": {
+        "filter": "<filter>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_c4854e1713",
+        "commandName": "get.cql.fields",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "filter",
+          "location": "query",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-prototype-id",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "GET",
+      "path": "/confluence/rest/prototype/{id}",
+      "params": {
+        "id": "<id>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_58a68e6ee8",
+        "commandName": "get.prototype",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z",
+        "barePath": "/rest/prototype/{id}"
+      },
+      "paramDetail": [
+        {
+          "name": "id",
+          "location": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-prototype-id-content",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "GET",
+      "path": "/confluence/rest/prototype/{id}/content",
+      "params": {
+        "id": "<id>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_aa18fe878d",
+        "commandName": "get.prototype.content",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "id",
+          "location": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-prototype-id-i18n",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "GET",
+      "path": "/confluence/rest/prototype/{id}/i18n",
+      "params": {
+        "id": "<id>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_8a19377c64",
+        "commandName": "get.prototype.i18n",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "id",
+          "location": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-prototype-id-search-user",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "GET",
+      "path": "/confluence/rest/prototype/{id}/search/user",
+      "params": {
+        "id": "<id>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_901f04ff7c",
+        "commandName": "get.search.user",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "id",
+          "location": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-prototype-id-space",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "GET",
+      "path": "/confluence/rest/prototype/{id}/space",
+      "params": {
+        "id": "<id>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_711fcf8a9f",
+        "commandName": "get.prototype.space",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "id",
+          "location": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-prototype-id-user-non-system",
+      "kind": "endpoint",
+      "resource": "页面与内容",
+      "method": "GET",
+      "path": "/confluence/rest/prototype/{id}/user/non-system",
+      "params": {
+        "id": "<id>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_4a54cdfc0a",
+        "commandName": "get.user.non-system",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": [
+        {
+          "name": "id",
+          "location": "path",
+          "required": true,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-easyuser-latest-refreshToken",
+      "kind": "endpoint",
+      "resource": "账号与组织",
+      "method": "GET",
+      "path": "/confluence/rest/easyuser/latest/refreshToken",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_b13a42e289",
+        "commandName": "get.latest.refreshtoken",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T05:16:44.634Z",
+        "barePath": "/rest/easyuser/latest/refreshToken"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-easyuser-latest-sendEmailOnInvite",
+      "kind": "endpoint",
+      "resource": "账号与组织",
+      "method": "GET",
+      "path": "/confluence/rest/easyuser/latest/sendEmailOnInvite",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_0fdd3ea00a",
+        "commandName": "get.latest.sendemailoninvite",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T05:16:44.634Z",
+        "barePath": "/rest/easyuser/latest/sendEmailOnInvite"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-rest-easyuser-latest-sendUserInvites",
+      "kind": "endpoint",
+      "resource": "账号与组织",
+      "method": "GET",
+      "path": "/confluence/rest/easyuser/latest/sendUserInvites",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_065a7b223e",
+        "commandName": "get.latest.senduserinvites",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T05:16:44.634Z",
+        "barePath": "/rest/easyuser/latest/sendUserInvites"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "post-rest-easyuser-latest-signup-setSignupSettings",
+      "kind": "endpoint",
+      "resource": "账号与组织",
+      "method": "POST",
+      "path": "/confluence/rest/easyuser/latest/signup/setSignupSettings",
+      "params": {
+        "contenttype": "<contenttype>",
+        "datatype": "<datatype>",
+        "processdata": "<processdata>",
+        "success": "<success>"
+      },
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "write",
+      "bodyEncoding": "json",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_8d7c122c31",
+        "commandName": "create.signup.setsignupsettings",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T05:16:44.634Z",
+        "barePath": "/rest/easyuser/latest/signup/setSignupSettings"
+      },
+      "paramDetail": [
+        {
+          "name": "contenttype",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "datatype",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "processdata",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "success",
+          "location": "body",
+          "required": false,
+          "type": "string"
+        }
+      ]
+    },
+    {
+      "id": "get-rest-easyuser-latest-undoTokenReset",
+      "kind": "endpoint",
+      "resource": "账号与组织",
+      "method": "GET",
+      "path": "/confluence/rest/easyuser/latest/undoTokenReset",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "derived",
+        "params": "derived",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "原始形态为裸路径；规范形态由同批 A/B 对照推得（同相对路径带前缀形态实测 200/403/302），本条带前缀形态未逐条实测。",
+      "source": {
+        "commandId": "cmd_199af37d13",
+        "commandName": "get.latest.undotokenreset",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T05:16:44.634Z",
+        "barePath": "/rest/easyuser/latest/undoTokenReset"
+      },
+      "paramDetail": []
+    },
+    {
+      "id": "get-users-profile-editmyprofilepicture-action",
+      "kind": "endpoint",
+      "resource": "账号与组织",
+      "method": "GET",
+      "path": "/confluence/users/profile/editmyprofilepicture.action",
+      "params": {},
+      "dataShape": "返回结构未采样（capture 通道未取到响应体，字段未知）",
+      "evidence": "derived",
+      "evidenceDetail": {
+        "endpoint": "inferred",
+        "params": "inferred",
+        "response": "unknown"
+      },
+      "risk": "read",
+      "note": "",
+      "source": {
+        "commandId": "cmd_f797a30f04",
+        "commandName": "get.profile.editmyprofilepicture",
+        "origin": "scan",
+        "analyzedAt": "2026-11-06T08:22:22.509Z"
+      },
+      "paramDetail": []
+    }
+  ],
+  "excluded": [
+    {
+      "host": "confluence.gaodunwangxiao.com",
+      "actions": [
+        "GET /a/i",
+        "GET /a/b",
+        "GET /images/icons/emoticons",
+        "GET /confluence/display/~",
+        "GET /confluence/s/zh_CN/{id}/{id_2}/_",
+        "GET /v1",
+        "GET /download",
+        "GET /confluence/wiki/contactadministrators.action",
+        "GET /data"
+      ],
+      "reason": "噪音路径 / 非 API 路由（扫描阶段未被噪音过滤拦下，本目录人工剔除）"
+    },
+    {
+      "host": "confluence.gaodunwangxiao.com",
+      "actions": [
+        "POST /rest/webResources/1.0/resources",
+        "GET /json/removewatch.action",
+        "GET /json/listwatchers.action",
+        "POST /json/pagechildrenstoresettings.action",
+        "POST /json/pagechildren.action",
+        "GET /rest/prototype/{id}/i18n",
+        "GET /rest/experimental/relation/user/current/favourite/toContent",
+        "GET /pages/breadcrumb.action",
+        "GET /pages/createpage.action",
+        "GET /rest/create-dialog/1.0/storage/quick-create",
+        "PUT /rest/create-dialog/1.0/storage/quick-create",
+        "GET /rest/create-dialog/1.0/spaces",
+        "GET /rest/create-dialog/1.0/blueprints/can-create-page",
+        "GET /pages/createpage-entervariables.action",
+        "GET /rest/create-dialog/1.0/spaces/skip-space-welcome-dialog",
+        "GET /ajax/spaceavailable.action",
+        "GET /rest/shortcuts/latest/shortcuts",
+        "GET /rest/confluenceshortcuts/latest/enabled",
+        "GET /plugins/servlet/hipchat/configure",
+        "GET /rest/hipchat/integration/1.0/users",
+        "GET /rest/mywork/latest/status/notification/count",
+        "GET /plugins/macrobrowser/browse-macros.action",
+        "GET /plugins/drag-and-drop/upload.action",
+        "GET /plugins/servlet/confluence/placeholder/unknown-attachment",
+        "GET /pages",
+        "GET /rest/quicknav/{id}/search"
+      ],
+      "reason": "同相对路径的裸形态重复条目（实测 404）与重复条目，已由带前缀的规范形态取代"
+    },
+    {
+      "host": "confluence.gaodunwangxiao.com",
+      "actions": [
+        "静态资源（.js/.css/.png/.map）"
+      ],
+      "reason": "扫描阶段按 includeStaticAssets=false 丢弃（本次跳过 24 个静态资源端点）"
+    },
+    {
+      "host": "confluence.gaodunwangxiao.com",
+      "actions": [
+        "埋点 / 监控类端点"
+      ],
+      "reason": "扫描阶段已忽略 1 个埋点端点，非业务数据"
+    }
+  ]
+}
