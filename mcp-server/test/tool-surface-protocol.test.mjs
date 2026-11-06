@@ -1,4 +1,5 @@
 import test from "node:test";
+import Ajv from "ajv";
 import assert from "node:assert/strict";
 import { createServer } from "node:net";
 import { randomUUID } from "node:crypto";
@@ -59,6 +60,45 @@ test("MCP protocol: default discovery returns exactly seven unique tools", { tim
     const { tools } = await client.listTools();
     assert.deepEqual(tools.map(tool => tool.name).sort(), [...expected].sort());
     for (const tool of tools) assert.equal(tool.inputSchema.type, "object");
+  });
+});
+
+test("MCP protocol: host root normalization preserves action schemas and strict branches", { timeout: 20000 }, async () => {
+  await withClient(async client => {
+    const { tools } = await client.listTools();
+    const ajv = new Ajv({ strict: false });
+    const valid = {
+      browser_page: [{ action: "list_tabs" }, { action: "navigate", url: "https://example.com" }],
+      browser_read: [{ action: "info" }, { action: "text", html: "<p>test</p>", format: "markdown" }],
+      browser_act: [{ action: "click", selector: "button" }, { action: "type", intent: "search", text: "test" }],
+      browser_debug: [{ action: "console" }, { action: "evaluate", expression: "1 + 1" }],
+      api_discover: [{ action: "start" }, { action: "scan_site", domain: "example.com", sources: [{ kind: "openapi", text: "{}" }] }],
+      api_commands: [{ action: "domains" }, { action: "list", domain: "example.com" }, { action: "get", name: "get.users" }],
+    };
+    for (const tool of tools.filter(tool => tool.inputSchema.oneOf)) {
+      const schema = tool.inputSchema;
+      assert.equal(Object.hasOwn(schema, "additionalProperties"), false);
+      assert.deepEqual(schema.required, ["action"]);
+      for (const branch of schema.oneOf) {
+        for (const key of Object.keys(branch.properties)) assert.ok(Object.hasOwn(schema.properties, key), `${tool.name}.${key}`);
+      }
+      // Reproduce the host transformation that previously rejected every action.
+      const check = ajv.compile({ ...schema, additionalProperties: false });
+      for (const args of valid[tool.name]) {
+        assert.equal(check(args), true, `${tool.name}: ${JSON.stringify(check.errors)}`);
+        assert.equal(check({ ...args, unexpected: true }), false);
+      }
+      assert.equal(check({}), false);
+      assert.equal(check({ action: "unknown" }), false);
+    }
+    const check = ajv.compile({ ...tools.find(t => t.name === "api_commands").inputSchema, additionalProperties: false });
+    assert.equal(check({ action: "domains", domain: "example.com" }), false);
+    assert.equal(check({ action: "get" }), false);
+    assert.equal(check({ action: "list", domain: 42 }), false);
+    const scan = ajv.compile({ ...tools.find(t => t.name === "api_discover").inputSchema, additionalProperties: false });
+    assert.equal(scan({ action: "scan_site", sources: [{ kind: "js", unexpected: true }] }), false);
+    // Old shape reproduces the failure with the same validator.
+    assert.equal(ajv.compile({ type: "object", properties: {}, additionalProperties: false, oneOf: tools.find(t => t.name === "api_commands").inputSchema.oneOf })({ action: "domains" }), false);
   });
 });
 

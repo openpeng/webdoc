@@ -99,8 +99,22 @@ export function createToolSurface(legacy: ToolDefinition[]) {
   const tools = order.map(name => {
     if (name === "api_call") return { ...catalog.get("call_api_command")!, name, inputSchema: callSchema };
     const routes = groups.get(name)!;
+    const oneOf = [...routes].map(([action, route]) => ({ ...route.schema, properties: { action: { type: "string", enum: [action] }, ...route.schema.properties }, required: ["action", ...route.schema.required] }));
+    // Some MCP hosts close the root object during schema normalization. Declare
+    // every branch field here so valid inputs survive that transformation;
+    // oneOf still rejects fields belonging to a different action.
+    const variants = new Map<string, Schema[]>();
+    for (const branch of oneOf) {
+      for (const [key, schema] of Object.entries(branch.properties)) {
+        const choices = variants.get(key) ?? [];
+        if (!choices.some(choice => JSON.stringify(choice) === JSON.stringify(schema))) choices.push(schema as Schema);
+        variants.set(key, choices);
+      }
+    }
+    const properties: Schema = Object.fromEntries([...variants].map(([key, choices]) => [key, choices.length === 1 ? choices[0] : { anyOf: choices }]));
+    properties.action = { type: "string", enum: [...routes.keys()] };
     return { name, description: `${descriptions[name]} actions: ${[...routes.keys()].join(" / ")}.`, inputSchema: {
-      type: "object", oneOf: [...routes].map(([action, route]) => ({ ...route.schema, properties: { action: { type: "string", enum: [action] }, ...route.schema.properties }, required: ["action", ...route.schema.required] })),
+      type: "object", properties, required: ["action"], oneOf,
     } };
   });
   return {
