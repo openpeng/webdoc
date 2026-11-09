@@ -76,6 +76,29 @@ function stripEmptyQuerySegments(url: string, missing: Set<string>): string {
 }
 
 /**
+ * 表单编码（application/x-www-form-urlencoded）请求体编码。
+ *
+ * 语义与 `URLSearchParams` 一致：空格编成 `+`，其余按 percent-encoding；
+ * 键名与值都编码，绝不出现裸分隔符（值里的 `&` / `=` 不会截断字段）。
+ * 对象 / 数组值按 JSON 字符串落盘（表单值只能是字符串）。
+ */
+function encodeFormBody(fields: Record<string, unknown>): string {
+  const encodeComponent = (text: string): string => encodeURIComponent(text).replace(/%20/g, "+");
+  return Object.entries(fields).map(([key, value]) => {
+    const text = typeof value === "string" ? value
+      : (typeof value === "number" || typeof value === "boolean") ? String(value)
+        : JSON.stringify(value);
+    return `${encodeComponent(key)}=${encodeComponent(text)}`;
+  }).join("&");
+}
+
+/** 请求头里是否已存在指定字段（大小写不敏感）。 */
+function hasHeader(headers: Record<string, string>, name: string): boolean {
+  const lower = name.toLowerCase();
+  return Object.keys(headers).some((key) => key.toLowerCase() === lower);
+}
+
+/**
  * 校验调用方提供的参数：
  *  - 必填缺失 → missingParams[]（除非该参数有安全 defaultValue 可兜底）；
  *  - 类型不符 / 未知参数 / 值级 allowedValues 不符 → invalidParams[]。
@@ -183,6 +206,8 @@ export function renderRequest(
 
   let body: string | undefined;
   const template = command.request.bodyTemplate;
+  // bodyFormat 缺省即 json —— 与本字段引入前的渲染行为完全等价。
+  const bodyFormat = command.request.bodyFormat === "form" ? "form" : "json";
   if (template && typeof template === "object" && !Array.isArray(template)) {
     const out: Record<string, unknown> = {};
     for (const [key, raw] of Object.entries(template)) {
@@ -195,7 +220,9 @@ export function renderRequest(
         out[key] = raw;                    // 仅安全字面量（缓存加载侧已校验）
       }
     }
-    if (Object.keys(out).length > 0) body = JSON.stringify(out);
+    if (Object.keys(out).length > 0) {
+      body = bodyFormat === "form" ? encodeFormBody(out) : JSON.stringify(out);
+    }
   }
 
   // 【放开·绿区】请求头合并：
@@ -220,6 +247,11 @@ export function renderRequest(
     for (const [key, value] of Object.entries(extraHeaders)) merged[key] = value;
   }
   const headers = sanitizeRequestHeaders(merged);
+  // 表单编码必须带对应的 Content-Type，否则服务端按 JSON 解析会直接报错。
+  // 命令自带 / 调用方传入的 content-type 优先（不覆盖人工指定）。
+  if (bodyFormat === "form" && body !== undefined && !hasHeader(headers, "content-type")) {
+    headers["Content-Type"] = "application/x-www-form-urlencoded";
+  }
 
   return {
     url,

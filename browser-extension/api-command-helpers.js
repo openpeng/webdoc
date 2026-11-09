@@ -188,7 +188,7 @@ const COMMAND_FORBIDDEN_KEYS = [
   'computed', 'script', 'eval', 'function', 'headers', 'cookie', 'authorization',
   'token', 'secret', 'csrf', 'prototype', 'constructor', '__proto__'
 ];
-const REQUEST_TEMPLATE_ALLOWED_KEYS = ['method', 'urlTemplate', 'pathTemplate', 'bodyTemplate', 'queryTemplate', 'headers'];
+const REQUEST_TEMPLATE_ALLOWED_KEYS = ['method', 'urlTemplate', 'pathTemplate', 'bodyTemplate', 'queryTemplate', 'headers', 'bodyFormat'];
 const API_PARAM_ALLOWED_KEYS = ['name', 'location', 'type', 'required', 'description', 'enumCount', 'allowedValues', 'constant', 'defaultValue'];
 const SCHEMA_FIELD_ALLOWED_KEYS = ['path', 'type', 'array', 'isPagination', 'redacted'];
 const RESPONSE_SCHEMA_ALLOWED_KEYS = ['fields', 'depthLimited', 'sampleCount'];
@@ -322,6 +322,11 @@ const MISSING_SAMPLE_REVIEW_REASON = '缺少响应体样本，responseSchema 为
 const LOW_CONFIDENCE_REVIEW_REASON = '置信度低于 0.6，请人工复核参数与响应结构';
 const ANALYZE_CURRENT_REVIEW_REASON = 'analyze_current 兼容入口不做响应体采样，产物强制需人工复核且 responseSchema 为空';
 const NON_JSON_BODY_REVIEW_REASON = '请求体不是 JSON 对象，未生成 bodyTemplate，请人工复核';
+/**
+ * 表单编码请求体（application/x-www-form-urlencoded）：已按表单形态生成 bodyTemplate。
+ * 表单体是扁平字符串映射（嵌套结构无法表达），字段映射仍需人工确认一次。
+ */
+const FORM_BODY_REVIEW_REASON = '请求体为表单编码（x-www-form-urlencoded），已按表单形态生成 bodyTemplate，请人工复核字段映射';
 const UNSAFE_CONSTANT_REVIEW_REASON = '检测到不安全常量或敏感字段名，已转为必填参数或丢弃，请人工复核';
 const STALE_MANUAL_WARNING = '人工修正命令未在本次分析中观测到，已保留并标记 stale；如需删除请设置 overwriteManual=true';
 const NO_CACHE_LIST_WARNING = '该域名尚无命令集，请调用 analyze_page_apis 进行页面分析';

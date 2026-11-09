@@ -274,7 +274,7 @@ export const COMMAND_STEP_ALLOWED_KEYS = [
   "name", "commandId", "params", "risk", "note",
 ] as const;
 
-export const REQUEST_TEMPLATE_ALLOWED_KEYS = ["method", "urlTemplate", "pathTemplate", "bodyTemplate", "queryTemplate", "headers"] as const;
+export const REQUEST_TEMPLATE_ALLOWED_KEYS = ["method", "urlTemplate", "pathTemplate", "bodyTemplate", "queryTemplate", "headers", "bodyFormat"] as const;
 export const API_PARAM_ALLOWED_KEYS = ["name", "location", "type", "required", "description", "enumCount", "allowedValues", "constant", "defaultValue"] as const;
 export const SCHEMA_FIELD_ALLOWED_KEYS = ["path", "type", "array", "isPagination", "redacted"] as const;
 export const RESPONSE_SCHEMA_ALLOWED_KEYS = ["fields", "depthLimited", "sampleCount"] as const;
@@ -407,6 +407,12 @@ export const LOW_CONFIDENCE_REVIEW_REASON = "置信度低于 0.6，请人工复�
 /** analyze_current 兼容入口：强制 needsReview + responseSchema 为空。 */
 export const ANALYZE_CURRENT_REVIEW_REASON = "analyze_current 兼容入口不做响应体采样，产物强制需人工复核且 responseSchema 为空";
 export const NON_JSON_BODY_REVIEW_REASON = "请求体不是 JSON 对象，未生成 bodyTemplate，请人工复核";
+/**
+ * 表单编码请求体（application/x-www-form-urlencoded）：已按表单形态生成 bodyTemplate。
+ *
+ * 表单体是**扁平字符串**映射（嵌套结构无法表达），字段映射仍需人工确认一次。
+ */
+export const FORM_BODY_REVIEW_REASON = "请求体为表单编码（x-www-form-urlencoded），已按表单形态生成 bodyTemplate，请人工复核字段映射";
 /** 不安全常量 / 敏感字段名：reason 只说原因，绝不写字段名以外的值。 */
 export const UNSAFE_CONSTANT_REVIEW_REASON = "检测到不安全常量或敏感字段名，已转为必填参数或丢弃，请人工复核";
 export const STALE_MANUAL_WARNING = "人工修正命令未在本次分析中观测到，已保留并标记 stale；如需删除请设置 overwriteManual=true";
@@ -417,6 +423,27 @@ export const CACHE_WRITE_SKIPPED_WARNING = "缓存写入已跳过：写盘前重
 export const CACHE_LOAD_FAILED_WARNING = "缓存读取失败，本次只写入本次新增/改动的域名，其余域名以磁盘内容为准";
 /** inferParams 用此前缀标记「不安全常量已转必填参数」，generateCommands 据此生成 needsReview。 */
 export const NEEDS_REVIEW_DESCRIPTION_PREFIX = "[需人工复核] ";
+
+/**
+ * 命令级请求体形态：json（缺省）/ form。
+ *
+ * `form` 对应 `application/x-www-form-urlencoded`（表单编码）—— 阿里云控制台网关等
+ * 「同一 URL + 动作名在 query + 参数在 form body」的接口形态。缺省即 json，
+ * 与本字段引入前的产物形状**完全等价**（旧缓存无需迁移）。
+ */
+export const BODY_FORMATS = ["json", "form"] as const;
+export type BodyFormat = typeof BODY_FORMATS[number];
+
+/**
+ * 记录级请求体形态：
+ *   none  = 无请求体；
+ *   json  = JSON 对象，可被命令模型完整承载；
+ *   form  = 表单编码，可被命令模型完整承载（扁平字符串映射）；
+ *   other = **有请求体但形态无法表示**（如纯文本 / 二进制 / JSON 数组），
+ *           此时绝不生成 bodyTemplate，并显式进 needsReview（不做静默截断）。
+ */
+export const BODY_ENCODINGS = ["none", "json", "form", "other"] as const;
+export type BodyEncoding = typeof BODY_ENCODINGS[number];
 
 // ============================================================================
 // 10b. 证据分级 / 歧义 / 覆盖率的固定文案（全部不含样本值、host 值、URL 值）
@@ -480,6 +507,13 @@ export interface NormalizedRecord {
   queryPairs: Array<{ name: string; value: string }>;
   bodyFields: Array<{ name: string; value: unknown; type: ParamType }>; // 值只在内存
   bodyIsJson: boolean;
+  /**
+   * 请求体形态（权威值）。
+   *
+   * 缺省时由 `resolveBodyEncoding()` 按既有事实回退推导（见 api-command-normalize.ts）：
+   * bodyIsJson=true → json；有 body 字段且非 JSON → form；其余 → none。
+   */
+  bodyFormat?: BodyEncoding;
   status: number;
   mimeType: string;
   resourceType?: string;
@@ -539,6 +573,11 @@ export interface RequestTemplate {
   urlTemplate: string;            // 绝对 URL 模板，含 {{param}}；host 精确 === domain
   pathTemplate: string;           // 含 {id} 的规范化路径
   bodyTemplate?: Record<string, unknown> | null;  // 只含安全字面量与 "{{param}}" 占位
+  /**
+   * 请求体编码形态：缺省即 `json`（与本字段引入前完全等价）。
+   * `form` 时 bodyTemplate 按 `application/x-www-form-urlencoded` 编码下发。
+   */
+  bodyFormat?: BodyFormat;
   queryTemplate?: Record<string, string>;
   /** 【放开·绿区】命令自带的请求头模板：值可以是字面量或 "{{param}}" 占位。 */
   headers?: Record<string, string>;

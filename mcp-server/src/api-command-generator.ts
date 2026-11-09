@@ -17,12 +17,12 @@ import {
   VERSION_PATH_SEGMENT_RE, GENERIC_PATH_SEGMENTS, FILTER_PARAM_NAME_HINTS,
   POST_LIST_QUERY_REVIEW_REASON, NAME_CONFLICT_REVIEW_REASON,
   MISSING_SAMPLE_REVIEW_REASON, LOW_CONFIDENCE_REVIEW_REASON,
-  ANALYZE_CURRENT_REVIEW_REASON, NON_JSON_BODY_REVIEW_REASON,
+  ANALYZE_CURRENT_REVIEW_REASON, NON_JSON_BODY_REVIEW_REASON, FORM_BODY_REVIEW_REASON,
   UNSAFE_CONSTANT_REVIEW_REASON, NEEDS_REVIEW_DESCRIPTION_PREFIX,
   MAX_RESPONSE_FIELDS,
 } from "./api-command-types.js";
 import {
-  normalizeHostname, endpointKey, inferParams, redactHeaderNames,
+  normalizeHostname, endpointKey, inferParams, redactHeaderNames, resolveBodyEncoding,
   isForbiddenParamName, isSensitiveFieldName, sanitizeParamName,
 } from "./api-command-normalize.js";
 import { deriveResponseFields, emptyResponseSchema } from "./api-command-response-schema.js";
@@ -30,6 +30,7 @@ import { deriveProvenance } from "./api-command-evidence.js";
 import type {
   HttpMethod, Risk, EndpointGroup, ApiCommand, ApiParam, RequestTemplate,
   ResponseSchema, ReviewItem, GenerateContext, GenerationResult, CommandSourceOrigin,
+  BodyFormat, BodyEncoding,
 } from "./api-command-types.js";
 
 // ---------------------------------------------------------------------------
@@ -189,18 +190,50 @@ function buildQueryTemplate(params: ApiParam[]): Record<string, string> {
 }
 
 /**
+ * 组级请求体形态判定。
+ *
+ * json 与 form 同时出现 → `other`（组内形态不一致，无法忠实表示，**歧义只记录不猜**）；
+ * 否则按 json > form > other > none 取唯一形态。
+ */
+export function groupBodyEncoding(group: EndpointGroup): BodyEncoding {
+  let sawJson = false;
+  let sawForm = false;
+  let sawOther = false;
+  for (const rec of Array.isArray(group?.records) ? group.records : []) {
+    const encoding = resolveBodyEncoding(rec);
+    if (encoding === "json") sawJson = true;
+    else if (encoding === "form") sawForm = true;
+    else if (encoding === "other") sawOther = true;
+  }
+  if (sawJson && sawForm) return "other";
+  if (sawJson) return "json";
+  if (sawForm) return "form";
+  if (sawOther) return "other";
+  return "none";
+}
+
+/**
  * body 模板：恒定参数同样写成 `{{name}}` 占位符（number / boolean 也在渲染时按调用方给的类型回填）。
  * 与 query 一致，保证「调用方传值一定生效」。
+ *
+ * 【P1 修复】表单编码（application/x-www-form-urlencoded）的请求体现在**也能**生成模板，
+ * 并带上 `bodyFormat: "form"`，由渲染层按表单形态编码下发。
+ * 只有 json / form 两种形态可被命令模型完整承载；其余（other）一律不生成模板。
  */
-function buildBodyTemplate(group: EndpointGroup, params: ApiParam[]): Record<string, unknown> | null {
-  const hasJsonBody = group.records.some((rec) => rec.bodyIsJson && rec.bodyFields.length > 0);
-  if (!hasJsonBody) return null;
+function buildBodyTemplate(
+  group: EndpointGroup,
+  params: ApiParam[],
+): { template: Record<string, unknown> | null; format: BodyFormat | null } {
+  const encoding = groupBodyEncoding(group);
+  if (encoding !== "json" && encoding !== "form") return { template: null, format: null };
   const out: Record<string, unknown> = {};
   for (const param of params) {
     if (param.location !== "body") continue;
     out[param.name] = `{{${param.name}}}`;
   }
-  return Object.keys(out).length > 0 ? out : null;
+  return Object.keys(out).length > 0
+    ? { template: out, format: encoding }
+    : { template: null, format: null };
 }
 
 function buildRequest(
@@ -217,12 +250,15 @@ function buildRequest(
     .map(([key, value]) => `${encodeURIComponent(key)}=${value}`)
     .join("&");
   const urlTemplate = `${scheme}://${domain}${renderedPath}${queryString ? `?${queryString}` : ""}`;
+  const body = buildBodyTemplate(group, params);
   return {
     method: group.method,
     urlTemplate,
     pathTemplate,
-    bodyTemplate: buildBodyTemplate(group, params),
+    bodyTemplate: body.template,
     queryTemplate,
+    // bodyFormat 缺省即 json —— 与本字段引入前的产物形状完全等价（旧缓存无需迁移）。
+    ...(body.template && body.format === "form" ? { bodyFormat: "form" as const } : {}),
   };
 }
 
@@ -239,7 +275,10 @@ export function computeConfidence(group: EndpointGroup, params: ApiParam[], sche
   if (schema.sampleCount > 0 && schema.fields.length > 0) score += 0.2;
   score += 0.05; // method 来源于 CDP 真实 HTTP（normalizeRecords 已剔除 XHR/fetch 伪值）
   if (group.pathParams.length > 0) score -= 0.05;
-  if (group.records.some((rec) => !rec.bodyIsJson && rec.bodyFields.length > 0)) score -= 0.1;
+  // 【P1 修复】表单编码的请求体现在能被完整承载，但表单体是「扁平字符串映射」，
+  // 嵌套结构无法表达 —— 置信度仍按「非 JSON 体」保守扣分（与修复前同档）。
+  const bodyEncoding = groupBodyEncoding(group);
+  if (bodyEncoding === "form" || bodyEncoding === "other") score -= 0.1;
   if (params.some((param) => typeof param.description === "string"
     && param.description.startsWith(NEEDS_REVIEW_DESCRIPTION_PREFIX))) score -= 0.1;
   return Math.round(Math.min(1, Math.max(0, score)) * 100) / 100;
@@ -257,8 +296,14 @@ function hasSensitiveObservedField(group: EndpointGroup): boolean {
   return false;
 }
 
-function hasNonJsonBody(group: EndpointGroup): boolean {
-  return group.records.some((rec) => rec.bodyFields.length > 0 && !rec.bodyIsJson);
+/** 请求体形态无法被命令模型承载（有体但解析不出字段 / 组内形态不一致）→ 不生成 bodyTemplate。 */
+function hasUnrepresentableBody(group: EndpointGroup): boolean {
+  return groupBodyEncoding(group) === "other";
+}
+
+/** 请求体为表单编码：已生成 bodyTemplate，但字段映射需人工确认一次。 */
+function hasFormBody(group: EndpointGroup): boolean {
+  return groupBodyEncoding(group) === "form";
 }
 
 function collectReviewReasons(
@@ -281,7 +326,8 @@ function collectReviewReasons(
   if (params.some((param) => typeof param.description === "string"
     && param.description.startsWith(NEEDS_REVIEW_DESCRIPTION_PREFIX))) add(UNSAFE_CONSTANT_REVIEW_REASON);
   if (hasSensitiveObservedField(group)) add(UNSAFE_CONSTANT_REVIEW_REASON);
-  if (hasNonJsonBody(group)) add(NON_JSON_BODY_REVIEW_REASON);
+  if (hasUnrepresentableBody(group)) add(NON_JSON_BODY_REVIEW_REASON);
+  if (hasFormBody(group)) add(FORM_BODY_REVIEW_REASON);
   if (confidence < 0.6) add(LOW_CONFIDENCE_REVIEW_REASON);
   return reasons;
 }

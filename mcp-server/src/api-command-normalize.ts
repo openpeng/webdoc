@@ -20,11 +20,12 @@ import {
   HOSTNAME_PATTERN, API_SENSITIVE_HEADER_RE, HEADER_NAME_PATTERN,
   API_COMMAND_FORBIDDEN_HEADERS, MAX_HEADER_VALUE_LENGTH,
   STATIC_RESOURCE_TYPES, STATIC_ASSET_EXTENSIONS, TELEMETRY_PATH_KEYWORDS,
-  NEEDS_REVIEW_DESCRIPTION_PREFIX,
+  NEEDS_REVIEW_DESCRIPTION_PREFIX, BODY_ENCODINGS,
 } from "./api-command-types.js";
 import type {
   RawCapturedRecord, NormalizedRecord, EndpointGroup, ApiParam, HttpMethod,
   ParamType, FilterCandidatesOptions, FilterResult, PathTemplateResult, ParsedBodyFields,
+  BodyEncoding,
 } from "./api-command-types.js";
 
 // ---------------------------------------------------------------------------
@@ -327,6 +328,30 @@ export function parseBodyFields(postData: string | null | undefined): ParsedBody
   return { fields: [], isJson: false };
 }
 
+/**
+ * 记录级请求体形态判定（**单一事实源**）。
+ *
+ * 优先取记录自带的 `bodyFormat`（归一化时写入）；缺省时按既有事实回退推导：
+ *   - `bodyIsJson === true` → `json`；
+ *   - 有 body 字段且非 JSON → `form`（归一化层只有 urlencoded 分支会解析出非 JSON 字段）；
+ *   - 其余 → `none`。
+ *
+ * 回退是**推导**而非猜测：字段非空且非 JSON，只可能来自 urlencoded 解析分支。
+ * 旧构造的记录（没有 bodyFormat）因此保持原有语义，产物形状不变。
+ */
+export function resolveBodyEncoding(
+  record: { bodyIsJson?: boolean; bodyFormat?: BodyEncoding; bodyFields?: unknown[] } | null | undefined,
+): BodyEncoding {
+  if (!record || typeof record !== "object") return "none";
+  const declared = record.bodyFormat;
+  if (typeof declared === "string" && (BODY_ENCODINGS as readonly string[]).includes(declared)) {
+    return declared as BodyEncoding;
+  }
+  if (record.bodyIsJson === true) return "json";
+  const fields = Array.isArray(record.bodyFields) ? record.bodyFields : [];
+  return fields.length > 0 ? "form" : "none";
+}
+
 // ---------------------------------------------------------------------------
 // 阶段 1→2：CDP 记录归一化
 // ---------------------------------------------------------------------------
@@ -357,6 +382,13 @@ export function normalizeRecords(raw: RawCapturedRecord[], domain: string): Norm
       if (name) queryPairs.push({ name, value });
     }
     const parsedBody = parseBodyFields(item.postData ?? undefined);
+    // 请求体形态：能解析出字段 → json（对象）/ form（表单编码）；
+    // 有体但解析不出字段（纯文本 / 二进制 / 空对象）→ other（无法承载，绝不静默丢弃）。
+    const hasBody = item.hasPostData === true
+      || (typeof item.postData === "string" && item.postData.trim().length > 0);
+    const bodyFormat: BodyEncoding = parsedBody.fields.length > 0
+      ? (parsedBody.isJson ? "json" : "form")
+      : (hasBody ? "other" : "none");
     const headerNames = Array.isArray(item.headerNames)
       ? [...new Set(
           item.headerNames
@@ -374,6 +406,7 @@ export function normalizeRecords(raw: RawCapturedRecord[], domain: string): Norm
       queryPairs,
       bodyFields: parsedBody.fields,
       bodyIsJson: parsedBody.isJson,
+      bodyFormat,
       status: Number.isFinite(item.status) ? Number(item.status) : 0,
       mimeType: typeof item.mimeType === "string" ? item.mimeType : "",
       resourceType: typeof item.resourceType === "string" ? item.resourceType : undefined,

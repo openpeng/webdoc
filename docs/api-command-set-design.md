@@ -496,6 +496,8 @@ export interface RequestTemplate {
   urlTemplate: string;            // 绝对 URL 模板，含 {{param}}；host 精确 === domain
   pathTemplate: string;           // 含 {id} 的规范化路径
   bodyTemplate?: Record<string, unknown> | null;  // 只含安全字面量与 "{{param}}" 占位
+  /** 请求体编码形态：缺省即 json（与该字段引入前完全等价）；form = x-www-form-urlencoded */
+  bodyFormat?: BodyFormat;
   queryTemplate?: Record<string, string>;
 }
 
@@ -565,6 +567,32 @@ export interface CommandSummary {
   manuallyEdited: boolean;
 }
 ```
+
+### 3.3b 请求体编码形态（`bodyFormat`）
+
+请求体不是只有 JSON 一种形态。阿里云控制台网关这类接口用
+`application/x-www-form-urlencoded`（表单编码），修复前命令会**丢掉整个请求体** →
+「URL 正确、body 为空」→ 服务端按缺参拒绝。
+
+**两档形态，缺省即 json**（与 `bodyFormat` 引入前的产物形状、渲染行为逐字等价，旧缓存无需迁移）：
+
+| 形态 | 判定 | 渲染 | Content-Type |
+|---|---|---|---|
+| `json`（缺省） | 体解析为 JSON 对象 | `JSON.stringify` | 由扩展侧默认补 `application/json` |
+| `form` | 体解析为 urlencoded 字段 | `encodeFormBody()`：键值都百分号编码，空格编成 `+`（与 `URLSearchParams` 一致），对象/数组按 JSON 字符串落盘 | 渲染层补 `application/x-www-form-urlencoded`（命令自带 / 调用方传入的 content-type 优先） |
+
+**记录级形态判定**（`api-command-normalize.ts` 的 `resolveBodyEncoding()`，单一事实源）：
+
+| 记录级 | 含义 | 命令产物 |
+|---|---|---|
+| `none` | 无请求体 | 不生成 bodyTemplate |
+| `json` | JSON 对象 | bodyTemplate + `bodyFormat` 缺省 |
+| `form` | 表单编码 | bodyTemplate + `bodyFormat:"form"` + `FORM_BODY_REVIEW_REASON`（字段映射需人工确认一次） |
+| `other` | **有请求体但形态无法表示**（纯文本 / 二进制 / 空对象 / JSON 数组），或组内形态不一致 | **不生成 bodyTemplate**，显式进 `needsReview`（`NON_JSON_BODY_REVIEW_REASON`）—— 不做静默截断 |
+
+旧记录（没有记录级形态字段）按既有事实回退推导：`bodyIsJson=true → json`；
+有 body 字段且非 JSON → `form`（归一化层只有 urlencoded 分支会解析出非 JSON 字段）；
+其余 → `none`。回退是**推导**不是猜测。
 
 ### 3.4 缓存文件结构
 
@@ -1469,7 +1497,7 @@ graph TD
 
 ```
 commandId, name, domain, risk, confidence, schemaVersion, manuallyEdited, deprecated, note,
-request{ method, urlTemplate, pathTemplate, bodyTemplate, queryTemplate },
+request{ method, urlTemplate, pathTemplate, bodyTemplate, queryTemplate, headers, bodyFormat },
 params[]{ name, location, type, required, description, enumCount, allowedValues, constant, defaultValue },
 responseFields[], responseSchema{ fields[], depthLimited, sampleCount },
 redactedHeaderNames[], source{ analysisId, analyzedAt, generatedBy },

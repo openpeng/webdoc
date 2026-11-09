@@ -27,7 +27,7 @@ import {
   PARAM_RESERVED_NAMES, COMMAND_SOURCE_ORIGINS, COMMAND_STEP_ALLOWED_KEYS,
   MAX_COMPOSITE_STEPS, MAX_JSONPATH_LENGTH, MAX_JSONPATH_SEGMENTS,
   ERROR_SAFE_MESSAGES, STALE_MANUAL_WARNING, NO_CACHE_LIST_WARNING,
-  CACHE_WRITE_SKIPPED_WARNING, CACHE_LOAD_FAILED_WARNING,
+  CACHE_WRITE_SKIPPED_WARNING, CACHE_LOAD_FAILED_WARNING, BODY_FORMATS,
 } from "./api-command-types.js";
 import {
   normalizeHostname, isValidHostname, isSafeLiteral, isSensitiveFieldName,
@@ -41,7 +41,7 @@ import type {
   ApiCommand, ApiParam, ApiCommandCacheFile, DomainBucket, CacheLoadDiagnostics,
   CacheReport, CommandCard, CommandSummary, ListResult, AnalysisDiff, AnalysisMode,
   RequestTemplate, ResponseSchema, SchemaField, CommandHealth, Risk, HttpMethod,
-  ApiErrorCode, CommandSourceOrigin, CommandStep, CommandProvenance,
+  ApiErrorCode, CommandSourceOrigin, CommandStep, CommandProvenance, BodyFormat,
 } from "./api-command-types.js";
 
 // ===========================================================================
@@ -213,6 +213,15 @@ function rebuildRequestTemplate(
 
   const bodyRebuild = rebuildBodyTemplate(raw.bodyTemplate, host, commandId, diag);
   if (!bodyRebuild.ok) return bodyRebuild;
+  // 请求体编码形态：缺省即 json（旧缓存无需迁移）；只允许 json / form 两个字面量。
+  let bodyFormat: BodyFormat | undefined;
+  if (raw.bodyFormat !== undefined && raw.bodyFormat !== null) {
+    if (typeof raw.bodyFormat !== "string"
+      || !(BODY_FORMATS as readonly string[]).includes(raw.bodyFormat)) {
+      return failRebuild(diag, host, commandId, "request.bodyFormat 非法（只允许 json / form）");
+    }
+    bodyFormat = raw.bodyFormat as BodyFormat;
+  }
   const queryRebuild = rebuildQueryTemplate(raw.queryTemplate, host, commandId, diag);
   if (!queryRebuild.ok) return queryRebuild;
   const headerRebuild = rebuildHeaderTemplate(raw.headers, host, commandId, diag);
@@ -226,6 +235,7 @@ function rebuildRequestTemplate(
       pathTemplate,
       bodyTemplate: bodyRebuild.value,
       queryTemplate: queryRebuild.value,
+      ...(bodyFormat ? { bodyFormat } : {}),
       ...(Object.keys(headerRebuild.value).length > 0 ? { headers: headerRebuild.value } : {}),
     },
   };
