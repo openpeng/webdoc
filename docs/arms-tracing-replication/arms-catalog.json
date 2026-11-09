@@ -1,0 +1,1145 @@
+{
+  "version": 1,
+  "site": {
+    "name": "阿里云应用实时监控服务（ARMS）应用监控控制台",
+    "pageUrl": "https://armsnext.console.aliyun.com/tracing#/tracing/cn-hangzhou?appId=<appId>&tab=appOverview&source=TRACE&language=java",
+    "pageOrigin": "armsnext.console.aliyun.com",
+    "apiHosts": [
+      "fecs.console.aliyun.com"
+    ],
+    "region": "cn-hangzhou",
+    "regionNote": "fecs 主机名按地域后缀切换：cn-* → fecs.console.aliyun.com；海外地域 → fecs.console.aliyuncs.com"
+  },
+  "transport": {
+    "kind": "rpc-gateway",
+    "product": "arms",
+    "endpoint": "/data/api.json",
+    "method": "POST",
+    "contentType": "application/x-www-form-urlencoded",
+    "body": "product=arms&action=<ActionName>&region=<RegionId>&params=<URL编码的 JSON 字符串>",
+    "batch": {
+      "endpoint": "/data/v2/multiApi.json",
+      "query": "<Action1>~<Action2>~...",
+      "body": "product=arms&actions=[{\"action\":\"...\",\"params\":{...}}, ...]",
+      "responseIndex": "data 以 \"0\",\"1\",\"2\" 为键，每项含 success / code / data"
+    },
+    "auth": {
+      "required": [
+        "Cookie: login_aliyunid_ticket (+ login_aliyunid_sc / login_aliyunid / login_aliyunid_pk / login_current_pk)",
+        "Origin: https://armsnext.console.aliyun.com",
+        "Referer: https://armsnext.console.aliyun.com/tracing"
+      ],
+      "abMatrix": {
+        "A_无cookie无origin": "code=403 Forbidden",
+        "B_无cookie有origin": "code=ConsoleNeedLogin",
+        "C_有cookie无origin": "code=403 Forbidden",
+        "D_有cookie有origin": "code=200"
+      },
+      "conclusion": "Cookie 与 Origin/Referer 缺一不可；两者都齐才返回业务数据",
+      "sameSiteNote": "login_aliyunid_ticket 的 SameSite=Lax —— 浏览器扩展后台发起的跨站 fetch 带不上它，因此「扩展上下文执行」这条路对 ARMS 必然失败",
+      "excluded": [
+        "armsnext.console.aliyun.com / fecs.console.aliyun.com 上带 _fetcher_ 的控制台壳 API（需要 collina 反爬签名）"
+      ]
+    },
+    "response": {
+      "envelope": "{requestId, code, message, httpStatusCode, data, successResponse, ...}",
+      "successRule": "code === \"200\"（字符串）；非 200 时 message 给出原因，如 ParameterMissing / ConsoleNeedLogin / InvalidAction.NotFound",
+      "doubleEncodedFields": [
+        "data.Data"
+      ]
+    },
+    "endpointTypes": {
+      "OPEN": "/data/api.json",
+      "INNER": "/data/innerApi.json",
+      "CONTAINER": "/data/call.json",
+      "HTTP": "/data/httpApi.json",
+      "CUSTOM": "/data/custom.json",
+      "OPEN_MULTI": "/data/v2/multiApi.json",
+      "OPEN_MULTI_LEGACY": "/data/multiApi.json"
+    }
+  },
+  "resources": [
+    {
+      "id": "应用与配置",
+      "description": "应用元信息、模块开关与探针配置"
+    },
+    {
+      "id": "拓扑与聚合指标",
+      "description": "调用链拓扑、慢接口统计、指标聚合"
+    },
+    {
+      "id": "调用链 Trace",
+      "description": "链路列表、链路详情、调用栈"
+    },
+    {
+      "id": "实例与探针",
+      "description": "应用实例、探针版本与运行时长"
+    },
+    {
+      "id": "告警与事件",
+      "description": "告警事件列表与链路追踪开关状态"
+    },
+    {
+      "id": "标签与资源组",
+      "description": "实例标签、资源组（多属 ResourceManager / tag 产品）"
+    },
+    {
+      "id": "数据源与 SLS",
+      "description": "SLS 数据源位置、自定义数据源字段"
+    },
+    {
+      "id": "商业化与配额",
+      "description": "商业化状态、SLR、配额"
+    },
+    {
+      "id": "性能剖析与调试数据",
+      "description": "Profiling、错误/提取记录、堆转储、热点分析"
+    },
+    {
+      "id": "XTrace（新版链路追踪）",
+      "description": "XTrace 应用与升级"
+    },
+    {
+      "id": "用户与通用",
+      "description": "当前用户、白名单、渠道链接"
+    }
+  ],
+  "entries": [
+    {
+      "id": "GetTraceApp",
+      "kind": "action",
+      "resource": "应用与配置",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "Pid": "<pid>",
+        "aliyunLang": "zh"
+      },
+      "dataShape": "TraceApp（AppName / AppId / Pid / Type / Language / ClusterId / ResourceGroupId / Tags）",
+      "evidence": "observed",
+      "risk": "read",
+      "note": "查应用元信息；Pid 取自页面 URL 的 appId"
+    },
+    {
+      "id": "ListTraceApps",
+      "kind": "action",
+      "resource": "应用与配置",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "Page": 1,
+        "PageSize": 10,
+        "aliyunLang": "zh"
+      },
+      "dataShape": "TraceApps[]（实测该账号 314 个应用）",
+      "evidence": "observed",
+      "risk": "read",
+      "note": "分页拉全量应用清单，是「选应用」的入口"
+    },
+    {
+      "id": "GetUserInfo",
+      "kind": "action",
+      "resource": "用户与通用",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "aliyunLang": "zh"
+      },
+      "dataShape": "Data{userId}",
+      "evidence": "observed",
+      "risk": "read"
+    },
+    {
+      "id": "GetModuleConfig",
+      "kind": "action",
+      "resource": "应用与配置",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "AppType": "trace",
+        "RegionId": "cn-hangzhou",
+        "Pid": "<pid>",
+        "aliyunLang": "zh"
+      },
+      "dataShape": "Data（JSON 字符串：各模块开关，如 cms/cmssae/converge/cmstag/userregion）",
+      "evidence": "observed",
+      "risk": "read"
+    },
+    {
+      "id": "GetTraceAppConfig",
+      "kind": "action",
+      "resource": "应用与配置",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "Pid": "<pid>",
+        "aliyunLang": "zh"
+      },
+      "dataShape": "Data（JSON 字符串：profiler/agent 开关、excludeurl、callsql 等）",
+      "evidence": "observed",
+      "risk": "read"
+    },
+    {
+      "id": "GetTraceAggr",
+      "kind": "action",
+      "resource": "拓扑与聚合指标",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "Pid": "<pid>",
+        "Datasource": "clickhouse",
+        "Query": {
+          "startTime": 1793887200000,
+          "endTime": 1793894400000,
+          "filters": {},
+          "advancedFilters": [],
+          "pageSize": 10,
+          "querySource": ""
+        }
+      },
+      "dataShape": "Data{topologyMap{nodes[],edges[]}, spanTraceStatInfo[]}",
+      "evidence": "observed",
+      "risk": "read",
+      "note": "「应用概览」的核心接口：调用链拓扑 + 慢接口统计。startTime/endTime 为毫秒"
+    },
+    {
+      "id": "GetTraceGroupBy",
+      "kind": "action",
+      "resource": "拓扑与聚合指标",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "Datasource": "clickhouse"
+      },
+      "dataShape": "Data[]（可分组维度：spanName / serviceName / ip / statusCode / attributes.http.status_code / attributes.http.path）",
+      "evidence": "observed",
+      "risk": "read"
+    },
+    {
+      "id": "GetMetricDatas",
+      "kind": "action",
+      "resource": "拓扑与聚合指标",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "Param": {
+          "metric": "OTTRACESTAT.CLICKHOUSE",
+          "measures": [
+            "count"
+          ],
+          "intervalMillis": 2147483647,
+          "dimensions": [],
+          "orderBy": "count",
+          "order": "DESC",
+          "startTime": 1793887200000,
+          "endTime": 1793894400000,
+          "filters": {
+            "regionId": "cn-hangzhou"
+          },
+          "advancedFilters": [],
+          "querySource": ""
+        }
+      },
+      "dataShape": "{code:'SUCCESS', data:[{count:N}], dataSource:'SLS'}",
+      "evidence": "observed",
+      "risk": "read",
+      "note": "参数名是 Param 不是 Query；metric 在 SLS 数据源下为 OTTRACESTAT.SLS"
+    },
+    {
+      "id": "GetOTTraceBriefInfos",
+      "kind": "action",
+      "resource": "调用链 Trace",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "Datasource": "sls",
+        "Query": {
+          "startTime": 1793887200000,
+          "endTime": 1793894400000,
+          "filters": {},
+          "advancedFilters": [],
+          "page": 1,
+          "pageSize": 10,
+          "order": "",
+          "orderBy": "",
+          "querySource": ""
+        }
+      },
+      "dataShape": "Data[]（span 摘要：traceId / spanId / serviceName / spanName / duration / startTime(纳秒) / statusCode）",
+      "evidence": "observed",
+      "risk": "read",
+      "note": "调用链列表入口；startTime 为毫秒，span.startTime 为纳秒"
+    },
+    {
+      "id": "GetTraceChain",
+      "kind": "action",
+      "resource": "调用链 Trace",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "TraceId": "<traceId>",
+        "Datasource": "sls",
+        "StartTime": 1793887200000,
+        "EndTime": 1793894400000,
+        "FilterComponentNames": []
+      },
+      "dataShape": "Data{depth, traceChainComplete, roots[], spanNums, componentNames, maxDuration}",
+      "evidence": "observed",
+      "risk": "read",
+      "note": "调用链详情；StartTime/EndTime 用毫秒（用纳秒会返回 depth=-1 的空树）"
+    },
+    {
+      "id": "GetOTTraceCallstack",
+      "kind": "action",
+      "resource": "调用链 Trace",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "TraceId": "<traceId>",
+        "Datasource": "sls",
+        "SpanTimestamp": 1793887240084961000,
+        "SpanId": "<spanId>",
+        "ParentSpanId": null
+      },
+      "dataShape": "Data{depth, roots[], ...}（结构同 GetTraceChain）",
+      "evidence": "observed",
+      "risk": "read",
+      "note": "实测可通，但用列表里 span 的时间戳会返回空树；需按 span 自身时间窗口取值"
+    },
+    {
+      "id": "GetOTTraceCallstackOverview",
+      "kind": "action",
+      "resource": "调用链 Trace",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "TraceId": "<traceId>",
+        "Datasource": "SLS",
+        "SpanTimeStamp": 1793887240084961000,
+        "SpanId": "<spanId>",
+        "ParentSpanId": null
+      },
+      "dataShape": "调用栈概览（结构待实测）",
+      "evidence": "derived",
+      "risk": "read",
+      "note": "注意与 GetOTTraceCallstack 的差别：参数名是 SpanTimeStamp（多一个 T），Datasource 走大写 SLS"
+    },
+    {
+      "id": "GetOTTraceDetails",
+      "kind": "action",
+      "resource": "调用链 Trace",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "Datasource": "sls",
+        "Query": {
+          "startTime": 1793887200000,
+          "endTime": 1793894400000,
+          "filters": {},
+          "advancedFilters": [],
+          "page": 1,
+          "pageSize": 10,
+          "order": "",
+          "orderBy": "",
+          "querySource": ""
+        }
+      },
+      "dataShape": "Data[]",
+      "evidence": "observed",
+      "risk": "read"
+    },
+    {
+      "id": "ListAlertEvents",
+      "kind": "action",
+      "resource": "告警与事件",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "Page": 1,
+        "Size": 5,
+        "Status": "Active",
+        "MatchingConditions": [
+          {
+            "key": "_aliyun_arms_involvedObject_id",
+            "operator": "eq",
+            "value": "<pid>"
+          },
+          {
+            "key": "_aliyun_arms_product_type",
+            "operator": "eq",
+            "value": "ARMS_APP_MON"
+          }
+        ],
+        "aliyunLang": "zh"
+      },
+      "dataShape": "PageBean{Size, Total, Page}",
+      "evidence": "observed",
+      "risk": "read"
+    },
+    {
+      "id": "ListArmsInstanceTagResources",
+      "kind": "action",
+      "resource": "标签与资源组",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "ResourceId": "<pid>",
+        "ResourceType": "APPLICATION",
+        "ExcludeApp": true,
+        "aliyunLang": "zh"
+      },
+      "dataShape": "TagResources[]（TagKey: app / workloadKind，含 HostIp / HostName / ClusterId）",
+      "evidence": "observed",
+      "risk": "read"
+    },
+    {
+      "id": "GetAgentInfoByPage",
+      "kind": "action",
+      "resource": "实例与探针",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "AppName": "<appName>",
+        "Page": 1,
+        "PageSize": 10,
+        "Ip": "",
+        "AgentVersion": "",
+        "aliyunLang": "zh"
+      },
+      "dataShape": "{Items[], Total, Page, PageSize, OldestAgentVersion, EarliestExpiredAgentInfo}",
+      "evidence": "observed",
+      "risk": "read"
+    },
+    {
+      "id": "GetAllAgentInfo",
+      "kind": "action",
+      "resource": "实例与探针",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "AppName": "<appName>",
+        "aliyunLang": "zh"
+      },
+      "dataShape": "Items[]",
+      "evidence": "observed",
+      "risk": "read"
+    },
+    {
+      "id": "ListAppInstances",
+      "kind": "action",
+      "resource": "实例与探针",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "AppType": "trace",
+        "Pid": "<pid>",
+        "Page": 1,
+        "PageSize": 10,
+        "aliyunLang": "zh"
+      },
+      "dataShape": "Items[]",
+      "evidence": "observed",
+      "risk": "read",
+      "note": "缺 AppType 会报 MissingAppType"
+    },
+    {
+      "id": "GetTraceExplorerStatus",
+      "kind": "action",
+      "resource": "告警与事件",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "Source": "trace"
+      },
+      "dataShape": "{resourceStatus, status, messages[]}",
+      "evidence": "observed",
+      "risk": "read"
+    },
+    {
+      "id": "CheckArmsSLR",
+      "kind": "action",
+      "resource": "商业化与配额",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "Pid": "<pid>",
+        "aliyunLang": "zh"
+      },
+      "dataShape": "SLR 状态",
+      "evidence": "observed",
+      "risk": "read"
+    },
+    {
+      "id": "GetTraceCommercialStatus",
+      "kind": "action",
+      "resource": "商业化与配额",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "Pid": "<pid>",
+        "aliyunLang": "zh"
+      },
+      "dataShape": "CommodityStatus{Status, Lable, FreeDays, EdasBasic, ...}",
+      "evidence": "observed",
+      "risk": "read"
+    },
+    {
+      "id": "DescribeTraceEndpoint",
+      "kind": "action",
+      "resource": "数据源与 SLS",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "{SlsEndpointDesc{Project, Logstore}, TraceEndpointDesc{PubDomain, VpcDomain, ...}}",
+      "evidence": "observed",
+      "risk": "read",
+      "note": "SLS 数据源位置；Token/LicenseKey 服务端已打码"
+    },
+    {
+      "id": "DescribeTraceDataSource",
+      "kind": "action",
+      "resource": "数据源与 SLS",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "Pid": "<pid>",
+        "aliyunLang": "zh"
+      },
+      "dataShape": "数据源描述",
+      "evidence": "observed",
+      "risk": "read"
+    },
+    {
+      "id": "GetUserDatasourceConfig4Sls",
+      "kind": "action",
+      "resource": "数据源与 SLS",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "StartTime": 1793887200000,
+        "EndTime": 1793894400000,
+        "Platform": ""
+      },
+      "dataShape": "{attributes[], ...}",
+      "evidence": "observed",
+      "risk": "read",
+      "note": "自定义数据源（SLS）的字段清单"
+    },
+    {
+      "id": "QueryDashboardForGrafana",
+      "kind": "action",
+      "resource": "拓扑与聚合指标",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "Uid": "arms-app-view",
+        "RegionId": "cn-hangzhou",
+        "Language": "zh"
+      },
+      "dataShape": "Grafana 面板定义",
+      "evidence": "observed",
+      "risk": "read"
+    },
+    {
+      "id": "GetChannelLink",
+      "kind": "action",
+      "resource": "用户与通用",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "LinkKey": "arms_commonbuy_arms_xtracegb_post"
+      },
+      "dataShape": "Data.Link",
+      "evidence": "derived",
+      "risk": "read"
+    },
+    {
+      "id": "QueryTopology",
+      "kind": "action",
+      "resource": "拓扑与聚合指标",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "Query": "<JSON 字符串>"
+      },
+      "dataShape": "{nodes[], edges[]}",
+      "evidence": "derived",
+      "risk": "read",
+      "note": "端点存在（bundle 中经三参包装调用），实测参数形态未还原 → InternalError"
+    },
+    {
+      "id": "GetTProfInteractionSnapshot",
+      "kind": "action",
+      "resource": "调用链 Trace",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "Query": {
+          "regionId": "cn-hangzhou",
+          "traceId": "<traceId>",
+          "startTime": 0,
+          "endTime": 0
+        }
+      },
+      "dataShape": "data[0]",
+      "evidence": "derived",
+      "risk": "read"
+    },
+    {
+      "id": "SearchTraceAppByName",
+      "kind": "action",
+      "resource": "应用与配置",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "未知",
+      "evidence": "unknown",
+      "risk": "read",
+      "note": "实测 ParameterMissing，必填参数名未还原"
+    },
+    {
+      "id": "GetProfilingData",
+      "kind": "action",
+      "resource": "性能剖析与调试数据",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "未知",
+      "evidence": "derived",
+      "risk": "read"
+    },
+    {
+      "id": "QueryProfilingData",
+      "kind": "action",
+      "resource": "性能剖析与调试数据",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "未知",
+      "evidence": "derived",
+      "risk": "read"
+    },
+    {
+      "id": "DescribeTraceQuality",
+      "kind": "action",
+      "resource": "数据源与 SLS",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "未知",
+      "evidence": "derived",
+      "risk": "read"
+    },
+    {
+      "id": "GetCustomErrorRecord",
+      "kind": "action",
+      "resource": "性能剖析与调试数据",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "未知",
+      "evidence": "derived",
+      "risk": "read"
+    },
+    {
+      "id": "GetCustomExtractRecord",
+      "kind": "action",
+      "resource": "性能剖析与调试数据",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "未知",
+      "evidence": "derived",
+      "risk": "read"
+    },
+    {
+      "id": "GetHeapDumpList",
+      "kind": "action",
+      "resource": "性能剖析与调试数据",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "未知",
+      "evidence": "derived",
+      "risk": "read"
+    },
+    {
+      "id": "CreateHeapDump",
+      "kind": "action",
+      "resource": "性能剖析与调试数据",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "未知",
+      "evidence": "derived",
+      "risk": "write"
+    },
+    {
+      "id": "QueryHotSpotData",
+      "kind": "action",
+      "resource": "性能剖析与调试数据",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "未知",
+      "evidence": "derived",
+      "risk": "read"
+    },
+    {
+      "id": "GetBubbleUpBrief",
+      "kind": "action",
+      "resource": "性能剖析与调试数据",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "未知",
+      "evidence": "derived",
+      "risk": "read"
+    },
+    {
+      "id": "GetBubbleUpReport",
+      "kind": "action",
+      "resource": "性能剖析与调试数据",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "未知",
+      "evidence": "derived",
+      "risk": "read"
+    },
+    {
+      "id": "GetTraceAppConfigTemplate",
+      "kind": "action",
+      "resource": "应用与配置",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "未知",
+      "evidence": "derived",
+      "risk": "read"
+    },
+    {
+      "id": "SaveTraceAppConfig",
+      "kind": "action",
+      "resource": "应用与配置",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "Pid": "<pid>"
+      },
+      "dataShape": "未知",
+      "evidence": "derived",
+      "risk": "write"
+    },
+    {
+      "id": "SaveTraceAppConfigList",
+      "kind": "action",
+      "resource": "应用与配置",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "Pid": "<pid>"
+      },
+      "dataShape": "未知",
+      "evidence": "derived",
+      "risk": "write"
+    },
+    {
+      "id": "SaveCustomErrorRecord",
+      "kind": "action",
+      "resource": "性能剖析与调试数据",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "未知",
+      "evidence": "derived",
+      "risk": "write"
+    },
+    {
+      "id": "SaveCustomExtractRecord",
+      "kind": "action",
+      "resource": "性能剖析与调试数据",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "未知",
+      "evidence": "derived",
+      "risk": "write"
+    },
+    {
+      "id": "SaveCustomExtractRecordList",
+      "kind": "action",
+      "resource": "性能剖析与调试数据",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "未知",
+      "evidence": "derived",
+      "risk": "write"
+    },
+    {
+      "id": "SaveTrace",
+      "kind": "action",
+      "resource": "调用链 Trace",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "未知",
+      "evidence": "derived",
+      "risk": "write"
+    },
+    {
+      "id": "UpgradeXTrace",
+      "kind": "action",
+      "resource": "XTrace（新版链路追踪）",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "未知",
+      "evidence": "derived",
+      "risk": "write"
+    },
+    {
+      "id": "OpenService",
+      "kind": "action",
+      "resource": "实例与探针",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "未知",
+      "evidence": "derived",
+      "risk": "write"
+    },
+    {
+      "id": "OpenTelemetry",
+      "kind": "action",
+      "resource": "实例与探针",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "未知",
+      "evidence": "derived",
+      "risk": "write"
+    },
+    {
+      "id": "GetATPAccessURL",
+      "kind": "action",
+      "resource": "实例与探针",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "未知",
+      "evidence": "derived",
+      "risk": "read"
+    },
+    {
+      "id": "QueryAppMetadata",
+      "kind": "action",
+      "resource": "拓扑与聚合指标",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "未知",
+      "evidence": "derived",
+      "risk": "read"
+    },
+    {
+      "id": "GetPubInfo",
+      "kind": "action",
+      "resource": "拓扑与聚合指标",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "未知",
+      "evidence": "derived",
+      "risk": "read"
+    },
+    {
+      "id": "ListUserLogProjects",
+      "kind": "action",
+      "resource": "数据源与 SLS",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "LogProjects[]",
+      "evidence": "derived",
+      "risk": "read"
+    },
+    {
+      "id": "ListUserLogstores",
+      "kind": "action",
+      "resource": "数据源与 SLS",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "Logstores[]",
+      "evidence": "derived",
+      "risk": "read"
+    },
+    {
+      "id": "ListUserLogSavedSearches",
+      "kind": "action",
+      "resource": "数据源与 SLS",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "LogSavedSearches[]",
+      "evidence": "derived",
+      "risk": "read"
+    },
+    {
+      "id": "ListUserLogstoreIndexes",
+      "kind": "action",
+      "resource": "数据源与 SLS",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "未知",
+      "evidence": "derived",
+      "risk": "read"
+    },
+    {
+      "id": "ListXTraceApps",
+      "kind": "action",
+      "resource": "XTrace（新版链路追踪）",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "未知",
+      "evidence": "derived",
+      "risk": "read"
+    },
+    {
+      "id": "DescribeXTraceApp",
+      "kind": "action",
+      "resource": "XTrace（新版链路追踪）",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "未知",
+      "evidence": "derived",
+      "risk": "read"
+    },
+    {
+      "id": "DescribeXTraceUpgradeStatus",
+      "kind": "action",
+      "resource": "XTrace（新版链路追踪）",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "未知",
+      "evidence": "derived",
+      "risk": "read"
+    },
+    {
+      "id": "GetUserWhiteListStatus",
+      "kind": "action",
+      "resource": "用户与通用",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "未知",
+      "evidence": "derived",
+      "risk": "read"
+    },
+    {
+      "id": "DescribeUserQuota",
+      "kind": "action",
+      "resource": "商业化与配额",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "无",
+      "evidence": "unknown",
+      "risk": "read",
+      "note": "在 product=arms 下实测 InvalidAction.NotFound —— 属其它 product（ResourceManager 等）"
+    },
+    {
+      "id": "GetResourceGroup",
+      "kind": "action",
+      "resource": "标签与资源组",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "ResourceGroupId": "<rgId>"
+      },
+      "dataShape": "无",
+      "evidence": "unknown",
+      "risk": "read",
+      "note": "product=arms 下 InvalidAction.NotFound；实测该应用所属资源组为 <resourceGroupId>"
+    },
+    {
+      "id": "ListResourceGroups",
+      "kind": "action",
+      "resource": "标签与资源组",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "PageNumber": 1,
+        "PageSize": 10,
+        "Status": "OK"
+      },
+      "dataShape": "无",
+      "evidence": "unknown",
+      "risk": "read",
+      "note": "bundle 中经三参包装调用（product 非 arms）→ product=arms 下 InvalidAction.NotFound"
+    },
+    {
+      "id": "ListTagKeys",
+      "kind": "action",
+      "resource": "标签与资源组",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "无",
+      "evidence": "unknown",
+      "risk": "read",
+      "note": "属 tag / ResourceManager 产品，非 arms"
+    },
+    {
+      "id": "ListTagValues",
+      "kind": "action",
+      "resource": "标签与资源组",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou"
+      },
+      "dataShape": "无",
+      "evidence": "unknown",
+      "risk": "read",
+      "note": "属 tag / ResourceManager 产品，非 arms"
+    },
+    {
+      "id": "ListTagResources",
+      "kind": "action",
+      "resource": "标签与资源组",
+      "method": "POST",
+      "path": "/data/api.json",
+      "params": {
+        "RegionId": "cn-hangzhou",
+        "ResourceId": "<pid>",
+        "ResourceType": "APPLICATION"
+      },
+      "dataShape": "无",
+      "evidence": "unknown",
+      "risk": "read",
+      "note": "实测 MissingResourceId / MissingResourceType → 归属 product 不对"
+    }
+  ],
+  "excluded": [
+    {
+      "host": "armsnext.console.aliyun.com",
+      "actions": [
+        "ResourceCenter__GetResourceCenterServiceStatus",
+        "ResourceCenter__ListResourceTypes+GetResourceCounts",
+        "one-console-app-home__GetConsoleByCommodity"
+      ],
+      "reason": "需要 collina=140#... 反爬签名（页面内 uab/collina.js 计算），无 UI 模式下不可离线复现"
+    },
+    {
+      "host": "fecs.console.aliyun.com",
+      "actions": [
+        "notifications__ReadMessageList",
+        "notifications__ReadNotifications",
+        "Workorder__RecognizeCustomerType",
+        "occa-myalicloud__GetUserRecentProductList"
+      ],
+      "reason": "同上，需要 collina 签名；属控制台壳功能，非 ARMS 业务数据"
+    }
+  ]
+}
