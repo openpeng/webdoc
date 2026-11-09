@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "site": {
+    "name": "__SITE_NAME__",
+    "pageUrl": "",
+    "pageOrigin": "",
+    "apiHosts": [],
+    "region": "",
+    "regionNote": ""
+  },
+  "transport": {
+    "kind": "rpc-gateway",
+    "endpoint": "",
+    "method": "POST",
+    "contentType": "application/x-www-form-urlencoded",
+    "body": "",
+    "product": "",
+    "batch": null,
+    "auth": {
+      "required": [],
+      "abMatrix": {},
+      "conclusion": "",
+      "sameSiteNote": "",
+      "excluded": []
+    },
+    "response": {
+      "envelope": "",
+      "successRule": "code === \"200\"",
+      "doubleEncodedFields": []
+    }
+  },
+  "resources": [],
+  "entries": [],
+  "excluded": []
+}

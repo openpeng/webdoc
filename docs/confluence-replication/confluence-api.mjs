@@ -3,7 +3,7 @@
  * 示例 Confluence 知识库 —— 无 UI API 客户端（目录驱动）。
  *
  * 目录文件：confluence-catalog.json（唯一事实源；本客户端不硬编码任何参数）
- * 形状规范见 .minimax/skills/webdoc-replication-deliverables/references/deliverable-shapes.md
+ * 形状规范见 mcp-server/skills/webdoc-replication-deliverables/references/deliverable-shapes.md
  *
  * 用法：
  *   node confluence-api.mjs --list

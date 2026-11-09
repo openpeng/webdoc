@@ -20,3 +20,13 @@ course_list_export.csv
 review_diff.txt
 .npmrc
 .webpilot-task-logs
+
+# 本地发布产物（npm tgz / Node 发行版等，不入库）
+release-artifacts/
+
+# 本地技能镜像与手工备份（真实来源见 mcp-server/skills/ 与 browser-extension/）
+.minimax/
+browser-extension-bk/
+
+# 一次性调试脚本
+mcp-server/.tmp-*.ps1

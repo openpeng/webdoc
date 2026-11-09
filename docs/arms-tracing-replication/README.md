@@ -4,7 +4,7 @@
 逆向分析报告见 [`../arms-tracing-replication-report.md`](../arms-tracing-replication-report.md)；
 **按资源域组织的动作目录**见 [`arms-action-catalog.md`](./arms-action-catalog.md)。
 
-本套交付物的形状规范沉淀在 skill `.minimax/skills/webdoc-replication-deliverables`：
+本套交付物的形状规范沉淀在 skill `mcp-server/skills/webdoc-replication-deliverables`：
 字段契约见其 `references/deliverable-shapes.md`，脚手架见其 `scripts/scaffold-replication.mjs`。
 新站点用脚手架起一套同形状的交付物。
 

@@ -55,6 +55,7 @@ for (const relative of [browserPath, 'mcp-server/README.md', 'README.md']) {
 }
 // Local project mirrors are optional: a clean checkout contains the packaged Skills.
 const apiPath = 'mcp-server/skills/webdoc-api-replication/SKILL.md';
+const deliverablesPath = 'mcp-server/skills/webdoc-replication-deliverables/SKILL.md';
 const mirrorPath = '.minimax/skills/webdoc-api-replication/SKILL.md';
 const localSkills = [mirrorPath, '.minimax/skills/webdoc-replication-deliverables/SKILL.md']
   .filter(relative => fs.existsSync(path.resolve(root, relative)));
@@ -62,7 +63,7 @@ if (localSkills.includes(mirrorPath)) {
   assert.equal(read(apiPath), read(mirrorPath), 'API Skill copies match');
   console.log('Local API Skill mirror: identical');
 }
-for (const relative of [browserPath, apiPath, ...localSkills]) {
+for (const relative of [browserPath, apiPath, deliverablesPath, ...localSkills]) {
   const text = read(relative);
   assert.match(text, /^---\r?\nname: [^\r\n]+\r?\ndescription:/);
   assert.ok(Buffer.byteLength(text) < 100_000, `${relative}: Skill size limit`);

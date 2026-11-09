@@ -235,7 +235,7 @@ body: product=arms&actions=[{action,params},...]
 | `docs/arms-tracing-replication/README.md` | 快速上手（含 cookie 导出步骤） |
 | `docs/arms-tracing-replication-report.md` | 本报告 |
 
-**交付物形状规范**已沉淀为 skill `.minimax/skills/webdoc-replication-deliverables`：
+**交付物形状规范**已沉淀为 skill `mcp-server/skills/webdoc-replication-deliverables`：
 字段契约见其 `references/deliverable-shapes.md`，坑位与手法见 `references/case-study-arms.md`，
 脚手架 `scripts/scaffold-replication.mjs` 可为新站点生成同形状的一套交付物。
 本套交付物即按该规范产出（目录 JSON 为唯一事实源，Markdown 目录由脚本生成且生成器 fail-closed）。
