@@ -1058,7 +1058,7 @@
       "dataShape": "无",
       "evidence": "unknown",
       "risk": "read",
-      "note": "product=arms 下 InvalidAction.NotFound；实测该应用所属资源组为 <resourceGroupId>"
+      "note": "product=arms 下 InvalidAction.NotFound；实测该应用所属资源组形如 rg-<resourceGroupId>"
     },
     {
       "id": "ListResourceGroups",

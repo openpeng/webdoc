@@ -103,7 +103,7 @@ _实例标签、资源组（多属 ResourceManager / tag 产品）_
 | 条目 | 档位 | 风险 | 关键参数 | 返回结构 | 说明 |
 |---|---|---|---|---|---|
 | `ListArmsInstanceTagResources` | ✔ observed | read | {"RegionId":"cn-hangzhou","ResourceId":"<pid>","ResourceType":"APPLICATION","ExcludeApp":true,"aliyunLang":"zh"} | TagResources[]（TagKey: app / workloadKind，含 HostIp / HostName / ClusterId） |  |
-| `GetResourceGroup` | ? unknown | read | {"RegionId":"cn-hangzhou","ResourceGroupId":"<rgId>"} | 无 | product=arms 下 InvalidAction.NotFound；实测该应用所属资源组为 <resourceGroupId> |
+| `GetResourceGroup` | ? unknown | read | {"RegionId":"cn-hangzhou","ResourceGroupId":"<rgId>"} | 无 | product=arms 下 InvalidAction.NotFound；实测该应用所属资源组形如 rg-<resourceGroupId> |
 | `ListResourceGroups` | ? unknown | read | {"PageNumber":1,"PageSize":10,"Status":"OK"} | 无 | bundle 中经三参包装调用（product 非 arms）→ product=arms 下 InvalidAction.NotFound |
 | `ListTagKeys` | ? unknown | read | {"RegionId":"cn-hangzhou"} | 无 | 属 tag / ResourceManager 产品，非 arms |
 | `ListTagValues` | ? unknown | read | {"RegionId":"cn-hangzhou"} | 无 | 属 tag / ResourceManager 产品，非 arms |
